@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.claude/settings.local.json
 *.sqlite
 *.sqlite-journal
 .DS_Store
