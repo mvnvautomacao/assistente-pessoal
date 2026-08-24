@@ -74,19 +74,58 @@ Pegue a URL gerada (ex: `https://abcd.loca.lt`) e configure no painel da Meta em
 
 Agora mande uma mensagem de teste pro número do bot pelo seu WhatsApp.
 
-## Deploy em produção (Oracle Cloud Free Tier)
+## Deploy em produção (Coolify na Oracle Cloud)
 
-Resumo do que vamos fazer lá na frente, quando o bot estiver validado localmente:
+O app já tem um `Dockerfile`, então o Coolify builda e roda ele sozinho — você não precisa mexer com pm2, nginx ou certificado SSL na mão. Só faça isso depois de validar tudo rodando local (branch `develop`); o deploy sempre parte do branch `main`.
 
-1. Criar uma VM gratuita (Always Free) na Oracle Cloud.
-2. Instalar Node.js na VM.
-3. Subir o código (via git clone do branch `main`) e configurar o `.env` de produção.
-4. Rodar o processo permanentemente com **pm2** (mantém o bot de pé e reinicia sozinho se cair).
-5. Apontar um domínio (esse é o único custo real do projeto, ~R$40/ano) pra IP da VM, e usar **Caddy** como proxy — ele gera o certificado HTTPS automaticamente, exigido pela Meta.
-6. Trocar o `META_ACCESS_TOKEN` temporário por um token permanente (gerado com um System User no Meta Business Manager).
-7. Atualizar a Callback URL do webhook na Meta pra apontar pro domínio de produção.
+### 1. Criar a VM gratuita na Oracle Cloud
 
-Vou te guiar em cada um desses passos quando chegarmos lá — não precisa se preocupar com isso agora.
+1. Crie conta em https://www.oracle.com/cloud/free/ (pede cartão só pra verificação, não cobra nada no tier "Always Free").
+2. Compute → Instances → Create Instance.
+3. Imagem: **Ubuntu 22.04**. Shape: **VM.Standard.A1.Flex** (Ampere/ARM, é a que entra no free tier — pode deixar 2 OCPU / 12GB, ainda dentro do limite grátis).
+4. Adicione sua chave SSH pública (ou deixe a Oracle gerar uma e baixe o arquivo `.pem`).
+5. Depois de criada, anote o **IP público** da instância.
+6. Libere as portas 80 e 443 (a Oracle bloqueia por padrão em dois lugares — precisa liberar nos dois):
+   - No painel: VCN da instância → Security Lists → Add Ingress Rule → portas 80 e 443, origem `0.0.0.0/0`.
+   - Dentro da VM (via SSH): `sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT` e o mesmo pra porta 443, depois `sudo netfilter-persistent save` (ou ajuste do `ufw`, dependendo da imagem).
+
+### 2. Instalar o Coolify
+
+Via SSH na VM:
+
+```bash
+curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
+```
+
+Ao terminar, acesse `http://SEU_IP:8000` no navegador e crie sua conta de admin do Coolify.
+
+### 3. Domínio + Cloudflare
+
+1. Registre o domínio no Registro.br.
+2. Aponte os nameservers do domínio pro Cloudflare (Cloudflare te dá 2 endereços tipo `ana.ns.cloudflare.com` na hora que você adiciona o site lá).
+3. No Cloudflare, crie um registro **A**: `bot` (ou o subdomínio que preferir) → IP da VM. Deixe a nuvem **cinza (DNS only)** por enquanto — proxy laranja só depois que o certificado SSL do Coolify já estiver funcionando, senão atrapalha a emissão.
+
+### 4. Deploy do app no Coolify
+
+1. No painel do Coolify: **New Resource → Application → conectar seu repositório Git** (GitHub/GitLab), branch `main`. O Coolify detecta o `Dockerfile` automaticamente.
+2. Em **Domains**, coloque `bot.seudominio.com.br` — o Coolify emite o certificado Let's Encrypt sozinho.
+3. Em **Environment Variables**, cole todas as chaves do seu `.env` (as mesmas do passo de configuração local).
+4. Em **Storages**, adicione um volume persistente apontando pra `/app/data` — é onde fica o banco SQLite dos lembretes. Sem isso, os lembretes se perdem a cada novo deploy.
+5. Clique em **Deploy**.
+
+### 5. Últimos ajustes
+
+1. No painel da Meta, troque o `META_ACCESS_TOKEN` temporário por um permanente (Business Settings → System Users → gerar token com permissão `whatsapp_business_messaging`).
+2. Atualize a Callback URL do webhook na Meta pra `https://bot.seudominio.com.br/webhook`.
+
+### Se um dia precisar escalar (trocar de servidor)
+
+Como o deploy é 100% baseado em Dockerfile + git, migrar de servidor depois é simples e não exige mudar nada no código:
+
+1. Suba um Coolify novo (ou use o recurso de "servidor remoto" do próprio Coolify, que deixa um painel só controlar vários servidores) na VPS maior/paga que você escolher (ex: Hostinger).
+2. Reconecte o mesmo repositório e cole as mesmas variáveis de ambiente.
+3. No Cloudflare, só troque o IP do registro A pro novo servidor.
+4. Único cuidado: o SQLite é um arquivo local, então copie o volume `/app/data` pro servidor novo (`scp`) antes de trocar o DNS. Se no futuro o volume de dados crescer muito, dá pra trocar o SQLite por um banco gerenciado (ex: Supabase) sem tocar no resto do código — é só trocar a camada em [src/db.ts](src/db.ts).
 
 ## Fluxo de branches
 

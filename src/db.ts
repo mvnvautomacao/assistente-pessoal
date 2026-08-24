@@ -1,7 +1,10 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { config } from "./config";
 
-export const db = new Database(config.dbPath);
+mkdirSync(dirname(config.dbPath), { recursive: true });
+export const db = new DatabaseSync(config.dbPath);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS reminders (
