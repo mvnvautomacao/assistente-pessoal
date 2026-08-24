@@ -53,7 +53,7 @@ Preencha o `.env` com tudo que você coletou acima. Depois gere o refresh token 
 npm run google:token
 ```
 
-Siga as instruções no terminal e cole o `GOOGLE_REFRESH_TOKEN` gerado no `.env`.
+Um link vai aparecer no terminal: abra ele, faça login com sua conta Google e clique em "Continuar"/"Permitir". O terminal captura a autorização sozinho e já imprime a linha `GOOGLE_REFRESH_TOKEN=...` pronta pra colar no `.env`.
 
 ### 5. Rodar localmente e conectar o webhook
 
