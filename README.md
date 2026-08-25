@@ -9,23 +9,31 @@ Bot de WhatsApp que:
 ## Como funciona (visão geral)
 
 1. Você manda uma mensagem no WhatsApp pro número do bot.
-2. A Meta (dona do WhatsApp) entrega essa mensagem pro nosso servidor via **webhook**.
+2. O **Evolution API** (nossa própria conexão com o WhatsApp, autohospedada) entrega essa mensagem pro nosso servidor via **webhook**.
 3. Se for áudio, transcrevemos (Groq/Whisper). Se for foto, tratamos como comprovante.
 4. O texto (ou a imagem) vai pra Claude (Anthropic), que decide: é um gasto, um evento ou um lembrete — e extrai os dados.
 5. Dependendo do tipo, gravamos na planilha, criamos o evento no Calendar, ou agendamos o lembrete.
 6. O bot responde confirmando no WhatsApp.
 
+Usamos o [Evolution API](https://github.com/EvolutionAPI/evolution-api) em vez da API oficial da Meta: conecta como o WhatsApp Web (escaneando um QR code), sem precisar de aprovação de conta comercial. Roda em Docker, local pra testes e no Coolify em produção.
+
 ## Passo a passo do zero
 
-### 1. Conta no Meta for Developers (WhatsApp Cloud API)
+### 1. Evolution API (conexão com o WhatsApp)
 
-1. Crie um app em https://developers.facebook.com/apps → tipo "Business".
-2. Adicione o produto **WhatsApp**.
-3. Na aba WhatsApp → API Setup, anote:
-   - `Temporary access token` → vai virar `META_ACCESS_TOKEN` (depois trocamos por um permanente)
-   - `Phone number ID` → vai virar `META_PHONE_NUMBER_ID`
-4. Use o número de teste gratuito que a Meta te dá pra começar (ele só manda mensagem pra números que você cadastrar como "destinatário de teste" — cadastre o seu próprio número).
-5. Em `META_VERIFY_TOKEN`, invente qualquer string (ex: `batata123`) — você vai usar o mesmo valor no passo do webhook (passo 5 abaixo).
+Local, pra testar (precisa do [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado e aberto):
+
+```bash
+docker compose up -d
+```
+
+Isso sobe o Evolution API em `http://localhost:8080`. Depois, com o `.env` já preenchido (veja o passo 4), rode:
+
+```bash
+npm run evolution:setup
+```
+
+Um QR code vai aparecer no terminal. Abra o WhatsApp no celular → **Aparelhos conectados** → **Conectar um aparelho** → escaneie. Pronto, a instância fica conectada.
 
 ### 2. Conta no Google Cloud (Calendar + Sheets)
 
@@ -61,16 +69,11 @@ Um link vai aparecer no terminal: abra ele, faça login com sua conta Google e c
 npm run dev
 ```
 
-Isso sobe o servidor na porta 3000, mas a Meta precisa de uma URL pública HTTPS pra mandar as mensagens. Pra testar local, use um túnel temporário, ex:
+Isso sobe o servidor na porta 3000. Como o Evolution API roda no Docker Desktop, na mesma máquina, ele consegue chamar seu servidor local direto — não precisa de túnel nem de domínio pra testar:
 
 ```bash
-npx localtunnel --port 3000
+npm run evolution:webhook -- http://host.docker.internal:3000/webhook
 ```
-
-Pegue a URL gerada (ex: `https://abcd.loca.lt`) e configure no painel da Meta em WhatsApp → Configuration → Webhook:
-- Callback URL: `https://abcd.loca.lt/webhook`
-- Verify token: o mesmo valor que você colocou em `META_VERIFY_TOKEN`
-- Inscreva-se no campo `messages`
 
 Agora mande uma mensagem de teste pro número do bot pelo seu WhatsApp.
 
@@ -99,33 +102,45 @@ curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
 
 Ao terminar, acesse `http://SEU_IP:8000` no navegador e crie sua conta de admin do Coolify.
 
-### 3. Domínio + Cloudflare
+Boa notícia: como não dependemos mais do webhook da Meta, **não precisa de domínio nem de certificado SSL pra funcionar** — o Evolution API e o app conversam direto pela rede interna do Coolify. Domínio só se você quiser acessar o app de fora por algum motivo (opcional, não vamos precisar).
 
-1. Registre o domínio no Registro.br.
-2. Aponte os nameservers do domínio pro Cloudflare (Cloudflare te dá 2 endereços tipo `ana.ns.cloudflare.com` na hora que você adiciona o site lá).
-3. No Cloudflare, crie um registro **A**: `bot` (ou o subdomínio que preferir) → IP da VM. Deixe a nuvem **cinza (DNS only)** por enquanto — proxy laranja só depois que o certificado SSL do Coolify já estiver funcionando, senão atrapalha a emissão.
+### 3. Deploy do Evolution API no Coolify
+
+1. No painel do Coolify, crie um **Project** novo (ex: "assistente-pessoal") — os serviços dentro do mesmo projeto conseguem se enxergar pela rede interna.
+2. **New Resource → Docker Compose** → aponte pro seu repositório Git, branch `main`, arquivo `docker-compose.yml` (já está na raiz do projeto).
+3. Em **Environment Variables**, adicione `EVOLUTION_API_KEY` com o mesmo valor que está no seu `.env`.
+4. Clique em **Deploy**. Anote o nome do serviço (por padrão `evolution-api`) — é o endereço que o app vai usar pra falar com ele dentro da rede do Coolify (`http://evolution-api:8080`).
 
 ### 4. Deploy do app no Coolify
 
-1. No painel do Coolify: **New Resource → Application → conectar seu repositório Git** (GitHub/GitLab), branch `main`. O Coolify detecta o `Dockerfile` automaticamente.
-2. Em **Domains**, coloque `bot.seudominio.com.br` — o Coolify emite o certificado Let's Encrypt sozinho.
-3. Em **Environment Variables**, cole todas as chaves do seu `.env` (as mesmas do passo de configuração local).
-4. Em **Storages**, adicione um volume persistente apontando pra `/app/data` — é onde fica o banco SQLite dos lembretes. Sem isso, os lembretes se perdem a cada novo deploy.
-5. Clique em **Deploy**.
+1. No mesmo Project: **New Resource → Application → conectar seu repositório Git**, branch `main`. O Coolify detecta o `Dockerfile` automaticamente.
+2. Em **Environment Variables**, cole as chaves do seu `.env`, mas troque `EVOLUTION_API_URL` para `http://evolution-api:8080` (o endereço interno, não `localhost`).
+3. Em **Storages**, adicione um volume persistente apontando pra `/app/data` — é onde fica o banco SQLite dos lembretes. Sem isso, os lembretes se perdem a cada novo deploy.
+4. Clique em **Deploy**.
 
 ### 5. Últimos ajustes
 
-1. No painel da Meta, troque o `META_ACCESS_TOKEN` temporário por um permanente (Business Settings → System Users → gerar token com permissão `whatsapp_business_messaging`).
-2. Atualize a Callback URL do webhook na Meta pra `https://bot.seudominio.com.br/webhook`.
+A instância do WhatsApp em produção é separada da que você usou nos testes locais — precisa conectar de novo:
+
+```bash
+EVOLUTION_API_URL=http://SEU_IP_DA_VM:PORTA_DO_EVOLUTION npm run evolution:setup
+```
+
+(a porta exposta você vê no painel do Coolify, na aba do serviço `evolution-api`). Escaneie o QR code de novo com o WhatsApp. Depois, configure o webhook apontando pro endereço interno do app:
+
+```bash
+npm run evolution:webhook -- http://assistente-whatsapp:3000/webhook
+```
+
+(troque `assistente-whatsapp` pelo nome que o Coolify deu ao serviço do app, visível no painel).
 
 ### Se um dia precisar escalar (trocar de servidor)
 
-Como o deploy é 100% baseado em Dockerfile + git, migrar de servidor depois é simples e não exige mudar nada no código:
+Como o deploy é 100% baseado em Dockerfile/docker-compose + git, migrar de servidor depois é simples e não exige mudar nada no código:
 
 1. Suba um Coolify novo (ou use o recurso de "servidor remoto" do próprio Coolify, que deixa um painel só controlar vários servidores) na VPS maior/paga que você escolher (ex: Hostinger).
-2. Reconecte o mesmo repositório e cole as mesmas variáveis de ambiente.
-3. No Cloudflare, só troque o IP do registro A pro novo servidor.
-4. Único cuidado: o SQLite é um arquivo local, então copie o volume `/app/data` pro servidor novo (`scp`) antes de trocar o DNS. Se no futuro o volume de dados crescer muito, dá pra trocar o SQLite por um banco gerenciado (ex: Supabase) sem tocar no resto do código — é só trocar a camada em [src/db.ts](src/db.ts).
+2. Reconecte o mesmo repositório e cole as mesmas variáveis de ambiente, pros dois serviços (app e Evolution API).
+3. Único cuidado: tanto o SQLite (`/app/data`) quanto a sessão do WhatsApp (volume `evolution_instances`) são arquivos locais — copie os dois volumes pro servidor novo antes de desligar o antigo, ou vai precisar escanear o QR code de novo. Se no futuro o volume de dados crescer muito, dá pra trocar o SQLite por um banco gerenciado (ex: Supabase) sem tocar no resto do código — é só trocar a camada em [src/db.ts](src/db.ts).
 
 ## Fluxo de branches
 
@@ -136,7 +151,7 @@ Como o deploy é 100% baseado em Dockerfile + git, migrar de servidor depois é 
 
 ```
 src/
-  whatsapp/   envio e recebimento de mensagens (Meta Cloud API)
+  whatsapp/   envio e recebimento de mensagens (Evolution API)
   ai/         transcrição de áudio + interpretação das mensagens (Anthropic/Groq)
   google/     Google Calendar e Google Sheets
   reminders/  armazenamento e disparo dos lembretes agendados

@@ -1,32 +1,40 @@
-import { downloadMedia, sendText } from "./whatsapp/client";
+import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, Interpretation } from "./ai/interpret";
 import { createCalendarEvent } from "./google/calendar";
 import { appendExpense } from "./google/sheets";
 import { createReminder } from "./reminders/service";
 
-interface IncomingMessage {
-  from: string;
-  type: "text" | "audio" | "image" | string;
-  text?: { body: string };
-  audio?: { id: string };
-  image?: { id: string; mime_type: string };
+// Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
+// em base64 pode vir em lugares diferentes dependendo da versao/config da API.
+interface EvolutionMessage {
+  key: { remoteJid: string; fromMe: boolean };
+  messageType: string;
+  message?: {
+    conversation?: string;
+    extendedTextMessage?: { text: string };
+    base64?: string;
+    audioMessage?: { mimetype?: string };
+    imageMessage?: { mimetype?: string };
+  };
+  base64?: string;
 }
 
-export async function handleIncomingMessage(message: IncomingMessage) {
-  const from = message.from;
+export async function handleIncomingMessage(data: EvolutionMessage) {
+  const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
+  const base64Media = data.message?.base64 ?? data.base64;
 
   let interpretation: Interpretation;
 
-  if (message.type === "text" && message.text) {
-    interpretation = await interpretText(message.text.body);
-  } else if (message.type === "audio" && message.audio) {
-    const audio = await downloadMedia(message.audio.id);
-    const text = await transcribeAudio(audio);
+  if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
+    const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
     interpretation = await interpretText(text);
-  } else if (message.type === "image" && message.image) {
-    const image = await downloadMedia(message.image.id);
-    interpretation = await interpretReceiptImage(image.toString("base64"), message.image.mime_type);
+  } else if (data.messageType === "audioMessage" && base64Media) {
+    const text = await transcribeAudio(Buffer.from(base64Media, "base64"));
+    interpretation = await interpretText(text);
+  } else if (data.messageType === "imageMessage" && base64Media) {
+    const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
+    interpretation = await interpretReceiptImage(base64Media, mimeType);
   } else {
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;

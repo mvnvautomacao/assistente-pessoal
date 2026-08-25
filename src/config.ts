@@ -10,10 +10,10 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   dbPath: process.env.DB_PATH ?? "./data.sqlite",
 
-  meta: {
-    accessToken: required("META_ACCESS_TOKEN"),
-    phoneNumberId: required("META_PHONE_NUMBER_ID"),
-    verifyToken: required("META_VERIFY_TOKEN"),
+  evolution: {
+    apiUrl: required("EVOLUTION_API_URL"),
+    apiKey: required("EVOLUTION_API_KEY"),
+    instanceName: required("EVOLUTION_INSTANCE_NAME"),
   },
   myWhatsappNumber: required("MY_WHATSAPP_NUMBER"),
 
