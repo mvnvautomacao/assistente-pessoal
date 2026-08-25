@@ -14,6 +14,9 @@ export type Interpretation =
   | { type: "correct_category"; category: string; query?: string }
   | { type: "set_default_payment"; payment_method: string }
   | { type: "set_report_day"; day_of_week: string }
+  | { type: "set_budget"; category: string; amount: number }
+  | { type: "remove_budget"; category: string }
+  | { type: "list_budgets" }
   | { type: "unknown"; description?: string };
 
 const ACTION_SCHEMA = {
@@ -31,16 +34,22 @@ const ACTION_SCHEMA = {
         "correct_category",
         "set_default_payment",
         "set_report_day",
+        "set_budget",
+        "remove_budget",
+        "list_budgets",
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). unknown = nao deu pra entender.",
+        "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver os orcamentos que tem definidos e quanto ja gastou de cada um. unknown = nao deu pra entender.",
     },
-    amount: { type: "number", description: "Valor do gasto em reais (so para type=expense)" },
+    amount: {
+      type: "number",
+      description: "Valor do gasto em reais (type=expense) ou o valor do orcamento mensal em reais (type=set_budget).",
+    },
     category: {
       type: "string",
       description:
-        "Categoria do gasto (type=expense), a nova categoria desejada (type=correct_category), ou o filtro de categoria (type=expense_report, opcional, so se o usuario perguntar sobre uma categoria especifica). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
+        "Categoria do gasto (type=expense), a nova categoria desejada (type=correct_category), o filtro de categoria (type=expense_report, opcional), ou a categoria do orcamento (type=set_budget, type=remove_budget). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
     },
     payment_method: {
       type: "string",

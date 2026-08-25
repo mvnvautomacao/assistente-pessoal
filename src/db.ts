@@ -61,6 +61,17 @@ db.exec(`
     report_day_of_week INTEGER
   );
 
+  -- orcamento mensal por usuario+categoria; alerta quando o gasto do mes na
+  -- categoria bate 80%/100% desse valor
+  CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    category_id INTEGER NOT NULL REFERENCES categories(id),
+    monthly_limit REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(from_number, category_id)
+  );
+
   -- fila por numero: enquanto houver pendencia mais antiga, a proxima mensagem
   -- de texto/audio desse numero e tratada como resposta da categoria, nao pedido novo
   CREATE TABLE IF NOT EXISTS pending_categorizations (

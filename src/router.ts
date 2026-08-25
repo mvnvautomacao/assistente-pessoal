@@ -5,6 +5,7 @@ import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcom
 import { appendExpense } from "./google/sheets";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
+import { setBudget, removeBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { logActivity } from "./activity/service";
 import {
   findCategoryByName,
@@ -23,6 +24,7 @@ import {
   getDefaultPaymentMethod,
   setDefaultPaymentMethod,
   setReportDayOfWeek,
+  getExpenseSummaryBetween,
   PendingCategorization,
 } from "./expenses/service";
 import type { calendar_v3 } from "googleapis";
@@ -144,7 +146,8 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       "expense",
       `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado manualmente)`
     );
-    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)}${paymentSuffix} registrado.`);
+    const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
+    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)}${paymentSuffix} registrado.${budgetAlert}`);
 
     // se tinha mais gastos esperando categoria, pergunta o proximo da fila
     const next = getNextPendingCategorization(from);
@@ -159,27 +162,31 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   switch (interpretation.type) {
     case "expense": {
-      const category = findCategoryByName(interpretation.category) ?? findCategoryByKeyword(interpretation.category, interpretation.description);
+      // a IA nem sempre preenche descricao/data em mensagens bem curtas ("gastei 60 no mercado")
+      const description = interpretation.description?.trim() || interpretation.category;
+      const date = interpretation.date || new Date().toISOString();
+      const category = findCategoryByName(interpretation.category) ?? findCategoryByKeyword(interpretation.category, description);
 
       if (category) {
         const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
         insertExpense({
           fromNumber: from,
           amount: interpretation.amount,
-          description: interpretation.description,
+          description,
           categoryId: category.id,
           paymentMethodId: paymentMethod?.id ?? null,
-          date: interpretation.date,
+          date,
         });
         await appendExpense({
-          date: interpretation.date,
+          date,
           category: category.name,
-          description: interpretation.description,
+          description,
           amount: interpretation.amount,
         });
         const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${interpretation.description}`);
-        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix}`);
+        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${description}`);
+        const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
+        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix}${budgetAlert}`);
       } else {
         // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
         // sai quando chega a vez dele (ver resolvePendingCategorization)
@@ -187,13 +194,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         addPendingCategorization({
           from_number: from,
           amount: interpretation.amount,
-          description: interpretation.description,
-          date: interpretation.date,
+          description,
+          date,
           suggested_category: interpretation.category ?? null,
           suggested_payment_method: interpretation.payment_method ?? null,
         });
-        logActivity(from, "expense", `pendente de categoria: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
-        if (!alreadyWaiting) await askForCategory(from, interpretation.amount, interpretation.description);
+        logActivity(from, "expense", `pendente de categoria: R$${interpretation.amount.toFixed(2)} — ${description}`);
+        if (!alreadyWaiting) await askForCategory(from, interpretation.amount, description);
       }
       break;
     }
@@ -298,6 +305,43 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         from,
         `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${interpretation.day_of_week} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
       );
+      break;
+    }
+    case "set_budget": {
+      const category = getOrCreateCategory(interpretation.category);
+      setBudget(from, category.id, interpretation.amount);
+      logActivity(from, "set_budget", `orcamento de ${category.name} definido em R$${interpretation.amount.toFixed(2)}/mes`);
+      await sendText(
+        from,
+        `✅ Orçamento de "${category.name}" definido em R$${interpretation.amount.toFixed(2)} por mês. Te aviso quando chegar perto ou passar disso.`
+      );
+      break;
+    }
+    case "remove_budget": {
+      const category = findCategoryByName(interpretation.category) ?? findCategoryMentionedIn(interpretation.category);
+      const removed = category ? removeBudget(from, category.id) : false;
+      logActivity(from, "remove_budget", removed ? `orcamento de ${category!.name} removido` : `nenhum orcamento encontrado para "${interpretation.category}"`);
+      await sendText(
+        from,
+        removed
+          ? `✅ Orçamento de "${category!.name}" removido.`
+          : `Não achei orçamento definido pra "${interpretation.category}".`
+      );
+      break;
+    }
+    case "list_budgets": {
+      const budgets = listBudgets(from);
+      if (!budgets.length) {
+        await sendText(from, "Você ainda não tem nenhum orçamento definido. Pode dizer algo como \"me avisa se eu passar de R$500 em Lazer\".");
+        break;
+      }
+      const range = currentMonthRange();
+      const lines = budgets.map((b) => {
+        const spent = getExpenseSummaryBetween(range.start, range.end, from, b.category_id).total;
+        return `• ${b.category_name}: R$${spent.toFixed(2)} de R$${b.monthly_limit.toFixed(2)}`;
+      });
+      logActivity(from, "list_budgets", `${budgets.length} orcamento(s)`);
+      await sendText(from, `📋 Seus orçamentos (mês atual):\n\n${lines.join("\n")}`);
       break;
     }
     default: {
