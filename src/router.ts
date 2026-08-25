@@ -35,28 +35,32 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
   const base64Media = data.message?.base64 ?? data.base64;
 
-  let interpretation: Interpretation;
+  let interpretations: Interpretation[];
 
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
     const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
-    interpretation = await interpretText(text);
+    interpretations = await interpretText(text);
   } else if (data.messageType === "audioMessage" && base64Media) {
     const text = await transcribeAudio(Buffer.from(base64Media, "base64"));
-    interpretation = await interpretText(text);
+    interpretations = await interpretText(text);
   } else if (data.messageType === "imageMessage" && base64Media) {
     const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
-    interpretation = await interpretReceiptImage(base64Media, mimeType);
+    interpretations = await interpretReceiptImage(base64Media, mimeType);
   } else {
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;
   }
 
-  try {
-    await handleInterpretation(from, interpretation);
-  } catch (err) {
-    console.error("Erro ao processar interpretacao:", err);
-    logActivity(from, "error", err instanceof Error ? err.message : String(err));
-    await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+  // Uma mensagem pode conter varios pedidos (ex: "marca dentista amanha e reuniao sexta");
+  // processa cada acao separadamente, uma falha nao impede as outras.
+  for (const interpretation of interpretations) {
+    try {
+      await handleInterpretation(from, interpretation);
+    } catch (err) {
+      console.error("Erro ao processar interpretacao:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+    }
   }
 }
 
