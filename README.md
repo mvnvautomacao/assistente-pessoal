@@ -2,17 +2,19 @@
 
 Bot de WhatsApp que:
 - Recebe texto, áudio e foto de comprovante
-- Registra gastos numa planilha do Google Sheets
-- Cria eventos no Google Calendar
+- Registra e categoriza gastos automaticamente (com aprendizado e alerta de orçamento), isolado por número
+- Cria e cancela eventos no Google Calendar
 - Cria lembretes que o próprio bot te manda de volta no WhatsApp, na hora certa
+- Manda relatório de gastos automático (semanal/mensal) e sob demanda
+- Painel visual dos gastos em `/dashboard`
 
 ## Como funciona (visão geral)
 
 1. Você manda uma mensagem no WhatsApp pro número do bot.
 2. O **Evolution API** (nossa própria conexão com o WhatsApp, autohospedada) entrega essa mensagem pro nosso servidor via **webhook**.
 3. Se for áudio, transcrevemos (Groq/Whisper). Se for foto, tratamos como comprovante.
-4. O texto (ou a imagem) vai pra Claude (Anthropic), que decide: é um gasto, um evento ou um lembrete — e extrai os dados.
-5. Dependendo do tipo, gravamos na planilha, criamos o evento no Calendar, ou agendamos o lembrete.
+4. O texto (ou a imagem) vai pra Claude (Anthropic), que decide o que é (gasto, evento, lembrete, etc.) e extrai os dados.
+5. Tudo fica guardado num banco SQLite local, isolado por número de quem mandou a mensagem — um número nunca vê nem herda categorias/dados de outro.
 6. O bot responde confirmando no WhatsApp.
 
 Usamos o [Evolution API](https://github.com/EvolutionAPI/evolution-api) em vez da API oficial da Meta: conecta como o WhatsApp Web (escaneando um QR code), sem precisar de aprovação de conta comercial. Roda em Docker, local pra testes e no Coolify em produção.
@@ -35,13 +37,12 @@ npm run evolution:setup
 
 Um QR code vai aparecer no terminal. Abra o WhatsApp no celular → **Aparelhos conectados** → **Conectar um aparelho** → escaneie. Pronto, a instância fica conectada.
 
-### 2. Conta no Google Cloud (Calendar + Sheets)
+### 2. Conta no Google Cloud (Calendar)
 
 1. Crie um projeto em https://console.cloud.google.com
-2. Ative as APIs: **Google Calendar API** e **Google Sheets API**.
+2. Ative a API: **Google Calendar API**.
 3. Em "Tela de consentimento OAuth", configure como app "Externo" e adicione seu próprio e-mail como usuário de teste.
 4. Em "Credenciais" → criar credencial → **ID do cliente OAuth** → tipo "App para computador". Anote `Client ID` e `Client Secret`.
-5. Crie uma planilha nova no Google Sheets pra guardar os gastos (colunas: Data, Categoria, Descrição, Valor) e copie o ID dela (a parte da URL entre `/d/` e `/edit`).
 
 ### 3. Contas de IA
 
@@ -153,7 +154,9 @@ Como o deploy é 100% baseado em Dockerfile/docker-compose + git, migrar de serv
 src/
   whatsapp/   envio e recebimento de mensagens (Evolution API)
   ai/         transcrição de áudio + interpretação das mensagens (Anthropic/Groq)
-  google/     Google Calendar e Google Sheets
+  google/     Google Calendar
+  expenses/   gastos, categorias, formas de pagamento, orcamentos e relatorios (tudo isolado por numero)
+  dashboard.ts painel visual dos gastos (`/dashboard?phone=<numero>`)
   reminders/  armazenamento e disparo dos lembretes agendados
   router.ts   decide o que fazer com cada mensagem recebida
   index.ts    ponto de entrada (servidor + scheduler)
