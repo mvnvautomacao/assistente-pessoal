@@ -53,10 +53,12 @@ db.exec(`
     name TEXT NOT NULL UNIQUE
   );
 
-  -- forma de pagamento padrao de cada numero, pra nao precisar informar toda vez
+  -- forma de pagamento padrao e dia do relatorio semanal de cada numero.
+  -- report_day_of_week: 0=domingo .. 6=sabado (igual Date.getDay()). NULL = relatorio semanal desligado ate o usuario escolher um dia.
   CREATE TABLE IF NOT EXISTS user_settings (
     from_number TEXT PRIMARY KEY,
-    default_payment_method_id INTEGER REFERENCES payment_methods(id)
+    default_payment_method_id INTEGER REFERENCES payment_methods(id),
+    report_day_of_week INTEGER
   );
 
   -- fila por numero: enquanto houver pendencia mais antiga, a proxima mensagem
@@ -101,6 +103,12 @@ if (!hasOldSchema && !pendingColumns.some((c) => c.name === "suggested_payment_m
 const expenseColumns = db.prepare(`PRAGMA table_info(expenses)`).all() as { name: string }[];
 if (!expenseColumns.some((c) => c.name === "payment_method_id")) {
   db.exec(`ALTER TABLE expenses ADD COLUMN payment_method_id INTEGER REFERENCES payment_methods(id)`);
+}
+
+// user_settings existia antes da coluna report_day_of_week ser adicionada.
+const userSettingsColumns = db.prepare(`PRAGMA table_info(user_settings)`).all() as { name: string }[];
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "report_day_of_week")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN report_day_of_week INTEGER`);
 }
 
 const DEFAULT_PAYMENT_METHODS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito"];

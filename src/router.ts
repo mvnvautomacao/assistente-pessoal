@@ -4,7 +4,7 @@ import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interp
 import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
 import { appendExpense } from "./google/sheets";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
-import { currentWeekRange, currentMonthRange, buildExpenseReportText } from "./expenses/reportText";
+import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
 import { logActivity } from "./activity/service";
 import {
   findCategoryByName,
@@ -22,6 +22,7 @@ import {
   getOrCreatePaymentMethod,
   getDefaultPaymentMethod,
   setDefaultPaymentMethod,
+  setReportDayOfWeek,
   PendingCategorization,
 } from "./expenses/service";
 import type { calendar_v3 } from "googleapis";
@@ -264,10 +265,39 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "expense_report": {
-      const range = interpretation.period === "week" ? currentWeekRange() : currentMonthRange();
-      const text = buildExpenseReportText(range, { compare: true });
-      logActivity(from, "expense_report", range.label);
+      const range = interpretation.days
+        ? lastNDaysRange(interpretation.days)
+        : interpretation.period === "week"
+          ? currentWeekRange()
+          : currentMonthRange();
+
+      const category = interpretation.category
+        ? findCategoryByName(interpretation.category) ?? findCategoryMentionedIn(interpretation.category)
+        : null;
+
+      const text = buildExpenseReportText(range, {
+        compare: true,
+        fromNumber: from,
+        categoryId: category?.id,
+        categoryName: category?.name,
+      });
+      logActivity(from, "expense_report", `${range.label}${category ? ` (${category.name})` : ""}`);
       await sendText(from, text);
+      break;
+    }
+    case "set_report_day": {
+      const dayMap: Record<string, number> = { domingo: 0, segunda: 1, terca: 2, quarta: 3, quinta: 4, sexta: 5, sabado: 6 };
+      const dayNumber = dayMap[interpretation.day_of_week];
+      if (dayNumber === undefined) {
+        await sendText(from, "Não entendi o dia. Pode ser: domingo, segunda, terça, quarta, quinta, sexta ou sábado.");
+        break;
+      }
+      setReportDayOfWeek(from, dayNumber);
+      logActivity(from, "set_report_day", `relatorio semanal agora chega toda(o) ${interpretation.day_of_week}`);
+      await sendText(
+        from,
+        `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${interpretation.day_of_week} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
+      );
       break;
     }
     default: {

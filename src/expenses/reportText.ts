@@ -43,6 +43,16 @@ export function previousMonthRange(): DateRange {
   return { start: toDateStr(start), end: toDateStr(end), label };
 }
 
+// "ultimos N dias", incluindo hoje
+export function lastNDaysRange(days: number): DateRange {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  end.setDate(end.getDate() + 1);
+  const start = new Date(end);
+  start.setDate(start.getDate() - days);
+  return { start: toDateStr(start), end: toDateStr(end), label: `últimos ${days} dias` };
+}
+
 // janela do mesmo tamanho, imediatamente anterior a [start, end) — pra comparar "subiu/desceu X%"
 function precedingRangeOfSameLength(start: string, end: string): DateRange {
   const startDate = new Date(start);
@@ -64,20 +74,37 @@ function comparisonLine(current: number, previous: number): string {
   return `\n${arrow} ${Math.abs(change).toFixed(0)}% em relação ao período anterior (${formatMoney(previous)})`;
 }
 
-export function buildExpenseReportText(range: DateRange, options: { compare?: boolean } = {}): string {
-  const summary = getExpenseSummaryBetween(range.start, range.end);
-  if (summary.count === 0) {
-    return `💰 Gastos — ${range.label}\n\nNenhum gasto registrado nesse período.`;
-  }
+export interface ExpenseReportOptions {
+  compare?: boolean;
+  fromNumber?: string;
+  categoryId?: number;
+  categoryName?: string;
+}
 
-  const categoryLines = summary.categoryTotals.map((c) => `• ${c.name}: ${formatMoney(c.total)}`).join("\n");
+export function buildExpenseReportText(range: DateRange, options: ExpenseReportOptions = {}): string {
+  const summary = getExpenseSummaryBetween(range.start, range.end, options.fromNumber, options.categoryId);
+  const title = options.categoryName ? `💰 ${options.categoryName} — ${range.label}` : `💰 Gastos — ${range.label}`;
+
+  if (summary.count === 0) {
+    return `${title}\n\nNenhum gasto registrado nesse período.`;
+  }
 
   let comparison = "";
   if (options.compare) {
     const preceding = precedingRangeOfSameLength(range.start, range.end);
-    const previousSummary: ExpenseSummary = getExpenseSummaryBetween(preceding.start, preceding.end);
+    const previousSummary: ExpenseSummary = getExpenseSummaryBetween(
+      preceding.start,
+      preceding.end,
+      options.fromNumber,
+      options.categoryId
+    );
     comparison = comparisonLine(summary.total, previousSummary.total);
   }
 
-  return `💰 Gastos — ${range.label}\n\nTotal: ${formatMoney(summary.total)} em ${summary.count} gasto(s)${comparison}\n\n${categoryLines}`;
+  // pra uma categoria especifica ja da pra ver tudo no total, nao precisa repetir a quebra
+  const categoryLines = options.categoryId
+    ? ""
+    : `\n\n${summary.categoryTotals.map((c) => `• ${c.name}: ${formatMoney(c.total)}`).join("\n")}`;
+
+  return `${title}\n\nTotal: ${formatMoney(summary.total)} em ${summary.count} gasto(s)${comparison}${categoryLines}`;
 }

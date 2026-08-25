@@ -108,6 +108,26 @@ export function setDefaultPaymentMethod(fromNumber: string, paymentMethodId: num
   ).run(fromNumber, paymentMethodId);
 }
 
+// 0=domingo .. 6=sabado, igual Date.getDay(). Enquanto nao for definido, o relatorio
+// semanal automatico fica desligado pra esse numero (selecao e obrigatoria).
+export function setReportDayOfWeek(fromNumber: string, dayOfWeek: number) {
+  db.prepare(
+    `INSERT INTO user_settings (from_number, report_day_of_week) VALUES (?, ?)
+     ON CONFLICT(from_number) DO UPDATE SET report_day_of_week = excluded.report_day_of_week`
+  ).run(fromNumber, dayOfWeek);
+}
+
+export interface ReportSubscriber {
+  from_number: string;
+  report_day_of_week: number;
+}
+
+export function getReportSubscribers(): ReportSubscriber[] {
+  return db
+    .prepare(`SELECT from_number, report_day_of_week FROM user_settings WHERE report_day_of_week IS NOT NULL`)
+    .all() as unknown as ReportSubscriber[];
+}
+
 export function learnKeyword(keyword: string, categoryId: number) {
   const clean = keyword.trim();
   if (!clean) return;
@@ -277,16 +297,32 @@ export interface ExpenseSummary {
   categoryTotals: NamedTotal[];
 }
 
-// start inclusivo, end exclusivo, ambos "YYYY-MM-DD"
-export function getExpenseSummaryBetween(start: string, end: string): ExpenseSummary {
+// start inclusivo, end exclusivo, ambos "YYYY-MM-DD". fromNumber/categoryId sao filtros opcionais.
+export function getExpenseSummaryBetween(
+  start: string,
+  end: string,
+  fromNumber?: string,
+  categoryId?: number
+): ExpenseSummary {
+  const conditions = ["e.date >= ?", "e.date < ?"];
+  const params: (string | number)[] = [start, end];
+  if (fromNumber) {
+    conditions.push("e.from_number = ?");
+    params.push(fromNumber);
+  }
+  if (categoryId) {
+    conditions.push("e.category_id = ?");
+    params.push(categoryId);
+  }
+
   const rows = db
     .prepare(
       `SELECT e.amount, COALESCE(c.name, 'Sem categoria') AS category
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
-       WHERE e.date >= ? AND e.date < ?`
+       WHERE ${conditions.join(" AND ")}`
     )
-    .all(start, end) as unknown as { amount: number; category: string }[];
+    .all(...params) as unknown as { amount: number; category: string }[];
 
   const total = rows.reduce((sum, r) => sum + r.amount, 0);
   const byCategory = new Map<string, number>();
