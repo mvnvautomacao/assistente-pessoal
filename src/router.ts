@@ -1,16 +1,19 @@
 import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, Interpretation } from "./ai/interpret";
-import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent } from "./google/calendar";
+import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
 import { appendExpense } from "./google/sheets";
-import { createReminder } from "./reminders/service";
+import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { logActivity } from "./activity/service";
 import type { calendar_v3 } from "googleapis";
 
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+}
+
 function formatEventStart(start?: calendar_v3.Schema$EventDateTime): string {
   const value = start?.dateTime ?? start?.date;
-  if (!value) return "data desconhecida";
-  return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  return value ? formatDateTime(value) : "data desconhecida";
 }
 
 // Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
@@ -99,6 +102,21 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       createReminder(from, interpretation.message, interpretation.due_at);
       logActivity(from, "reminder", `${interpretation.message} — ${interpretation.due_at}`);
       await sendText(from, `⏰ Lembrete criado: "${interpretation.message}"`);
+      break;
+    }
+    case "report": {
+      const days = interpretation.days ?? 7;
+      const [events, reminders] = await Promise.all([listUpcomingEvents(days), Promise.resolve(getRemindersWithinDays(days))]);
+
+      const eventsText = events.length
+        ? events.map((e) => `• ${e.summary} — ${formatEventStart(e.start)}`).join("\n")
+        : "Nenhum evento agendado.";
+      const remindersText = reminders.length
+        ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n")
+        : "Nenhum lembrete agendado.";
+
+      logActivity(from, "report", `proximos ${days} dias: ${events.length} eventos, ${reminders.length} lembretes`);
+      await sendText(from, `📊 Próximos ${days} dias\n\n📅 Agenda:\n${eventsText}\n\n⏰ Lembretes:\n${remindersText}`);
       break;
     }
     default: {

@@ -34,6 +34,19 @@ export async function findUpcomingEvents(query: string) {
   return data.items ?? [];
 }
 
+export async function listUpcomingEvents(days: number) {
+  const calendar = google.calendar({ version: "v3", auth: getOAuthClient() });
+  const { data } = await calendar.events.list({
+    calendarId: config.google.calendarId,
+    timeMin: new Date().toISOString(),
+    timeMax: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 50,
+  });
+  return data.items ?? [];
+}
+
 export async function deleteCalendarEvent(eventId: string) {
   const calendar = google.calendar({ version: "v3", auth: getOAuthClient() });
   await calendar.events.delete({ calendarId: config.google.calendarId, eventId });

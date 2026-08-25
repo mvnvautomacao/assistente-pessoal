@@ -15,6 +15,7 @@ const TYPE_LABEL: Record<string, string> = {
   expense: "💰 Gasto",
   event: "📅 Evento",
   delete_event: "🗑️ Evento cancelado",
+  report: "📊 Relatório",
   reminder: "⏰ Lembrete",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
