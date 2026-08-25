@@ -4,6 +4,7 @@ import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interp
 import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
 import { appendExpense } from "./google/sheets";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
+import { currentWeekRange, currentMonthRange, buildExpenseReportText } from "./expenses/reportText";
 import { logActivity } from "./activity/service";
 import {
   findCategoryByName,
@@ -260,6 +261,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
 
       logActivity(from, "report", `proximos ${days} dias: ${events.length} eventos, ${reminders.length} lembretes`);
       await sendText(from, `📊 Próximos ${days} dias\n\n📅 Agenda:\n${eventsText}\n\n⏰ Lembretes:\n${remindersText}`);
+      break;
+    }
+    case "expense_report": {
+      const range = interpretation.period === "week" ? currentWeekRange() : currentMonthRange();
+      const text = buildExpenseReportText(range, { compare: true });
+      logActivity(from, "expense_report", range.label);
+      await sendText(from, text);
       break;
     }
     default: {

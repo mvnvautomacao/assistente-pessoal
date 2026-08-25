@@ -270,3 +270,30 @@ export function getAvailableMonths(): string[] {
   }[];
   return rows.map((r) => r.ym);
 }
+
+export interface ExpenseSummary {
+  total: number;
+  count: number;
+  categoryTotals: NamedTotal[];
+}
+
+// start inclusivo, end exclusivo, ambos "YYYY-MM-DD"
+export function getExpenseSummaryBetween(start: string, end: string): ExpenseSummary {
+  const rows = db
+    .prepare(
+      `SELECT e.amount, COALESCE(c.name, 'Sem categoria') AS category
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       WHERE e.date >= ? AND e.date < ?`
+    )
+    .all(start, end) as unknown as { amount: number; category: string }[];
+
+  const total = rows.reduce((sum, r) => sum + r.amount, 0);
+  const byCategory = new Map<string, number>();
+  for (const r of rows) byCategory.set(r.category, (byCategory.get(r.category) ?? 0) + r.amount);
+  const categoryTotals = [...byCategory.entries()]
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total);
+
+  return { total, count: rows.length, categoryTotals };
+}

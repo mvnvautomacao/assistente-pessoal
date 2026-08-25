@@ -10,6 +10,7 @@ export type Interpretation =
   | { type: "delete_event"; query: string }
   | { type: "reminder"; message: string; due_at: string }
   | { type: "report"; days: number }
+  | { type: "expense_report"; period: "week" | "month" }
   | { type: "correct_category"; category: string; query?: string }
   | { type: "set_default_payment"; payment_method: string }
   | { type: "unknown"; description?: string };
@@ -19,9 +20,9 @@ const ACTION_SCHEMA = {
   properties: {
     type: {
       type: "string",
-      enum: ["expense", "event", "reminder", "delete_event", "report", "correct_category", "set_default_payment", "unknown"],
+      enum: ["expense", "event", "reminder", "delete_event", "report", "expense_report", "correct_category", "set_default_payment", "unknown"],
       description:
-        "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). unknown = nao deu pra entender.",
+        "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo (ex: 'quanto gastei essa semana', 'resumo dos meus gastos do mes'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). unknown = nao deu pra entender.",
     },
     amount: { type: "number", description: "Valor do gasto em reais (so para type=expense)" },
     category: {
@@ -47,6 +48,11 @@ const ACTION_SCHEMA = {
     message: { type: "string", description: "Texto do lembrete (so para type=reminder)" },
     due_at: { type: "string", description: "Data/hora ISO 8601 em que o lembrete deve ser enviado (so para type=reminder)" },
     days: { type: "number", description: "Quantidade de dias a frente pro relatorio (so para type=report). Se o usuario nao especificar, use 7." },
+    period: {
+      type: "string",
+      enum: ["week", "month"],
+      description: "Periodo do resumo de gastos (so para type=expense_report): 'week' pros ultimos 7 dias, 'month' pro mes atual. Se nao especificar, use 'month'.",
+    },
   },
   required: ["type"],
 };

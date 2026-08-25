@@ -18,6 +18,7 @@ const TYPE_LABEL: Record<string, string> = {
   report: "📊 Relatório",
   correct_category: "✏️ Categoria corrigida",
   set_default_payment: "💳 Pagamento padrão",
+  expense_report: "💰 Resumo de gastos",
   reminder: "⏰ Lembrete",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
