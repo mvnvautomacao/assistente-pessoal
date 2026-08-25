@@ -13,20 +13,51 @@ function normalize(text: string): string {
     .toLowerCase();
 }
 
-export function listCategories(): Category[] {
-  return db.prepare(`SELECT id, name FROM categories ORDER BY name`).all() as unknown as Category[];
+const DEFAULT_CATEGORIES = [
+  "Mercado",
+  "Veículo",
+  "Transporte",
+  "Saúde",
+  "Moradia",
+  "Lazer",
+  "Compras",
+  "Educação",
+  "Assinaturas",
+  "Outros",
+];
+
+const DEFAULT_PAYMENT_METHODS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito"];
+
+// Chamado uma vez por numero (na primeira mensagem dele) pra ele comecar com as
+// categorias/formas de pagamento padrao, sem herdar nada de outro numero.
+export function ensureUserSeeded(fromNumber: string) {
+  const categoryCount = db.prepare(`SELECT COUNT(*) AS n FROM categories WHERE from_number = ?`).get(fromNumber) as { n: number };
+  if (categoryCount.n === 0) {
+    const insert = db.prepare(`INSERT INTO categories (from_number, name) VALUES (?, ?)`);
+    for (const name of DEFAULT_CATEGORIES) insert.run(fromNumber, name);
+  }
+
+  const paymentCount = db.prepare(`SELECT COUNT(*) AS n FROM payment_methods WHERE from_number = ?`).get(fromNumber) as { n: number };
+  if (paymentCount.n === 0) {
+    const insert = db.prepare(`INSERT INTO payment_methods (from_number, name) VALUES (?, ?)`);
+    for (const name of DEFAULT_PAYMENT_METHODS) insert.run(fromNumber, name);
+  }
 }
 
-export function findCategoryByName(name: string): Category | null {
+export function listCategories(fromNumber: string): Category[] {
+  return db.prepare(`SELECT id, name FROM categories WHERE from_number = ? ORDER BY name`).all(fromNumber) as unknown as Category[];
+}
+
+export function findCategoryByName(fromNumber: string, name: string): Category | null {
   const target = normalize(name);
-  const category = listCategories().find((c) => normalize(c.name) === target);
+  const category = listCategories(fromNumber).find((c) => normalize(c.name) === target);
   return category ?? null;
 }
 
 // Verifica se algum texto (categoria sugerida pela IA, descricao do gasto) contem
-// uma palavra-chave ja aprendida de uma categorizacao anterior.
-export function findCategoryByKeyword(...texts: string[]): Category | null {
-  const keywords = db.prepare(`SELECT keyword, category_id FROM category_keywords`).all() as unknown as {
+// uma palavra-chave ja aprendida de uma categorizacao anterior desse mesmo numero.
+export function findCategoryByKeyword(fromNumber: string, ...texts: string[]): Category | null {
+  const keywords = db.prepare(`SELECT keyword, category_id FROM category_keywords WHERE from_number = ?`).all(fromNumber) as unknown as {
     keyword: string;
     category_id: number;
   }[];
@@ -45,21 +76,21 @@ export function findCategoryByKeyword(...texts: string[]): Category | null {
 }
 
 // Pra respostas em linguagem natural tipo "acho que e categoria de lazer":
-// procura se algum nome de categoria conhecida aparece dentro do texto.
-export function findCategoryMentionedIn(text: string): Category | null {
+// procura se algum nome de categoria conhecida (desse numero) aparece dentro do texto.
+export function findCategoryMentionedIn(fromNumber: string, text: string): Category | null {
   const haystack = normalize(text);
-  const categories = listCategories();
+  const categories = listCategories(fromNumber);
   const mentioned = categories.filter((c) => haystack.includes(normalize(c.name)));
   // se mais de uma bater (raro), melhor nao adivinhar
   return mentioned.length === 1 ? mentioned[0] : null;
 }
 
-export function getOrCreateCategory(name: string): Category {
-  const existing = findCategoryByName(name);
+export function getOrCreateCategory(fromNumber: string, name: string): Category {
+  const existing = findCategoryByName(fromNumber, name);
   if (existing) return existing;
   const cleanName = name.trim();
-  db.prepare(`INSERT INTO categories (name) VALUES (?)`).run(cleanName);
-  return findCategoryByName(cleanName)!;
+  db.prepare(`INSERT INTO categories (from_number, name) VALUES (?, ?)`).run(fromNumber, cleanName);
+  return findCategoryByName(fromNumber, cleanName)!;
 }
 
 export interface PaymentMethod {
@@ -67,28 +98,28 @@ export interface PaymentMethod {
   name: string;
 }
 
-export function listPaymentMethods(): PaymentMethod[] {
-  return db.prepare(`SELECT id, name FROM payment_methods ORDER BY name`).all() as unknown as PaymentMethod[];
+export function listPaymentMethods(fromNumber: string): PaymentMethod[] {
+  return db.prepare(`SELECT id, name FROM payment_methods WHERE from_number = ? ORDER BY name`).all(fromNumber) as unknown as PaymentMethod[];
 }
 
-export function findPaymentMethodByName(name: string): PaymentMethod | null {
+export function findPaymentMethodByName(fromNumber: string, name: string): PaymentMethod | null {
   const target = normalize(name);
-  const method = listPaymentMethods().find((m) => normalize(m.name) === target);
+  const method = listPaymentMethods(fromNumber).find((m) => normalize(m.name) === target);
   return method ?? null;
 }
 
-export function findPaymentMethodMentionedIn(text: string): PaymentMethod | null {
+export function findPaymentMethodMentionedIn(fromNumber: string, text: string): PaymentMethod | null {
   const haystack = normalize(text);
-  const mentioned = listPaymentMethods().filter((m) => haystack.includes(normalize(m.name)));
+  const mentioned = listPaymentMethods(fromNumber).filter((m) => haystack.includes(normalize(m.name)));
   return mentioned.length === 1 ? mentioned[0] : null;
 }
 
-export function getOrCreatePaymentMethod(name: string): PaymentMethod {
-  const existing = findPaymentMethodByName(name);
+export function getOrCreatePaymentMethod(fromNumber: string, name: string): PaymentMethod {
+  const existing = findPaymentMethodByName(fromNumber, name);
   if (existing) return existing;
   const cleanName = name.trim();
-  db.prepare(`INSERT INTO payment_methods (name) VALUES (?)`).run(cleanName);
-  return findPaymentMethodByName(cleanName)!;
+  db.prepare(`INSERT INTO payment_methods (from_number, name) VALUES (?, ?)`).run(fromNumber, cleanName);
+  return findPaymentMethodByName(fromNumber, cleanName)!;
 }
 
 export function getDefaultPaymentMethod(fromNumber: string): PaymentMethod | null {
@@ -128,10 +159,10 @@ export function getReportSubscribers(): ReportSubscriber[] {
     .all() as unknown as ReportSubscriber[];
 }
 
-export function learnKeyword(keyword: string, categoryId: number) {
+export function learnKeyword(fromNumber: string, keyword: string, categoryId: number) {
   const clean = keyword.trim();
   if (!clean) return;
-  db.prepare(`INSERT INTO category_keywords (keyword, category_id) VALUES (?, ?)`).run(clean, categoryId);
+  db.prepare(`INSERT INTO category_keywords (from_number, keyword, category_id) VALUES (?, ?, ?)`).run(fromNumber, clean, categoryId);
 }
 
 export function insertExpense(params: {
@@ -239,17 +270,17 @@ export interface ExpenseListItem {
   payment_method: string | null;
 }
 
-export function getExpensesForMonth(yearMonth: string): ExpenseListItem[] {
+export function getExpensesForMonth(fromNumber: string, yearMonth: string): ExpenseListItem[] {
   return db
     .prepare(
       `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
-       WHERE strftime('%Y-%m', e.date) = ?
+       WHERE e.from_number = ? AND strftime('%Y-%m', e.date) = ?
        ORDER BY e.date DESC, e.id DESC`
     )
-    .all(yearMonth) as unknown as ExpenseListItem[];
+    .all(fromNumber, yearMonth) as unknown as ExpenseListItem[];
 }
 
 export interface NamedTotal {
@@ -257,37 +288,37 @@ export interface NamedTotal {
   total: number;
 }
 
-export function getCategoryTotalsForMonth(yearMonth: string): NamedTotal[] {
+export function getCategoryTotalsForMonth(fromNumber: string, yearMonth: string): NamedTotal[] {
   return db
     .prepare(
       `SELECT COALESCE(c.name, 'Sem categoria') AS name, SUM(e.amount) AS total
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
-       WHERE strftime('%Y-%m', e.date) = ?
+       WHERE e.from_number = ? AND strftime('%Y-%m', e.date) = ?
        GROUP BY name
        ORDER BY total DESC`
     )
-    .all(yearMonth) as unknown as NamedTotal[];
+    .all(fromNumber, yearMonth) as unknown as NamedTotal[];
 }
 
-export function getPaymentMethodTotalsForMonth(yearMonth: string): NamedTotal[] {
+export function getPaymentMethodTotalsForMonth(fromNumber: string, yearMonth: string): NamedTotal[] {
   return db
     .prepare(
       `SELECT COALESCE(p.name, 'Não informado') AS name, SUM(e.amount) AS total
        FROM expenses e
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
-       WHERE strftime('%Y-%m', e.date) = ?
+       WHERE e.from_number = ? AND strftime('%Y-%m', e.date) = ?
        GROUP BY name
        ORDER BY total DESC`
     )
-    .all(yearMonth) as unknown as NamedTotal[];
+    .all(fromNumber, yearMonth) as unknown as NamedTotal[];
 }
 
-// meses que tem pelo menos 1 gasto, do mais recente pro mais antigo (pro seletor de mes)
-export function getAvailableMonths(): string[] {
-  const rows = db.prepare(`SELECT DISTINCT strftime('%Y-%m', date) AS ym FROM expenses ORDER BY ym DESC`).all() as unknown as {
-    ym: string;
-  }[];
+// meses que tem pelo menos 1 gasto desse numero, do mais recente pro mais antigo (pro seletor de mes)
+export function getAvailableMonths(fromNumber: string): string[] {
+  const rows = db
+    .prepare(`SELECT DISTINCT strftime('%Y-%m', date) AS ym FROM expenses WHERE from_number = ? ORDER BY ym DESC`)
+    .all(fromNumber) as unknown as { ym: string }[];
   return rows.map((r) => r.ym);
 }
 

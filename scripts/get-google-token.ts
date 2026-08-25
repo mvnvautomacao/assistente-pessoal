@@ -5,10 +5,7 @@ import type { AddressInfo } from "node:net";
 
 // Duplicado de src/google/auth.ts de proposito: este script roda antes do
 // resto do .env existir, entao nao pode depender de src/config.ts.
-const SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/spreadsheets",
-];
+const SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
 
 async function main() {
   const clientId = process.env.GOOGLE_CLIENT_ID;

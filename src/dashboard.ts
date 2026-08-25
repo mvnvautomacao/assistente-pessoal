@@ -48,13 +48,30 @@ function barList(items: { name: string; total: number }[]) {
 }
 
 dashboardRouter.get("/dashboard", (req, res) => {
-  const months = getAvailableMonths();
+  const phone = typeof req.query.phone === "string" ? req.query.phone.trim() : "";
+  if (!phone) {
+    res.send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"><title>Gastos</title>
+<style>body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;max-width:420px;margin:80px auto;padding:0 16px;color:#1f2937}
+input{width:100%;padding:10px;border-radius:8px;border:1px solid #e5e7eb;font-size:1rem;box-sizing:border-box}
+button{margin-top:12px;padding:10px 16px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:1rem;cursor:pointer}
+p.hint{color:#6b7280;font-size:0.85rem}</style></head>
+<body>
+<h1>Gastos</h1>
+<p>Digite o número de WhatsApp (o mesmo que manda mensagem pro bot) pra ver os gastos dele.</p>
+<form method="get"><input name="phone" placeholder="Ex: 5561999999999" autofocus><button type="submit">Ver gastos</button></form>
+<p class="hint">Isso não é um login de verdade — qualquer um com o link e o número certo acessa. Pra virar produto de vários clientes, essa parte precisa de autenticação real.</p>
+</body></html>`);
+    return;
+  }
+
+  const months = getAvailableMonths(phone);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const month = typeof req.query.month === "string" && req.query.month ? req.query.month : months[0] ?? currentMonth;
 
-  const expenses = getExpensesForMonth(month);
-  const categoryTotals = getCategoryTotalsForMonth(month).map((c) => ({ name: c.name, total: c.total }));
-  const paymentTotals = getPaymentMethodTotalsForMonth(month).map((p) => ({ name: p.name, total: p.total }));
+  const expenses = getExpensesForMonth(phone, month);
+  const categoryTotals = getCategoryTotalsForMonth(phone, month).map((c) => ({ name: c.name, total: c.total }));
+  const paymentTotals = getPaymentMethodTotalsForMonth(phone, month).map((p) => ({ name: p.name, total: p.total }));
   const monthTotal = expenses.reduce((sum, e) => sum + e.amount, 0);
   const topCategory = categoryTotals[0]?.name ?? "—";
 
@@ -154,11 +171,12 @@ dashboardRouter.get("/dashboard", (req, res) => {
   <header>
     <h1>${escapeHtml(monthLabel(month))}</h1>
     <div class="month-nav">
-      <a href="/dashboard?month=${shiftMonth(month, -1)}">‹</a>
+      <a href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, -1)}">‹</a>
       <form method="get" style="margin:0">
+        <input type="hidden" name="phone" value="${escapeHtml(phone)}">
         <select name="month" onchange="this.form.submit()">${monthOptions}</select>
       </form>
-      <a href="/dashboard?month=${shiftMonth(month, 1)}">›</a>
+      <a href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, 1)}">›</a>
     </div>
   </header>
 

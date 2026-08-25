@@ -106,12 +106,12 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
   },
 };
 
-function buildSystemPrompt() {
+function buildSystemPrompt(fromNumber: string) {
   const now = new Date().toISOString();
-  const categoryNames = listCategories()
+  const categoryNames = listCategories(fromNumber)
     .map((c) => c.name)
     .join(", ");
-  const paymentMethodNames = listPaymentMethods()
+  const paymentMethodNames = listPaymentMethods(fromNumber)
     .map((p) => p.name)
     .join(", ");
   return `Voce interpreta mensagens de WhatsApp de um assistente pessoal. Data/hora atual: ${now} (America/Sao_Paulo).
@@ -125,11 +125,11 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.`;
 }
 
-async function classify(content: Anthropic.MessageParam["content"]): Promise<Interpretation[]> {
+async function classify(fromNumber: string, content: Anthropic.MessageParam["content"]): Promise<Interpretation[]> {
   const response = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1536,
-    system: buildSystemPrompt(),
+    system: buildSystemPrompt(fromNumber),
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "tool", name: "record_actions" },
     messages: [{ role: "user", content }],
@@ -144,12 +144,12 @@ async function classify(content: Anthropic.MessageParam["content"]): Promise<Int
   return input.actions?.length ? input.actions : [{ type: "unknown", description: "Nenhuma acao identificada" }];
 }
 
-export async function interpretText(text: string): Promise<Interpretation[]> {
-  return classify(text);
+export async function interpretText(fromNumber: string, text: string): Promise<Interpretation[]> {
+  return classify(fromNumber, text);
 }
 
-export async function interpretReceiptImage(imageBase64: string, mediaType: string): Promise<Interpretation[]> {
-  return classify([
+export async function interpretReceiptImage(fromNumber: string, imageBase64: string, mediaType: string): Promise<Interpretation[]> {
+  return classify(fromNumber, [
     {
       type: "image",
       source: { type: "base64", media_type: mediaType as "image/jpeg", data: imageBase64 },

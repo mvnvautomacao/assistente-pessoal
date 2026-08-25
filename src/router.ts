@@ -2,12 +2,12 @@ import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
 import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
-import { appendExpense } from "./google/sheets";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { logActivity } from "./activity/service";
 import {
+  ensureUserSeeded,
   findCategoryByName,
   findCategoryByKeyword,
   findCategoryMentionedIn,
@@ -57,6 +57,10 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
   const base64Media = data.message?.base64 ?? data.base64;
 
+  // Cada numero tem categorias/formas de pagamento proprias, isoladas dos demais;
+  // na primeira mensagem desse numero, cria as categorias/formas padrao pra ele.
+  ensureUserSeeded(from);
+
   let text: string | undefined;
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
     text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
@@ -76,10 +80,10 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
   let interpretations: Interpretation[];
   if (text !== undefined) {
-    interpretations = await interpretText(text);
+    interpretations = await interpretText(from, text);
   } else if (data.messageType === "imageMessage" && base64Media) {
     const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
-    interpretations = await interpretReceiptImage(base64Media, mimeType);
+    interpretations = await interpretReceiptImage(from, base64Media, mimeType);
   } else {
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;
@@ -101,12 +105,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 // Se a mensagem mencionou a forma de pagamento, usa ela; senao cai pro padrao do
 // usuario (se tiver configurado); senao fica sem forma de pagamento definida.
 function resolvePaymentMethod(from: string, mentioned?: string | null) {
-  if (mentioned) return getOrCreatePaymentMethod(mentioned);
+  if (mentioned) return getOrCreatePaymentMethod(from, mentioned);
   return getDefaultPaymentMethod(from);
 }
 
 function askForCategory(from: string, amount: number, description: string) {
-  const categoryNames = listCategories()
+  const categoryNames = listCategories(from)
     .map((c) => c.name)
     .join(", ");
   return sendText(
@@ -121,9 +125,9 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     // frases mais longas passam pela IA pra extrair so o nome pretendido.
     const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
     const categoryName =
-      findCategoryMentionedIn(answerText)?.name ??
+      findCategoryMentionedIn(from, answerText)?.name ??
       (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
-    const category = getOrCreateCategory(categoryName);
+    const category = getOrCreateCategory(from, categoryName);
     const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
 
     insertExpense({
@@ -134,10 +138,9 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       paymentMethodId: paymentMethod?.id ?? null,
       date: pending.date,
     });
-    if (pending.suggested_category) learnKeyword(pending.suggested_category, category.id);
-    learnKeyword(pending.description, category.id);
+    if (pending.suggested_category) learnKeyword(from, pending.suggested_category, category.id);
+    learnKeyword(from, pending.description, category.id);
 
-    await appendExpense({ date: pending.date, category: category.name, description: pending.description, amount: pending.amount });
     clearPendingCategorization(pending.id);
 
     const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
@@ -165,7 +168,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       // a IA nem sempre preenche descricao/data em mensagens bem curtas ("gastei 60 no mercado")
       const description = interpretation.description?.trim() || interpretation.category;
       const date = interpretation.date || new Date().toISOString();
-      const category = findCategoryByName(interpretation.category) ?? findCategoryByKeyword(interpretation.category, description);
+      const category =
+        findCategoryByName(from, interpretation.category) ?? findCategoryByKeyword(from, interpretation.category, description);
 
       if (category) {
         const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
@@ -176,12 +180,6 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           categoryId: category.id,
           paymentMethodId: paymentMethod?.id ?? null,
           date,
-        });
-        await appendExpense({
-          date,
-          category: category.name,
-          description,
-          amount: interpretation.amount,
         });
         const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
         logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${description}`);
@@ -211,15 +209,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, `Não achei nenhum gasto recente${interpretation.query ? ` parecido com "${interpretation.query}"` : ""} pra corrigir.`);
         break;
       }
-      const category = getOrCreateCategory(interpretation.category);
+      const category = getOrCreateCategory(from, interpretation.category);
       updateExpenseCategory(expense.id, category.id);
-      learnKeyword(expense.description, category.id);
+      learnKeyword(from, expense.description, category.id);
       logActivity(from, "correct_category", `${expense.description} — R$${expense.amount.toFixed(2)} agora e "${category.name}"`);
       await sendText(from, `✏️ Categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) corrigida para "${category.name}"`);
       break;
     }
     case "set_default_payment": {
-      const paymentMethod = getOrCreatePaymentMethod(interpretation.payment_method);
+      const paymentMethod = getOrCreatePaymentMethod(from, interpretation.payment_method);
       setDefaultPaymentMethod(from, paymentMethod.id);
       logActivity(from, "set_default_payment", `forma de pagamento padrao agora e "${paymentMethod.name}"`);
       await sendText(from, `✅ Forma de pagamento padrão definida como "${paymentMethod.name}". Vou usar essa quando você não especificar outra.`);
@@ -279,7 +277,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           : currentMonthRange();
 
       const category = interpretation.category
-        ? findCategoryByName(interpretation.category) ?? findCategoryMentionedIn(interpretation.category)
+        ? findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category)
         : null;
 
       const text = buildExpenseReportText(range, {
@@ -308,7 +306,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "set_budget": {
-      const category = getOrCreateCategory(interpretation.category);
+      const category = getOrCreateCategory(from, interpretation.category);
       setBudget(from, category.id, interpretation.amount);
       logActivity(from, "set_budget", `orcamento de ${category.name} definido em R$${interpretation.amount.toFixed(2)}/mes`);
       await sendText(
@@ -318,7 +316,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "remove_budget": {
-      const category = findCategoryByName(interpretation.category) ?? findCategoryMentionedIn(interpretation.category);
+      const category = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
       const removed = category ? removeBudget(from, category.id) : false;
       logActivity(from, "remove_budget", removed ? `orcamento de ${category!.name} removido` : `nenhum orcamento encontrado para "${interpretation.category}"`);
       await sendText(

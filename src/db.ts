@@ -5,6 +5,9 @@ import { config } from "./config";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
+// migracoes de schema recriam tabelas (categories/payment_methods) que outras
+// tabelas referenciam; a integridade referencial e garantida pelo codigo, nao pelo SQLite.
+db.exec(`PRAGMA foreign_keys = OFF`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS reminders (
@@ -24,17 +27,27 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- categorias, formas de pagamento e as palavras-chave aprendidas sao isoladas
+  -- por numero: um numero nunca ve nem herda dados de outro numero.
   CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
+    from_number TEXT NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(from_number, name)
   );
 
-  -- palavras que, quando aparecem numa descricao de gasto, indicam uma categoria
-  -- (aprendidas a partir das correcoes/confirmacoes do usuario)
   CREATE TABLE IF NOT EXISTS category_keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
     keyword TEXT NOT NULL,
     category_id INTEGER NOT NULL REFERENCES categories(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS payment_methods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(from_number, name)
   );
 
   CREATE TABLE IF NOT EXISTS expenses (
@@ -46,11 +59,6 @@ db.exec(`
     payment_method_id INTEGER REFERENCES payment_methods(id),
     date TEXT NOT NULL,
     created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS payment_methods (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
   );
 
   -- forma de pagamento padrao e dia do relatorio semanal de cada numero.
@@ -122,29 +130,30 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "r
   db.exec(`ALTER TABLE user_settings ADD COLUMN report_day_of_week INTEGER`);
 }
 
-const DEFAULT_PAYMENT_METHODS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito"];
+// categories/payment_methods/category_keywords existiam como tabelas globais
+// (compartilhadas entre todos os numeros). Migra pra isolado por numero,
+// atribuindo os dados existentes ao numero principal (unico "dono" ate agora).
+function migrateGlobalTableToPerNumber(table: "categories" | "payment_methods") {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (columns.some((c) => c.name === "from_number")) return;
 
-const paymentMethodCount = db.prepare(`SELECT COUNT(*) AS n FROM payment_methods`).get() as { n: number };
-if (paymentMethodCount.n === 0) {
-  const insert = db.prepare(`INSERT INTO payment_methods (name) VALUES (?)`);
-  for (const name of DEFAULT_PAYMENT_METHODS) insert.run(name);
+  db.exec(`
+    CREATE TABLE ${table}_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_number TEXT NOT NULL,
+      name TEXT NOT NULL,
+      UNIQUE(from_number, name)
+    );
+  `);
+  db.prepare(`INSERT INTO ${table}_new (id, from_number, name) SELECT id, ?, name FROM ${table}`).run(config.myWhatsappNumber);
+  db.exec(`DROP TABLE ${table}`);
+  db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
 }
+migrateGlobalTableToPerNumber("categories");
+migrateGlobalTableToPerNumber("payment_methods");
 
-const DEFAULT_CATEGORIES = [
-  "Mercado",
-  "Veículo",
-  "Transporte",
-  "Saúde",
-  "Moradia",
-  "Lazer",
-  "Compras",
-  "Educação",
-  "Assinaturas",
-  "Outros",
-];
-
-const categoryCount = db.prepare(`SELECT COUNT(*) AS n FROM categories`).get() as { n: number };
-if (categoryCount.n === 0) {
-  const insert = db.prepare(`INSERT INTO categories (name) VALUES (?)`);
-  for (const name of DEFAULT_CATEGORIES) insert.run(name);
+const keywordColumns = db.prepare(`PRAGMA table_info(category_keywords)`).all() as { name: string }[];
+if (!keywordColumns.some((c) => c.name === "from_number")) {
+  db.exec(`ALTER TABLE category_keywords ADD COLUMN from_number TEXT`);
+  db.prepare(`UPDATE category_keywords SET from_number = ? WHERE from_number IS NULL`).run(config.myWhatsappNumber);
 }
