@@ -40,7 +40,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     return;
   }
 
-  await handleInterpretation(from, interpretation);
+  try {
+    await handleInterpretation(from, interpretation);
+  } catch (err) {
+    console.error("Erro ao processar interpretacao:", err);
+    await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+  }
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation) {

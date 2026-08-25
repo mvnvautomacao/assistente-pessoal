@@ -6,7 +6,7 @@ export function createReminder(toNumber: string, message: string, dueAt: string)
 
 export function getDueReminders() {
   return db
-    .prepare(`SELECT id, to_number, message FROM reminders WHERE sent = 0 AND due_at <= datetime('now')`)
+    .prepare(`SELECT id, to_number, message FROM reminders WHERE sent = 0 AND datetime(due_at) <= datetime('now')`)
     .all() as { id: number; to_number: string; message: string }[];
 }
 
