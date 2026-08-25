@@ -6,6 +6,7 @@ const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 export type Interpretation =
   | { type: "expense"; amount: number; category: string; description: string; date: string }
   | { type: "event"; title: string; start: string; end?: string; location?: string }
+  | { type: "delete_event"; query: string }
   | { type: "reminder"; message: string; due_at: string }
   | { type: "unknown"; description?: string };
 
@@ -17,9 +18,9 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
     properties: {
       type: {
         type: "string",
-        enum: ["expense", "event", "reminder", "unknown"],
+        enum: ["expense", "event", "reminder", "delete_event", "unknown"],
         description:
-          "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. unknown = nao deu pra entender.",
+          "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. unknown = nao deu pra entender.",
       },
       amount: { type: "number", description: "Valor do gasto em reais (so para type=expense)" },
       category: { type: "string", description: "Categoria do gasto, ex: mercado, transporte, lazer (so para type=expense)" },
@@ -29,6 +30,7 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
       start: { type: "string", description: "Data/hora ISO 8601 de inicio (so para type=event)" },
       end: { type: "string", description: "Data/hora ISO 8601 de fim, opcional (so para type=event)" },
       location: { type: "string", description: "Local do evento, opcional (so para type=event)" },
+      query: { type: "string", description: "Palavra-chave pra buscar o evento a cancelar, ex: o titulo ou parte dele (so para type=delete_event)" },
       message: { type: "string", description: "Texto do lembrete (so para type=reminder)" },
       due_at: { type: "string", description: "Data/hora ISO 8601 em que o lembrete deve ser enviado (so para type=reminder)" },
     },

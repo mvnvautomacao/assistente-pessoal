@@ -14,6 +14,7 @@ function formatDate(value: string): string {
 const TYPE_LABEL: Record<string, string> = {
   expense: "💰 Gasto",
   event: "📅 Evento",
+  delete_event: "🗑️ Evento cancelado",
   reminder: "⏰ Lembrete",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
