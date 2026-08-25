@@ -8,6 +8,17 @@ import {
 
 export const dashboardRouter = Router();
 
+// O WhatsApp guarda numeros brasileiros sem o "9" extra depois do DDD
+// (55 + DDD + 9 + numero = 13 digitos vira 12). Quem digita o proprio numero no
+// formato normal (com o 9) precisa continuar achando os dados dele mesmo assim.
+function normalizeBrazilPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (/^55\d{2}9\d{8}$/.test(digits)) {
+    return digits.slice(0, 4) + digits.slice(5);
+  }
+  return digits;
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
@@ -48,7 +59,7 @@ function barList(items: { name: string; total: number }[]) {
 }
 
 dashboardRouter.get("/dashboard", (req, res) => {
-  const phone = typeof req.query.phone === "string" ? req.query.phone.trim() : "";
+  const phone = typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
   if (!phone) {
     res.send(`<!DOCTYPE html>
 <html lang="pt-BR"><head><meta charset="UTF-8"><title>Gastos</title>
