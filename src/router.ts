@@ -1,10 +1,25 @@
 import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
-import { interpretText, interpretReceiptImage, Interpretation } from "./ai/interpret";
+import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
 import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
 import { appendExpense } from "./google/sheets";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { logActivity } from "./activity/service";
+import {
+  findCategoryByName,
+  findCategoryByKeyword,
+  findCategoryMentionedIn,
+  getOrCreateCategory,
+  learnKeyword,
+  insertExpense,
+  findRecentExpense,
+  updateExpenseCategory,
+  addPendingCategorization,
+  getNextPendingCategorization,
+  clearPendingCategorization,
+  listCategories,
+  PendingCategorization,
+} from "./expenses/service";
 import type { calendar_v3 } from "googleapis";
 
 function formatDateTime(value: string): string {
@@ -35,13 +50,25 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
   const base64Media = data.message?.base64 ?? data.base64;
 
-  let interpretations: Interpretation[];
-
+  let text: string | undefined;
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
-    const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
-    interpretations = await interpretText(text);
+    text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
   } else if (data.messageType === "audioMessage" && base64Media) {
-    const text = await transcribeAudio(Buffer.from(base64Media, "base64"));
+    text = await transcribeAudio(Buffer.from(base64Media, "base64"));
+  }
+
+  // Enquanto tiver categorizacao pendente pra esse numero, a proxima mensagem
+  // de texto/audio e tratada como resposta a "qual categoria e isso?", nao como pedido novo.
+  if (text !== undefined) {
+    const pending = getNextPendingCategorization(from);
+    if (pending) {
+      await resolvePendingCategorization(from, pending, text);
+      return;
+    }
+  }
+
+  let interpretations: Interpretation[];
+  if (text !== undefined) {
     interpretations = await interpretText(text);
   } else if (data.messageType === "imageMessage" && base64Media) {
     const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
@@ -64,17 +91,101 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   }
 }
 
+function askForCategory(from: string, amount: number, description: string) {
+  const categoryNames = listCategories()
+    .map((c) => c.name)
+    .join(", ");
+  return sendText(
+    from,
+    `Qual categoria é esse gasto de R$${amount.toFixed(2)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`
+  );
+}
+
+async function resolvePendingCategorization(from: string, pending: PendingCategorization, answerText: string) {
+  try {
+    // resposta curta (ate 3 palavras) e tratada como o nome da categoria direto;
+    // frases mais longas passam pela IA pra extrair so o nome pretendido.
+    const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
+    const categoryName =
+      findCategoryMentionedIn(answerText)?.name ??
+      (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
+    const category = getOrCreateCategory(categoryName);
+
+    insertExpense({
+      fromNumber: from,
+      amount: pending.amount,
+      description: pending.description,
+      categoryId: category.id,
+      date: pending.date,
+    });
+    if (pending.suggested_category) learnKeyword(pending.suggested_category, category.id);
+    learnKeyword(pending.description, category.id);
+
+    await appendExpense({ date: pending.date, category: category.name, description: pending.description, amount: pending.amount });
+    clearPendingCategorization(pending.id);
+
+    logActivity(from, "expense", `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description} (categorizado manualmente)`);
+    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)} registrado.`);
+
+    // se tinha mais gastos esperando categoria, pergunta o proximo da fila
+    const next = getNextPendingCategorization(from);
+    if (next) await askForCategory(from, next.amount, next.description);
+  } catch (err) {
+    console.error("Erro ao resolver categorizacao pendente:", err);
+    logActivity(from, "error", err instanceof Error ? err.message : String(err));
+    await sendText(from, "Deu erro tentando salvar a categoria. Tenta me responder de novo.");
+  }
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   switch (interpretation.type) {
     case "expense": {
-      await appendExpense({
-        date: interpretation.date,
-        category: interpretation.category,
-        description: interpretation.description,
-        amount: interpretation.amount,
-      });
-      logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${interpretation.category} — ${interpretation.description}`);
-      await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${interpretation.category}`);
+      const category = findCategoryByName(interpretation.category) ?? findCategoryByKeyword(interpretation.category, interpretation.description);
+
+      if (category) {
+        insertExpense({
+          fromNumber: from,
+          amount: interpretation.amount,
+          description: interpretation.description,
+          categoryId: category.id,
+          date: interpretation.date,
+        });
+        await appendExpense({
+          date: interpretation.date,
+          category: category.name,
+          description: interpretation.description,
+          amount: interpretation.amount,
+        });
+        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}`);
+        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}`);
+      } else {
+        // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
+        // sai quando chega a vez dele (ver resolvePendingCategorization)
+        const alreadyWaiting = getNextPendingCategorization(from) !== null;
+        addPendingCategorization({
+          from_number: from,
+          amount: interpretation.amount,
+          description: interpretation.description,
+          date: interpretation.date,
+          suggested_category: interpretation.category ?? null,
+        });
+        logActivity(from, "expense", `pendente de categoria: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
+        if (!alreadyWaiting) await askForCategory(from, interpretation.amount, interpretation.description);
+      }
+      break;
+    }
+    case "correct_category": {
+      const expense = findRecentExpense(from, interpretation.query);
+      if (!expense) {
+        logActivity(from, "correct_category", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
+        await sendText(from, `Não achei nenhum gasto recente${interpretation.query ? ` parecido com "${interpretation.query}"` : ""} pra corrigir.`);
+        break;
+      }
+      const category = getOrCreateCategory(interpretation.category);
+      updateExpenseCategory(expense.id, category.id);
+      learnKeyword(expense.description, category.id);
+      logActivity(from, "correct_category", `${expense.description} — R$${expense.amount.toFixed(2)} agora e "${category.name}"`);
+      await sendText(from, `✏️ Categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) corrigida para "${category.name}"`);
       break;
     }
     case "event": {
