@@ -7,7 +7,7 @@ export type Interpretation =
   | { type: "expense"; amount: number; category: string; description: string; date: string }
   | { type: "event"; title: string; start: string; end?: string; location?: string }
   | { type: "reminder"; message: string; due_at: string }
-  | { type: "unknown"; reason: string };
+  | { type: "unknown"; description?: string };
 
 const CLASSIFY_TOOL: Anthropic.Tool = {
   name: "record_action",
@@ -54,7 +54,7 @@ async function classify(content: Anthropic.MessageParam["content"]): Promise<Int
 
   const toolUse = response.content.find((b) => b.type === "tool_use");
   if (!toolUse || toolUse.type !== "tool_use") {
-    return { type: "unknown", reason: "Modelo nao retornou classificacao" };
+    return { type: "unknown", description: "Modelo nao retornou classificacao" };
   }
   return toolUse.input as Interpretation;
 }
