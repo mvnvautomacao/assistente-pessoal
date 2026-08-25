@@ -18,6 +18,7 @@ async function main() {
     headers: { apikey: apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
       webhook: {
+        enabled: true,
         url: webhookUrl,
         events: ["MESSAGES_UPSERT"],
         base64: true,
