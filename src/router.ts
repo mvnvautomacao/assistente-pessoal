@@ -18,6 +18,9 @@ import {
   getNextPendingCategorization,
   clearPendingCategorization,
   listCategories,
+  getOrCreatePaymentMethod,
+  getDefaultPaymentMethod,
+  setDefaultPaymentMethod,
   PendingCategorization,
 } from "./expenses/service";
 import type { calendar_v3 } from "googleapis";
@@ -91,6 +94,13 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   }
 }
 
+// Se a mensagem mencionou a forma de pagamento, usa ela; senao cai pro padrao do
+// usuario (se tiver configurado); senao fica sem forma de pagamento definida.
+function resolvePaymentMethod(from: string, mentioned?: string | null) {
+  if (mentioned) return getOrCreatePaymentMethod(mentioned);
+  return getDefaultPaymentMethod(from);
+}
+
 function askForCategory(from: string, amount: number, description: string) {
   const categoryNames = listCategories()
     .map((c) => c.name)
@@ -110,12 +120,14 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       findCategoryMentionedIn(answerText)?.name ??
       (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
     const category = getOrCreateCategory(categoryName);
+    const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
 
     insertExpense({
       fromNumber: from,
       amount: pending.amount,
       description: pending.description,
       categoryId: category.id,
+      paymentMethodId: paymentMethod?.id ?? null,
       date: pending.date,
     });
     if (pending.suggested_category) learnKeyword(pending.suggested_category, category.id);
@@ -124,8 +136,13 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     await appendExpense({ date: pending.date, category: category.name, description: pending.description, amount: pending.amount });
     clearPendingCategorization(pending.id);
 
-    logActivity(from, "expense", `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description} (categorizado manualmente)`);
-    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)} registrado.`);
+    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+    logActivity(
+      from,
+      "expense",
+      `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado manualmente)`
+    );
+    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)}${paymentSuffix} registrado.`);
 
     // se tinha mais gastos esperando categoria, pergunta o proximo da fila
     const next = getNextPendingCategorization(from);
@@ -143,11 +160,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const category = findCategoryByName(interpretation.category) ?? findCategoryByKeyword(interpretation.category, interpretation.description);
 
       if (category) {
+        const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
         insertExpense({
           fromNumber: from,
           amount: interpretation.amount,
           description: interpretation.description,
           categoryId: category.id,
+          paymentMethodId: paymentMethod?.id ?? null,
           date: interpretation.date,
         });
         await appendExpense({
@@ -156,8 +175,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           description: interpretation.description,
           amount: interpretation.amount,
         });
-        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}`);
-        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}`);
+        const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${interpretation.description}`);
+        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix}`);
       } else {
         // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
         // sai quando chega a vez dele (ver resolvePendingCategorization)
@@ -168,6 +188,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           description: interpretation.description,
           date: interpretation.date,
           suggested_category: interpretation.category ?? null,
+          suggested_payment_method: interpretation.payment_method ?? null,
         });
         logActivity(from, "expense", `pendente de categoria: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
         if (!alreadyWaiting) await askForCategory(from, interpretation.amount, interpretation.description);
@@ -186,6 +207,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       learnKeyword(expense.description, category.id);
       logActivity(from, "correct_category", `${expense.description} — R$${expense.amount.toFixed(2)} agora e "${category.name}"`);
       await sendText(from, `✏️ Categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) corrigida para "${category.name}"`);
+      break;
+    }
+    case "set_default_payment": {
+      const paymentMethod = getOrCreatePaymentMethod(interpretation.payment_method);
+      setDefaultPaymentMethod(from, paymentMethod.id);
+      logActivity(from, "set_default_payment", `forma de pagamento padrao agora e "${paymentMethod.name}"`);
+      await sendText(from, `✅ Forma de pagamento padrão definida como "${paymentMethod.name}". Vou usar essa quando você não especificar outra.`);
       break;
     }
     case "event": {

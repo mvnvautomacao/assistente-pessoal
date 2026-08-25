@@ -62,16 +62,77 @@ export function getOrCreateCategory(name: string): Category {
   return findCategoryByName(cleanName)!;
 }
 
+export interface PaymentMethod {
+  id: number;
+  name: string;
+}
+
+export function listPaymentMethods(): PaymentMethod[] {
+  return db.prepare(`SELECT id, name FROM payment_methods ORDER BY name`).all() as unknown as PaymentMethod[];
+}
+
+export function findPaymentMethodByName(name: string): PaymentMethod | null {
+  const target = normalize(name);
+  const method = listPaymentMethods().find((m) => normalize(m.name) === target);
+  return method ?? null;
+}
+
+export function findPaymentMethodMentionedIn(text: string): PaymentMethod | null {
+  const haystack = normalize(text);
+  const mentioned = listPaymentMethods().filter((m) => haystack.includes(normalize(m.name)));
+  return mentioned.length === 1 ? mentioned[0] : null;
+}
+
+export function getOrCreatePaymentMethod(name: string): PaymentMethod {
+  const existing = findPaymentMethodByName(name);
+  if (existing) return existing;
+  const cleanName = name.trim();
+  db.prepare(`INSERT INTO payment_methods (name) VALUES (?)`).run(cleanName);
+  return findPaymentMethodByName(cleanName)!;
+}
+
+export function getDefaultPaymentMethod(fromNumber: string): PaymentMethod | null {
+  const row = db.prepare(`SELECT default_payment_method_id FROM user_settings WHERE from_number = ?`).get(fromNumber) as
+    | { default_payment_method_id: number | null }
+    | undefined;
+  if (!row?.default_payment_method_id) return null;
+  return db.prepare(`SELECT id, name FROM payment_methods WHERE id = ?`).get(row.default_payment_method_id) as
+    | PaymentMethod
+    | undefined ?? null;
+}
+
+export function setDefaultPaymentMethod(fromNumber: string, paymentMethodId: number) {
+  db.prepare(
+    `INSERT INTO user_settings (from_number, default_payment_method_id) VALUES (?, ?)
+     ON CONFLICT(from_number) DO UPDATE SET default_payment_method_id = excluded.default_payment_method_id`
+  ).run(fromNumber, paymentMethodId);
+}
+
 export function learnKeyword(keyword: string, categoryId: number) {
   const clean = keyword.trim();
   if (!clean) return;
   db.prepare(`INSERT INTO category_keywords (keyword, category_id) VALUES (?, ?)`).run(clean, categoryId);
 }
 
-export function insertExpense(params: { fromNumber: string; amount: number; description: string; categoryId: number; date: string }) {
+export function insertExpense(params: {
+  fromNumber: string;
+  amount: number;
+  description: string;
+  categoryId: number;
+  paymentMethodId: number | null;
+  date: string;
+}) {
   db.prepare(
-    `INSERT INTO expenses (from_number, amount, description, category_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(params.fromNumber, params.amount, params.description, params.categoryId, params.date, new Date().toISOString());
+    `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    params.fromNumber,
+    params.amount,
+    params.description,
+    params.categoryId,
+    params.paymentMethodId,
+    params.date,
+    new Date().toISOString()
+  );
 }
 
 export interface ExpenseRecord {
@@ -110,6 +171,7 @@ export interface PendingCategorization {
   description: string;
   date: string;
   suggested_category: string | null;
+  suggested_payment_method: string | null;
 }
 
 export function addPendingCategorization(params: {
@@ -118,10 +180,19 @@ export function addPendingCategorization(params: {
   description: string;
   date: string;
   suggested_category: string | null;
+  suggested_payment_method: string | null;
 }) {
   db.prepare(
-    `INSERT INTO pending_categorizations (from_number, amount, description, date, suggested_category, created_at) VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(params.from_number, params.amount, params.description, params.date, params.suggested_category, new Date().toISOString());
+    `INSERT INTO pending_categorizations (from_number, amount, description, date, suggested_category, suggested_payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    params.from_number,
+    params.amount,
+    params.description,
+    params.date,
+    params.suggested_category,
+    params.suggested_payment_method,
+    new Date().toISOString()
+  );
 }
 
 // A mais antiga primeiro: se o usuario tem 2 gastos pendentes de categoria,
@@ -135,4 +206,67 @@ export function getNextPendingCategorization(fromNumber: string): PendingCategor
 
 export function clearPendingCategorization(id: number) {
   db.prepare(`DELETE FROM pending_categorizations WHERE id = ?`).run(id);
+}
+
+// --- consultas pro dashboard ---
+
+export interface ExpenseListItem {
+  id: number;
+  amount: number;
+  description: string;
+  date: string;
+  category: string | null;
+  payment_method: string | null;
+}
+
+export function getExpensesForMonth(yearMonth: string): ExpenseListItem[] {
+  return db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE strftime('%Y-%m', e.date) = ?
+       ORDER BY e.date DESC, e.id DESC`
+    )
+    .all(yearMonth) as unknown as ExpenseListItem[];
+}
+
+export interface NamedTotal {
+  name: string;
+  total: number;
+}
+
+export function getCategoryTotalsForMonth(yearMonth: string): NamedTotal[] {
+  return db
+    .prepare(
+      `SELECT COALESCE(c.name, 'Sem categoria') AS name, SUM(e.amount) AS total
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       WHERE strftime('%Y-%m', e.date) = ?
+       GROUP BY name
+       ORDER BY total DESC`
+    )
+    .all(yearMonth) as unknown as NamedTotal[];
+}
+
+export function getPaymentMethodTotalsForMonth(yearMonth: string): NamedTotal[] {
+  return db
+    .prepare(
+      `SELECT COALESCE(p.name, 'Não informado') AS name, SUM(e.amount) AS total
+       FROM expenses e
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE strftime('%Y-%m', e.date) = ?
+       GROUP BY name
+       ORDER BY total DESC`
+    )
+    .all(yearMonth) as unknown as NamedTotal[];
+}
+
+// meses que tem pelo menos 1 gasto, do mais recente pro mais antigo (pro seletor de mes)
+export function getAvailableMonths(): string[] {
+  const rows = db.prepare(`SELECT DISTINCT strftime('%Y-%m', date) AS ym FROM expenses ORDER BY ym DESC`).all() as unknown as {
+    ym: string;
+  }[];
+  return rows.map((r) => r.ym);
 }

@@ -17,6 +17,7 @@ const TYPE_LABEL: Record<string, string> = {
   delete_event: "🗑️ Evento cancelado",
   report: "📊 Relatório",
   correct_category: "✏️ Categoria corrigida",
+  set_default_payment: "💳 Pagamento padrão",
   reminder: "⏰ Lembrete",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",

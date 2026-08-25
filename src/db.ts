@@ -43,8 +43,20 @@ db.exec(`
     amount REAL NOT NULL,
     description TEXT NOT NULL,
     category_id INTEGER REFERENCES categories(id),
+    payment_method_id INTEGER REFERENCES payment_methods(id),
     date TEXT NOT NULL,
     created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payment_methods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+  );
+
+  -- forma de pagamento padrao de cada numero, pra nao precisar informar toda vez
+  CREATE TABLE IF NOT EXISTS user_settings (
+    from_number TEXT PRIMARY KEY,
+    default_payment_method_id INTEGER REFERENCES payment_methods(id)
   );
 
   -- fila por numero: enquanto houver pendencia mais antiga, a proxima mensagem
@@ -56,6 +68,7 @@ db.exec(`
     description TEXT NOT NULL,
     date TEXT NOT NULL,
     suggested_category TEXT,
+    suggested_payment_method TEXT,
     created_at TEXT NOT NULL
   );
 `);
@@ -74,9 +87,28 @@ if (hasOldSchema) {
       description TEXT NOT NULL,
       date TEXT NOT NULL,
       suggested_category TEXT,
+      suggested_payment_method TEXT,
       created_at TEXT NOT NULL
     );
   `);
+}
+
+if (!hasOldSchema && !pendingColumns.some((c) => c.name === "suggested_payment_method")) {
+  db.exec(`ALTER TABLE pending_categorizations ADD COLUMN suggested_payment_method TEXT`);
+}
+
+// expenses existia antes da coluna payment_method_id ser adicionada.
+const expenseColumns = db.prepare(`PRAGMA table_info(expenses)`).all() as { name: string }[];
+if (!expenseColumns.some((c) => c.name === "payment_method_id")) {
+  db.exec(`ALTER TABLE expenses ADD COLUMN payment_method_id INTEGER REFERENCES payment_methods(id)`);
+}
+
+const DEFAULT_PAYMENT_METHODS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito"];
+
+const paymentMethodCount = db.prepare(`SELECT COUNT(*) AS n FROM payment_methods`).get() as { n: number };
+if (paymentMethodCount.n === 0) {
+  const insert = db.prepare(`INSERT INTO payment_methods (name) VALUES (?)`);
+  for (const name of DEFAULT_PAYMENT_METHODS) insert.run(name);
 }
 
 const DEFAULT_CATEGORIES = [
