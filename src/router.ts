@@ -2,6 +2,7 @@ import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
 import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
+import { getEventReminderMinutes, upsertEventReminder, deleteEventReminder } from "./events/notifications";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
@@ -224,9 +225,19 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "event": {
-      await createCalendarEvent(interpretation);
+      const created = await createCalendarEvent(interpretation);
+      const reminderMinutes = getEventReminderMinutes(from);
+      if (created.id) {
+        upsertEventReminder({
+          eventId: created.id,
+          fromNumber: from,
+          title: interpretation.title,
+          eventStart: interpretation.start,
+          reminderMinutes,
+        });
+      }
       logActivity(from, "event", `${interpretation.title} — ${interpretation.start}`);
-      await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda`);
+      await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${reminderMinutes} min antes)`);
       break;
     }
     case "delete_event": {
@@ -237,6 +248,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       } else if (matches.length === 1) {
         const event = matches[0];
         await deleteCalendarEvent(event.id!);
+        deleteEventReminder(event.id!);
         logActivity(from, "delete_event", `removido: ${event.summary}`);
         await sendText(from, `🗑️ Evento "${event.summary}" removido da agenda`);
       } else {

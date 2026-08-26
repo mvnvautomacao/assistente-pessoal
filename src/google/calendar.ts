@@ -51,3 +51,29 @@ export async function deleteCalendarEvent(eventId: string) {
   const calendar = google.calendar({ version: "v3", auth: getOAuthClient() });
   await calendar.events.delete({ calendarId: config.google.calendarId, eventId });
 }
+
+export async function getCalendarEvent(eventId: string) {
+  const calendar = google.calendar({ version: "v3", auth: getOAuthClient() });
+  const { data } = await calendar.events.get({ calendarId: config.google.calendarId, eventId });
+  return data;
+}
+
+export async function updateCalendarEvent(
+  eventId: string,
+  params: { title: string; start: string; end?: string; location?: string }
+) {
+  const calendar = google.calendar({ version: "v3", auth: getOAuthClient() });
+  const end = params.end ?? new Date(new Date(params.start).getTime() + 60 * 60 * 1000).toISOString();
+
+  const { data } = await calendar.events.update({
+    calendarId: config.google.calendarId,
+    eventId,
+    requestBody: {
+      summary: params.title,
+      location: params.location,
+      start: { dateTime: params.start, timeZone: "America/Sao_Paulo" },
+      end: { dateTime: end, timeZone: "America/Sao_Paulo" },
+    },
+  });
+  return data;
+}

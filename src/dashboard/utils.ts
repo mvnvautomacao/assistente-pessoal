@@ -47,3 +47,26 @@ export function shiftMonth(yearMonth: string, delta: number): string {
   const d = new Date(year, month - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+
+const spDateTimeParts = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Sao_Paulo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+// ISO (qualquer fuso) -> "YYYY-MM-DDTHH:mm" no horario de Sao Paulo,
+// pro valor de um input type="datetime-local"
+export function toSPDateTimeLocal(iso: string): string {
+  const parts = Object.fromEntries(spDateTimeParts.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+// "YYYY-MM-DDTHH:mm" (digitado como horario de Sao Paulo) -> ISO com offset -03:00.
+// Brasil nao tem mais horario de verao desde 2019, entao -03:00 vale o ano todo.
+export function fromSPDateTimeLocal(value: string): string {
+  return `${value}:00-03:00`;
+}

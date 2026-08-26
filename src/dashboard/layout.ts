@@ -33,12 +33,13 @@ const STYLE = `
   }
   h1 { font-size: 1.5rem; margin: 0; }
   .month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
-  .month-nav a {
+  .month-nav a.arrow {
     display: inline-flex; align-items: center; justify-content: center;
     width: 32px; height: 32px; border-radius: 8px;
     background: var(--card); border: 1px solid var(--border);
     color: var(--text); text-decoration: none; font-size: 1rem;
   }
+  .chip-row { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
   select, input {
     padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--card); color: var(--text); font-size: 0.9rem;
@@ -96,7 +97,12 @@ p.hint{color:#6b7280;font-size:0.85rem}</style></head>
 </body></html>`;
 }
 
-export function renderPage(opts: { title: string; phone: string; active: "expenses" | "categories" | "payments"; body: string }): string {
+export function renderPage(opts: {
+  title: string;
+  phone: string;
+  active: "expenses" | "categories" | "payments" | "events" | "reminders";
+  body: string;
+}): string {
   const phoneQS = `phone=${encodeURIComponent(opts.phone)}`;
   const tab = (href: string, key: string, label: string) =>
     `<a href="${href}?${phoneQS}" class="${opts.active === key ? "active" : ""}">${label}</a>`;
@@ -115,6 +121,8 @@ export function renderPage(opts: { title: string; phone: string; active: "expens
     ${tab("/dashboard", "expenses", "Gastos")}
     ${tab("/dashboard/categories", "categories", "Categorias")}
     ${tab("/dashboard/payment-methods", "payments", "Formas de pagamento")}
+    ${tab("/dashboard/events", "events", "Agenda")}
+    ${tab("/dashboard/reminders", "reminders", "Lembretes")}
   </nav>
   ${opts.body}
 </div>

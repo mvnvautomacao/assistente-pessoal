@@ -5,6 +5,7 @@ import { adminRouter } from "./admin";
 import { dashboardRouter } from "./dashboard";
 import { startReminderScheduler } from "./reminders/scheduler";
 import { startExpenseReportScheduler } from "./expenses/reportScheduler";
+import { startEventReminderScheduler } from "./events/reminderScheduler";
 import "./db";
 
 const app = express();
@@ -20,4 +21,5 @@ app.listen(config.port, () => {
   console.log(`Servidor rodando na porta ${config.port}`);
   startReminderScheduler();
   startExpenseReportScheduler();
+  startEventReminderScheduler();
 });

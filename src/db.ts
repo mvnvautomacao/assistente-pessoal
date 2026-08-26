@@ -63,10 +63,24 @@ db.exec(`
 
   -- forma de pagamento padrao e dia do relatorio semanal de cada numero.
   -- report_day_of_week: 0=domingo .. 6=sabado (igual Date.getDay()). NULL = relatorio semanal desligado ate o usuario escolher um dia.
+  -- event_reminder_minutes: quantos minutos antes de um evento da agenda avisar no WhatsApp (padrao do usuario, pode ser sobrescrito por evento).
   CREATE TABLE IF NOT EXISTS user_settings (
     from_number TEXT PRIMARY KEY,
     default_payment_method_id INTEGER REFERENCES payment_methods(id),
-    report_day_of_week INTEGER
+    report_day_of_week INTEGER,
+    event_reminder_minutes INTEGER NOT NULL DEFAULT 60
+  );
+
+  -- rastreia, por evento do Google Calendar, quando avisar no WhatsApp antes dele
+  -- acontecer. A agenda em si vive no Google; essa tabela so guarda o "lembrete local".
+  CREATE TABLE IF NOT EXISTS event_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    from_number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    event_start TEXT NOT NULL,
+    reminder_minutes INTEGER NOT NULL,
+    notified INTEGER NOT NULL DEFAULT 0
   );
 
   -- orcamento mensal por usuario+categoria; alerta quando o gasto do mes na
@@ -128,6 +142,9 @@ if (!expenseColumns.some((c) => c.name === "payment_method_id")) {
 const userSettingsColumns = db.prepare(`PRAGMA table_info(user_settings)`).all() as { name: string }[];
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "report_day_of_week")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN report_day_of_week INTEGER`);
+}
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
 }
 
 // categories/payment_methods/category_keywords existiam como tabelas globais

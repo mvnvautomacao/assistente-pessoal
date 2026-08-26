@@ -94,12 +94,12 @@ expensesRouter.get("/dashboard", (req, res) => {
     <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
   </header>
   <div class="month-nav">
-    <a href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, -1)}">‹</a>
+    <a class="arrow" href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, -1)}">‹</a>
     <form method="get" style="margin:0">
       <input type="hidden" name="phone" value="${escapeHtml(phone)}">
       <select name="month" onchange="this.form.submit()">${monthOptions}</select>
     </form>
-    <a href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, 1)}">›</a>
+    <a class="arrow" href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, 1)}">›</a>
   </div>
 
   <div class="cards">
