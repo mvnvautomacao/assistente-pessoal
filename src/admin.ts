@@ -23,6 +23,7 @@ const TYPE_LABEL: Record<string, string> = {
   set_budget: "🎯 Orçamento definido",
   remove_budget: "🎯 Orçamento removido",
   list_budgets: "📋 Lista de orçamentos",
+  list_categories: "🏷️ Lista de categorias",
   reminder: "⏰ Lembrete",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",

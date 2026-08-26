@@ -17,7 +17,8 @@ export type Interpretation =
   | { type: "set_budget"; category: string; amount: number }
   | { type: "remove_budget"; category: string }
   | { type: "list_budgets" }
-  | { type: "unknown"; description?: string };
+  | { type: "list_categories" }
+  | { type: "unknown"; description?: string; likely_intent?: "expense" | "event" | "reminder" };
 
 const ACTION_SCHEMA = {
   type: "object" as const,
@@ -37,10 +38,11 @@ const ACTION_SCHEMA = {
         "set_budget",
         "remove_budget",
         "list_budgets",
+        "list_categories",
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra. event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver os orcamentos que tem definidos e quanto ja gastou de cada um. unknown = nao deu pra entender.",
+        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver os orcamentos que tem definidos e quanto ja gastou de cada um. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
     },
     amount: {
       type: "number",
@@ -57,6 +59,12 @@ const ACTION_SCHEMA = {
         "Forma de pagamento mencionada (type=expense, so se o usuario mencionou explicitamente) ou a forma de pagamento a definir como padrao (type=set_default_payment). Prefira uma das formas de pagamento existentes informadas no system prompt quando fizer sentido, ex: Pix, Dinheiro, ou o nome de um cartao especifico.",
     },
     description: { type: "string", description: "Descricao curta (expense) ou motivo (unknown)" },
+    likely_intent: {
+      type: "string",
+      enum: ["expense", "event", "reminder"],
+      description:
+        "So para type=unknown: se a mensagem foi uma tentativa curta/incompleta de um desses tipos (faltou valor, data, etc.), qual pareceu ser. Deixe de fora se nao deu pra identificar nem isso.",
+    },
     date: { type: "string", description: "Data ISO 8601 do gasto (so para type=expense)" },
     title: { type: "string", description: "Titulo do evento (so para type=event)" },
     start: { type: "string", description: "Data/hora ISO 8601 de inicio (so para type=event)" },
@@ -122,7 +130,9 @@ Categorias de gasto ja existentes: ${categoryNames}.
 Ao classificar um gasto, se a compra claramente se encaixa numa dessas categorias, use exatamente esse nome.
 Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — de o nome de categoria mais especifico e natural pra aquele tipo de compra (ex: "Pets", "Beleza", "Presentes"), mesmo que seja uma categoria nova. Outra parte do sistema decide se essa categoria precisa ser confirmada com o usuario.
 
-Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.`;
+Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
+
+Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.`;
 }
 
 async function classify(fromNumber: string, content: Anthropic.MessageParam["content"]): Promise<Interpretation[]> {

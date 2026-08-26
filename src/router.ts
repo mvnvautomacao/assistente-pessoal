@@ -31,6 +31,21 @@ function formatDateTime(value: string): string {
   return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
+// mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
+// informacao pra completar; pede o que falta em vez de um "nao entendi" generico
+function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): string {
+  switch (likelyIntent) {
+    case "expense":
+      return 'Beleza, um gasto! Me diga o valor e do que foi, tudo numa mensagem só — ex: "50 no mercado" ou "35,90 na farmácia no pix".';
+    case "event":
+      return 'Beleza, um evento! Me diga o quê, quando e que horas — ex: "dentista amanhã 15h".';
+    case "reminder":
+      return 'Beleza, um lembrete! Me diga o quê e quando te avisar — ex: "me lembra de pagar a internet sexta 9h".';
+    default:
+      return "Não entendi se isso é um gasto, um evento (criar ou cancelar) ou um lembrete. Pode reformular?";
+  }
+}
+
 // Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
 // em base64 pode vir em lugares diferentes dependendo da versao/config da API.
 interface EvolutionMessage {
@@ -340,9 +355,20 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(from, `📋 Seus orçamentos (mês atual):\n\n${lines.join("\n")}`);
       break;
     }
+    case "list_categories": {
+      const categories = listCategories(from);
+      logActivity(from, "list_categories", `${categories.length} categoria(s)`);
+      if (!categories.length) {
+        await sendText(from, "Você ainda não tem nenhuma categoria. Elas vão sendo criadas conforme você registra gastos.");
+        break;
+      }
+      const lines = categories.map((c) => `• ${c.name}`).join("\n");
+      await sendText(from, `🏷️ Suas categorias:\n\n${lines}`);
+      break;
+    }
     default: {
       logActivity(from, "unknown", interpretation.description ?? "nao classificado");
-      await sendText(from, "Nao entendi se isso e um gasto, um evento (criar ou cancelar) ou um lembrete. Pode reformular?");
+      await sendText(from, unknownFollowUp(interpretation.likely_intent));
     }
   }
 }
