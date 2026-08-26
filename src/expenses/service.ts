@@ -179,9 +179,15 @@ export function getDefaultPaymentMethod(fromNumber: string): PaymentMethod | nul
     | { default_payment_method_id: number | null }
     | undefined;
   if (!row?.default_payment_method_id) return null;
-  return db.prepare(`SELECT id, name FROM payment_methods WHERE id = ?`).get(row.default_payment_method_id) as
-    | PaymentMethod
-    | undefined ?? null;
+  // filtro por from_number aqui e defesa em profundidade: na pratica esse id sempre
+  // pertence a esse numero (so e gravado via setDefaultPaymentMethod, sempre com um
+  // id que veio de getOrCreatePaymentMethod do mesmo numero), mas ja tivemos um bug
+  // real de dado indo pro numero errado numa migracao, entao vale nao confiar cegamente.
+  return (
+    (db.prepare(`SELECT id, name FROM payment_methods WHERE id = ? AND from_number = ?`).get(row.default_payment_method_id, fromNumber) as
+      | PaymentMethod
+      | undefined) ?? null
+  );
 }
 
 export function setDefaultPaymentMethod(fromNumber: string, paymentMethodId: number) {

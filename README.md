@@ -135,6 +135,8 @@ npm run evolution:webhook -- http://assistente-whatsapp:3000/webhook
 
 (troque `assistente-whatsapp` pelo nome que o Coolify deu ao serviço do app, visível no painel).
 
+**Recomendado antes de expor pra internet:** defina `WEBHOOK_SECRET` (uma string aleatória) nas variáveis de ambiente do app no Coolify, e inclua `?secret=` na URL acima ao registrar o webhook — sem isso, qualquer pessoa que descobrir essa URL consegue mandar mensagens falsas pro sistema.
+
 ### Se um dia precisar escalar (trocar de servidor)
 
 Como o deploy é 100% baseado em Dockerfile/docker-compose + git, migrar de servidor depois é simples e não exige mudar nada no código:
@@ -154,10 +156,29 @@ Como o deploy é 100% baseado em Dockerfile/docker-compose + git, migrar de serv
 src/
   whatsapp/   envio e recebimento de mensagens (Evolution API)
   ai/         transcrição de áudio + interpretação das mensagens (Anthropic/Groq)
-  google/     Google Calendar
+  google/     wrapper do Google Calendar, sem uso ativo hoje (fica pronto pra
+              quando a conexão opcional com o Google for implementada)
   expenses/   gastos, categorias, formas de pagamento, orcamentos e relatorios (tudo isolado por numero)
-  dashboard.ts painel visual dos gastos (`/dashboard?phone=<numero>`)
-  reminders/  armazenamento e disparo dos lembretes agendados
+  events/     agenda e lembretes de eventos, local no banco (tambem isolado por numero)
+  reminders/  lembretes avulsos: armazenamento e disparo agendado
+  dashboard/  painel visual (`/dashboard?phone=<numero>`) — gastos, categorias,
+              formas de pagamento, agenda e lembretes, tudo com CRUD
   router.ts   decide o que fazer com cada mensagem recebida
-  index.ts    ponto de entrada (servidor + scheduler)
+  index.ts    ponto de entrada (servidor + schedulers)
+test/
+  unit/       testa modulos isolados (categorias, orcamento, datas, caches...)
+  functional/ testa o dashboard (HTTP de verdade) e o fluxo completo do
+              WhatsApp (com a IA e o envio de mensagem mockados)
 ```
+
+## Testes
+
+```bash
+npm test
+```
+
+Roda tudo (`tsc` + o test runner nativo do Node) contra um banco SQLite
+temporário — nunca toca no `data.sqlite` de verdade. Cobre isolamento entre
+números (multi-tenant), os fluxos de conversa com estado (categorização
+pendente, editar gasto por número da lista, resumo x detalhado) e checagens de
+segurança (um número não conseguir editar dado de outro, escapamento de HTML).

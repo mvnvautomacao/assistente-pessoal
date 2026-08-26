@@ -9,6 +9,9 @@ function required(name: string): string {
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   dbPath: process.env.DB_PATH ?? "./data.sqlite",
+  // opcional: se definido, o endpoint /webhook so aceita chamadas com ?secret=
+  // igual a esse valor. Recomendado antes de expor o servidor publicamente.
+  webhookSecret: process.env.WEBHOOK_SECRET,
 
   evolution: {
     apiUrl: required("EVOLUTION_API_URL"),
