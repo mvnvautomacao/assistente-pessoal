@@ -3,9 +3,11 @@ import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
 import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents } from "./events/service";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
-import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
+import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
+import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
 import { logActivity } from "./activity/service";
+import { spDateString } from "./timeSP";
 import {
   ensureUserSeeded,
   findCategoryByName,
@@ -25,10 +27,22 @@ import {
   setDefaultPaymentMethod,
   setReportDayOfWeek,
   getExpenseSummaryBetween,
+  getExpensesBetween,
+  getExpenseById,
+  updateExpense,
+  ExpenseRecord,
   PendingCategorization,
 } from "./expenses/service";
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+}
+
+// so string, sem Date: "2026-08-25" vira meia-noite UTC no construtor Date, que
+// reprojetado pro fuso de Sao Paulo mostraria o dia anterior. expenses.date e
+// sempre uma data-calendario pura, entao so reformatar o texto evita essa cilada.
+function formatDateOnly(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split("-");
+  return `${day}/${month}/${year}`;
 }
 
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
@@ -171,11 +185,17 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation) {
+  // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
+  // pedido no meio invalida essa referencia por numero
+  if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense") {
+    clearLastShownExpenses(from);
+  }
+
   switch (interpretation.type) {
     case "expense": {
       // a IA nem sempre preenche descricao/data em mensagens bem curtas ("gastei 60 no mercado")
       const description = interpretation.description?.trim() || interpretation.category;
-      const date = interpretation.date || new Date().toISOString();
+      const date = interpretation.date || spDateString();
       const category =
         findCategoryByName(from, interpretation.category) ?? findCategoryByKeyword(from, interpretation.category, description);
 
@@ -387,6 +407,95 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
       const lines = categories.map((c) => `• ${c.name}`).join("\n");
       await sendText(from, `🏷️ Suas categorias:\n\n${lines}`);
+      break;
+    }
+    case "list_expenses": {
+      const range = interpretation.date
+        ? singleDayRange(interpretation.date.slice(0, 10), formatDateOnly(interpretation.date))
+        : interpretation.days
+          ? lastNDaysRange(interpretation.days)
+          : singleDayRange(spDateString(), "hoje");
+
+      const items = getExpensesBetween(from, range.start, range.end);
+      if (!items.length) {
+        logActivity(from, "list_expenses", `nenhum gasto em ${range.label}`);
+        await sendText(from, `Nenhum gasto registrado em ${range.label}.`);
+        break;
+      }
+
+      setLastShownExpenses(from, items.map((item) => item.id));
+      const lines = items.map((item, idx) => {
+        const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
+        return `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${details}) — ${formatDateOnly(item.date)}`;
+      });
+      logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label}`);
+      await sendText(
+        from,
+        `🧾 Gastos — ${range.label}\n\n${lines.join("\n")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`
+      );
+      break;
+    }
+    case "edit_expense": {
+      let expense: ExpenseRecord | null;
+      if (interpretation.list_ref) {
+        const ids = getLastShownExpenses(from);
+        const id = ids?.[interpretation.list_ref - 1];
+        expense = id ? getExpenseById(from, id) : null;
+        if (!expense) {
+          logActivity(from, "edit_expense", `referencia "${interpretation.list_ref}" sem lista valida`);
+          await sendText(
+            from,
+            `Não sei a que gasto o número "${interpretation.list_ref}" se refere. De qual dia são as compras que você quer editar?`
+          );
+          break;
+        }
+      } else {
+        expense = findRecentExpense(from, interpretation.query);
+        if (!expense) {
+          logActivity(from, "edit_expense", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
+          await sendText(from, `Não achei nenhum gasto recente${interpretation.query ? ` parecido com "${interpretation.query}"` : ""} pra editar.`);
+          break;
+        }
+      }
+
+      const params = {
+        amount: expense.amount,
+        description: expense.description,
+        date: expense.date,
+        categoryId: expense.category_id,
+        paymentMethodId: expense.payment_method_id,
+      };
+      let changeText = "";
+      let errorText = "";
+
+      if (interpretation.field === "amount") {
+        const amount = Number(interpretation.value.replace(",", "."));
+        if (!Number.isFinite(amount) || amount <= 0) errorText = `Não entendi o valor "${interpretation.value}".`;
+        else {
+          params.amount = amount;
+          changeText = `valor agora é R$${amount.toFixed(2)}`;
+        }
+      } else if (interpretation.field === "date") {
+        params.date = interpretation.value;
+        changeText = `data agora é ${formatDateOnly(interpretation.value)}`;
+      } else if (interpretation.field === "description") {
+        params.description = interpretation.value;
+        changeText = `descrição agora é "${interpretation.value}"`;
+      } else if (interpretation.field === "payment_method") {
+        const paymentMethod = getOrCreatePaymentMethod(from, interpretation.value);
+        params.paymentMethodId = paymentMethod.id;
+        changeText = `forma de pagamento agora é "${paymentMethod.name}"`;
+      }
+
+      if (errorText) {
+        logActivity(from, "edit_expense", errorText);
+        await sendText(from, errorText);
+        break;
+      }
+
+      updateExpense(from, expense.id, params);
+      logActivity(from, "edit_expense", `#${expense.id} ${expense.description}: ${changeText}`);
+      await sendText(from, `✏️ Gasto "${expense.description}" atualizado: ${changeText}`);
       break;
     }
     default: {

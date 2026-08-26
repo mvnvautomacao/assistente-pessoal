@@ -53,6 +53,14 @@ export function lastNDaysRange(days: number): DateRange {
   return { start: toDateStr(start), end: toDateStr(end), label: `últimos ${days} dias` };
 }
 
+// um dia especifico, dateStr = "YYYY-MM-DD"
+export function singleDayRange(dateStr: string, label: string): DateRange {
+  const start = new Date(`${dateStr}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start: toDateStr(start), end: toDateStr(end), label };
+}
+
 // janela do mesmo tamanho, imediatamente anterior a [start, end) — pra comparar "subiu/desceu X%"
 function precedingRangeOfSameLength(start: string, end: string): DateRange {
   const startDate = new Date(start);

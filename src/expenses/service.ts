@@ -347,6 +347,21 @@ export interface ExpenseListItem {
   payment_method: string | null;
 }
 
+// start inclusivo, end exclusivo, ambos "YYYY-MM-DD" — gastos individuais (nao o
+// resumo por categoria), usado pro fluxo de listar/editar gastos pelo WhatsApp.
+export function getExpensesBetween(fromNumber: string, start: string, end: string): ExpenseListItem[] {
+  return db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE e.from_number = ? AND e.date >= ? AND e.date < ?
+       ORDER BY e.date DESC, e.id DESC`
+    )
+    .all(fromNumber, start, end) as unknown as ExpenseListItem[];
+}
+
 export function getExpensesForMonth(fromNumber: string, yearMonth: string): ExpenseListItem[] {
   return db
     .prepare(

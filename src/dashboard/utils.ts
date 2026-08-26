@@ -27,8 +27,13 @@ export function formatAmountInput(amount: number): string {
   return `${intPart},${centsPart}`;
 }
 
+// So string, sem passar por Date: "2026-08-25" (date-only) e interpretado pelo
+// construtor Date como meia-noite UTC, que reprojetado pro fuso de Sao Paulo
+// (UTC-3) vira o dia anterior. expenses.date e sempre uma data-calendario "pura"
+// (nunca mostramos hora pra gasto), entao so reformatar o texto evita essa cilada.
 export function formatDate(value: string): string {
-  return new Date(value).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const [year, month, day] = value.slice(0, 10).split("-");
+  return `${day}/${month}/${year}`;
 }
 
 // "YYYY-MM-DD" no fuso de Sao Paulo, pro valor padrao de inputs type=date

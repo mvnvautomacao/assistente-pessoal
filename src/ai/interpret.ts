@@ -18,6 +18,14 @@ export type Interpretation =
   | { type: "remove_budget"; category: string }
   | { type: "list_budgets"; category?: string }
   | { type: "list_categories" }
+  | { type: "list_expenses"; date?: string; days?: number }
+  | {
+      type: "edit_expense";
+      list_ref?: number;
+      query?: string;
+      field: "amount" | "date" | "description" | "payment_method";
+      value: string;
+    }
   | { type: "unknown"; description?: string; likely_intent?: "expense" | "event" | "reminder" };
 
 const ACTION_SCHEMA = {
@@ -39,10 +47,12 @@ const ACTION_SCHEMA = {
         "remove_budget",
         "list_budgets",
         "list_categories",
+        "list_expenses",
+        "edit_expense",
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
+        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo (total/por categoria), opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar so a CATEGORIA de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). list_expenses = quer ver os GASTOS INDIVIDUAIS (nao o resumo por categoria) de um dia ou periodo, normalmente pra depois editar um deles (ex: 'quais gastos eu tive hoje', 'lista as compras de ontem', 'editar gastos do dia 20', 'me mostra os gastos dos ultimos 3 dias'). Preencha 'date' (ISO 8601, so a data) se um dia especifico foi mencionado, ou 'days' pra 'ultimos X dias'; sem nenhum dos dois, assuma hoje. edit_expense = quer ALTERAR um gasto ja registrado (valor, data, descricao ou forma de pagamento — pra mudar categoria use correct_category). Se ele se referir a um item por numero de uma lista mostrada antes (ex: 'edita o 2', 'muda o 3 pro valor 45'), preencha 'list_ref' com esse numero e NAO preencha 'query'. Se ele descrever o gasto por texto (ex: 'a farmacia foi no pix', 'o gasto do mercado era 45 no total'), preencha 'query' com esse texto e NAO preencha 'list_ref'. Sempre preencha 'field' (amount/date/description/payment_method) e 'value' com o novo valor. unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
     },
     amount: {
       type: "number",
@@ -65,7 +75,10 @@ const ACTION_SCHEMA = {
       description:
         "So para type=unknown: se a mensagem foi uma tentativa curta/incompleta de um desses tipos (faltou valor, data, etc.), qual pareceu ser. Deixe de fora se nao deu pra identificar nem isso.",
     },
-    date: { type: "string", description: "Data ISO 8601 do gasto (so para type=expense)" },
+    date: {
+      type: "string",
+      description: "Data ISO 8601 do gasto (type=expense), ou o dia especifico a listar (type=list_expenses, so a data).",
+    },
     title: { type: "string", description: "Titulo do evento (so para type=event)" },
     start: { type: "string", description: "Data/hora ISO 8601 de inicio (so para type=event)" },
     end: { type: "string", description: "Data/hora ISO 8601 de fim, opcional (so para type=event)" },
@@ -73,14 +86,29 @@ const ACTION_SCHEMA = {
     query: {
       type: "string",
       description:
-        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event) ou a descricao do gasto (type=correct_category, opcional — se omitido, aplica no gasto mais recente).",
+        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event) ou a descricao do gasto (type=correct_category ou type=edit_expense, opcional — se omitido em correct_category, aplica no gasto mais recente. Em edit_expense, so preencha se NAO usar list_ref).",
+    },
+    list_ref: {
+      type: "number",
+      description:
+        "So para type=edit_expense: numero (1, 2, 3...) de um gasto na ultima lista de gastos mostrada (ex: 'edita o 2'). Nao preencher junto com 'query'.",
+    },
+    field: {
+      type: "string",
+      enum: ["amount", "date", "description", "payment_method"],
+      description: "Qual campo do gasto mudar (so para type=edit_expense).",
+    },
+    value: {
+      type: "string",
+      description:
+        "Novo valor do campo (so para type=edit_expense): numero pro amount (ex: '45.90'), data ISO 8601 (so a data) pro date, texto pra description, ou nome da forma de pagamento pro payment_method (prefira uma das ja existentes informadas no system prompt).",
     },
     message: { type: "string", description: "Texto do lembrete (so para type=reminder)" },
     due_at: { type: "string", description: "Data/hora ISO 8601 em que o lembrete deve ser enviado (so para type=reminder)" },
     days: {
       type: "number",
       description:
-        "Quantidade de dias a frente pro relatorio de agenda (type=report, se nao especificar use 7), ou quantidade de dias pra tras ate hoje pro resumo de gastos (type=expense_report, so quando o usuario menciona um numero de dias especifico, ex: 'ultimos 15 dias').",
+        "Quantidade de dias a frente pro relatorio de agenda (type=report, se nao especificar use 7), ou quantidade de dias pra tras ate hoje pro resumo de gastos ou lista de gastos (type=expense_report ou type=list_expenses, so quando o usuario menciona um numero de dias especifico, ex: 'ultimos 15 dias').",
     },
     period: {
       type: "string",
@@ -114,16 +142,29 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
   },
 };
 
+// "now" em UTC vira o dia seguinte antes da meia-noite em Sao Paulo (UTC-3): passar
+// a data em UTC pro prompt fazia a IA achar que "hoje" ja era amanha nesse intervalo.
+// Formata direto no horario de Brasilia pra "hoje"/"amanha"/etc sempre baterem certo.
+const spNowFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "America/Sao_Paulo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 function buildSystemPrompt(fromNumber: string) {
-  const now = new Date().toISOString();
+  const now = spNowFormatter.format(new Date()).replace(" ", "T");
   const categoryNames = listCategories(fromNumber)
     .map((c) => c.name)
     .join(", ");
   const paymentMethodNames = listPaymentMethods(fromNumber)
     .map((p) => p.name)
     .join(", ");
-  return `Voce interpreta mensagens de WhatsApp de um assistente pessoal. Data/hora atual: ${now} (America/Sao_Paulo).
-Sempre chame a ferramenta record_actions com o resultado. Datas relativas ("amanha", "sexta que vem") devem ser convertidas para ISO 8601 com base na data atual.
+  return `Voce interpreta mensagens de WhatsApp de um assistente pessoal. Data/hora atual: ${now}, horario de Brasilia (America/Sao_Paulo, UTC-3 o ano todo, sem horario de verao).
+Sempre chame a ferramenta record_actions com o resultado. Datas relativas ("hoje", "amanha", "sexta que vem") devem ser convertidas para ISO 8601 com base NESSA data/hora de Brasilia, nao em UTC — preste atencao especial perto da meia-noite, onde a data em UTC ja pode ter virado o dia seguinte.
 Se a mensagem tiver mais de um pedido (ex: dois eventos, ou um gasto e um lembrete), retorne uma acao para cada um dentro de "actions".
 
 Categorias de gasto ja existentes: ${categoryNames}.
