@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { listCategories, getOrCreateCategory, renameCategory, deleteCategory } from "../expenses/service";
+import { listBudgets, setBudget, removeBudget } from "../expenses/budgets";
 import { renderPage, renderPhoneGate } from "./layout";
 import { normalizeBrazilPhone, escapeHtml } from "./utils";
 
@@ -14,6 +15,7 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
   if (!phone) return res.send(renderPhoneGate());
 
   const categories = listCategories(phone);
+  const budgetByCategory = new Map(listBudgets(phone).map((b) => [b.category_id, b.monthly_limit]));
   const qs = `phone=${encodeURIComponent(phone)}`;
 
   const rows = categories
@@ -23,6 +25,13 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
         <td>
           <form class="inline" method="post" action="/dashboard/categories/${c.id}?${qs}">
             <input type="text" name="name" value="${escapeHtml(c.name)}" style="width:220px">
+            <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
+          </form>
+        </td>
+        <td>
+          <form class="inline" method="post" action="/dashboard/categories/${c.id}/budget?${qs}">
+            <input type="text" inputmode="decimal" name="monthly_limit" placeholder="Sem limite" style="width:110px"
+              value="${budgetByCategory.has(c.id) ? budgetByCategory.get(c.id)!.toFixed(2) : ""}">
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
@@ -39,9 +48,10 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
   <header><h1>Categorias</h1></header>
 
   <table>
-    <tr><th>Nome</th><th></th></tr>
-    ${rows || `<tr><td colspan="2" class="empty">Nenhuma categoria ainda.</td></tr>`}
+    <tr><th>Nome</th><th>Orçamento mensal (R$)</th><th></th></tr>
+    ${rows || `<tr><td colspan="3" class="empty">Nenhuma categoria ainda.</td></tr>`}
   </table>
+  <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">Orçamento é opcional. Deixe em branco e salve pra remover o limite de uma categoria. Você é avisado no WhatsApp ao chegar perto ou passar do valor.</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova categoria</h2>
   <form class="card-form" method="post" action="/dashboard/categories/new?${qs}">
@@ -66,6 +76,20 @@ categoriesRouter.post("/dashboard/categories/:id", (req, res) => {
   if (!phone) return res.send(renderPhoneGate());
   const name = String(req.body.name || "").trim();
   if (name) renameCategory(phone, Number(req.params.id), name);
+  res.redirect(`/dashboard/categories?phone=${encodeURIComponent(phone)}`);
+});
+
+categoriesRouter.post("/dashboard/categories/:id/budget", (req, res) => {
+  const phone = getPhone(req);
+  if (!phone) return res.send(renderPhoneGate());
+  const raw = String(req.body.monthly_limit || "").trim().replace(",", ".");
+  const categoryId = Number(req.params.id);
+  if (!raw) {
+    removeBudget(phone, categoryId);
+  } else {
+    const limit = Number(raw);
+    if (Number.isFinite(limit) && limit > 0) setBudget(phone, categoryId, limit);
+  }
   res.redirect(`/dashboard/categories?phone=${encodeURIComponent(phone)}`);
 });
 

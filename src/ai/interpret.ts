@@ -16,7 +16,7 @@ export type Interpretation =
   | { type: "set_report_day"; day_of_week: string }
   | { type: "set_budget"; category: string; amount: number }
   | { type: "remove_budget"; category: string }
-  | { type: "list_budgets" }
+  | { type: "list_budgets"; category?: string }
   | { type: "list_categories" }
   | { type: "unknown"; description?: string; likely_intent?: "expense" | "event" | "reminder" };
 
@@ -42,7 +42,7 @@ const ACTION_SCHEMA = {
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver os orcamentos que tem definidos e quanto ja gastou de cada um. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
+        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo, opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar a categoria de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
     },
     amount: {
       type: "number",
@@ -51,7 +51,7 @@ const ACTION_SCHEMA = {
     category: {
       type: "string",
       description:
-        "Categoria do gasto (type=expense), a nova categoria desejada (type=correct_category), o filtro de categoria (type=expense_report, opcional), ou a categoria do orcamento (type=set_budget, type=remove_budget). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
+        "Categoria do gasto (type=expense), a nova categoria desejada (type=correct_category), o filtro de categoria (type=expense_report ou type=list_budgets, opcional), ou a categoria do orcamento (type=set_budget, type=remove_budget). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
     },
     payment_method: {
       type: "string",

@@ -4,7 +4,7 @@ import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interp
 import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents } from "./events/service";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
-import { setBudget, removeBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
+import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { logActivity } from "./activity/service";
 import {
   ensureUserSeeded,
@@ -341,12 +341,35 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "list_budgets": {
+      const range = currentMonthRange();
+
+      if (interpretation.category) {
+        const category = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
+        if (!category) {
+          logActivity(from, "list_budgets", `categoria "${interpretation.category}" nao encontrada`);
+          await sendText(from, `Não achei uma categoria parecida com "${interpretation.category}".`);
+          break;
+        }
+        const limit = getBudget(from, category.id);
+        if (limit == null) {
+          logActivity(from, "list_budgets", `sem orcamento definido pra ${category.name}`);
+          await sendText(
+            from,
+            `Você não tem orçamento definido pra "${category.name}". Pode dizer algo como "me avisa se eu passar de R$300 em ${category.name}".`
+          );
+          break;
+        }
+        const spent = getExpenseSummaryBetween(range.start, range.end, from, category.id).total;
+        logActivity(from, "list_budgets", `${category.name}: R$${spent.toFixed(2)} de R$${limit.toFixed(2)}`);
+        await sendText(from, `📋 Orçamento de "${category.name}" (mês atual): R$${spent.toFixed(2)} de R$${limit.toFixed(2)}`);
+        break;
+      }
+
       const budgets = listBudgets(from);
       if (!budgets.length) {
         await sendText(from, "Você ainda não tem nenhum orçamento definido. Pode dizer algo como \"me avisa se eu passar de R$500 em Lazer\".");
         break;
       }
-      const range = currentMonthRange();
       const lines = budgets.map((b) => {
         const spent = getExpenseSummaryBetween(range.start, range.end, from, b.category_id).total;
         return `• ${b.category_name}: R$${spent.toFixed(2)} de R$${b.monthly_limit.toFixed(2)}`;
