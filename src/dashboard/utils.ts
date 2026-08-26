@@ -70,3 +70,28 @@ export function toSPDateTimeLocal(iso: string): string {
 export function fromSPDateTimeLocal(value: string): string {
   return `${value}:00-03:00`;
 }
+
+// Mascara de moeda BR (milhar com ponto, 2 casas decimais com virgula), reutilizavel
+// em qualquer pagina: cada <input class="money-mask"> precisa de um
+// <input type="hidden"> logo em seguida no HTML, que recebe o valor decimal puro
+// (ponto) pra ser o que de fato e enviado no form.
+export const MONEY_MASK_SCRIPT = `
+  <script>
+    (function () {
+      function formatMoneyMask(raw) {
+        var digits = raw.replace(/\\D/g, "");
+        if (!digits) return "";
+        var n = parseInt(digits, 10);
+        var cents = String(n % 100).padStart(2, "0");
+        var intPart = Math.floor(n / 100).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ".");
+        return intPart + "," + cents;
+      }
+      document.querySelectorAll(".money-mask").forEach(function (input) {
+        var hidden = input.nextElementSibling;
+        input.addEventListener("input", function () {
+          input.value = formatMoneyMask(input.value);
+          if (hidden) hidden.value = input.value ? input.value.replace(/\\./g, "").replace(",", ".") : "";
+        });
+      });
+    })();
+  </script>`;

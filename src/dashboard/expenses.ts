@@ -12,7 +12,17 @@ import {
   listPaymentMethods,
 } from "../expenses/service";
 import { renderPage, renderPhoneGate } from "./layout";
-import { normalizeBrazilPhone, escapeHtml, formatMoney, formatAmountInput, formatDate, monthLabel, shiftMonth, todaySP } from "./utils";
+import {
+  normalizeBrazilPhone,
+  escapeHtml,
+  formatMoney,
+  formatAmountInput,
+  formatDate,
+  monthLabel,
+  shiftMonth,
+  todaySP,
+  MONEY_MASK_SCRIPT,
+} from "./utils";
 
 export const expensesRouter = Router();
 
@@ -135,28 +145,10 @@ function expenseForm(opts: {
   <h1>${opts.submitLabel === "Salvar" ? "Editar gasto" : "Novo gasto"}</h1>
   <form class="card-form" method="post" action="${opts.action}">
     <label>Valor (R$)</label>
-    <input type="text" inputmode="decimal" id="amount_display" placeholder="0,00" autocomplete="off" required
+    <input type="text" inputmode="decimal" class="money-mask" placeholder="0,00" autocomplete="off" required
       value="${opts.amount !== undefined ? formatAmountInput(opts.amount) : ""}">
-    <input type="hidden" name="amount" id="amount_hidden"
+    <input type="hidden" name="amount"
       value="${opts.amount !== undefined ? opts.amount.toFixed(2) : ""}">
-    <script>
-      (function () {
-        var display = document.getElementById("amount_display");
-        var hidden = document.getElementById("amount_hidden");
-        function format(raw) {
-          var digits = raw.replace(/\\D/g, "");
-          if (!digits) return "";
-          var n = parseInt(digits, 10);
-          var cents = String(n % 100).padStart(2, "0");
-          var intPart = Math.floor(n / 100).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ".");
-          return intPart + "," + cents;
-        }
-        display.addEventListener("input", function () {
-          display.value = format(display.value);
-          hidden.value = display.value ? display.value.replace(/\\./g, "").replace(",", ".") : "";
-        });
-      })();
-    </script>
 
     <label>Descrição</label>
     <input type="text" name="description" required value="${escapeHtml(opts.description ?? "")}">
@@ -174,7 +166,8 @@ function expenseForm(opts: {
       <button type="submit" class="btn">${opts.submitLabel}</button>
       <a href="/dashboard?phone=${encodeURIComponent(opts.phone)}" class="btn secondary">Cancelar</a>
     </div>
-  </form>`;
+  </form>
+  ${MONEY_MASK_SCRIPT}`;
   return body;
 }
 

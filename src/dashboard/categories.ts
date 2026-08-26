@@ -2,7 +2,7 @@ import { Router } from "express";
 import { listCategories, getOrCreateCategory, renameCategory, deleteCategory } from "../expenses/service";
 import { listBudgets, setBudget, removeBudget } from "../expenses/budgets";
 import { renderPage, renderPhoneGate } from "./layout";
-import { normalizeBrazilPhone, escapeHtml } from "./utils";
+import { normalizeBrazilPhone, escapeHtml, formatAmountInput, MONEY_MASK_SCRIPT } from "./utils";
 
 export const categoriesRouter = Router();
 
@@ -30,8 +30,9 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
         </td>
         <td>
           <form class="inline" method="post" action="/dashboard/categories/${c.id}/budget?${qs}">
-            <input type="text" inputmode="decimal" name="monthly_limit" placeholder="Sem limite" style="width:110px"
-              value="${budgetByCategory.has(c.id) ? budgetByCategory.get(c.id)!.toFixed(2) : ""}">
+            <input type="text" inputmode="decimal" class="money-mask" placeholder="Sem limite" autocomplete="off" style="width:110px"
+              value="${budgetByCategory.has(c.id) ? formatAmountInput(budgetByCategory.get(c.id)!) : ""}">
+            <input type="hidden" name="monthly_limit" value="${budgetByCategory.has(c.id) ? budgetByCategory.get(c.id)!.toFixed(2) : ""}">
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
@@ -58,7 +59,8 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
     <label>Nome</label>
     <input type="text" name="name" required>
     <div class="actions"><button type="submit" class="btn">Adicionar</button></div>
-  </form>`;
+  </form>
+  ${MONEY_MASK_SCRIPT}`;
 
   res.send(renderPage({ title: "Categorias", phone, active: "categories", body }));
 });
