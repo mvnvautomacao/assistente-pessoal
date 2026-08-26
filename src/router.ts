@@ -6,6 +6,7 @@ import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
+import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
 import { logActivity } from "./activity/service";
 import { spDateString } from "./timeSP";
 import {
@@ -31,6 +32,7 @@ import {
   getExpenseById,
   updateExpense,
   ExpenseRecord,
+  ExpenseListItem,
   PendingCategorization,
 } from "./expenses/service";
 function formatDateTime(value: string): string {
@@ -96,6 +98,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pending = getNextPendingCategorization(from);
     if (pending) {
       await resolvePendingCategorization(from, pending, text);
+      return;
+    }
+
+    const pendingChoice = getPendingListChoice(from);
+    if (pendingChoice) {
+      await resolveListChoice(from, pendingChoice.days, text);
       return;
     }
   }
@@ -182,6 +190,66 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     logActivity(from, "error", err instanceof Error ? err.message : String(err));
     await sendText(from, "Deu erro tentando salvar a categoria. Tenta me responder de novo.");
   }
+}
+
+// gastos individuais de mais de 1 dia, agrupados por dia com um cabecalho — mas
+// numerados em sequencia unica (1, 2, 3...) pra "edita o 2" continuar funcionando
+// independente de qual dia o item 2 seja.
+function buildGroupedExpenseListText(items: ExpenseListItem[], label: string): string {
+  const days: string[] = [];
+  const byDay = new Map<string, ExpenseListItem[]>();
+  for (const item of items) {
+    const day = item.date.slice(0, 10);
+    if (!byDay.has(day)) {
+      byDay.set(day, []);
+      days.push(day);
+    }
+    byDay.get(day)!.push(item);
+  }
+
+  let counter = 0;
+  const sections = days.map((day) => {
+    const lines = byDay.get(day)!.map((item) => {
+      counter += 1;
+      const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
+      return `${counter}. R$${item.amount.toFixed(2)} — ${item.description} (${details})`;
+    });
+    return `📅 ${formatDateOnly(day)}\n${lines.join("\n")}`;
+  });
+
+  return `🧾 Gastos — ${label}\n\n${sections.join("\n\n")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`;
+}
+
+// resposta a "resumo por categoria ou detalhado por dia?" — se nao der pra saber
+// qual das duas, pergunta de novo em vez de escolher por conta propria
+async function resolveListChoice(from: string, days: number, answerText: string) {
+  const normalized = answerText.toLowerCase();
+  const wantsSummary = /resum|categor|total/.test(normalized);
+  const wantsDetailed = /detalh|separad|individual|descrit|dia a dia/.test(normalized);
+
+  if (wantsSummary === wantsDetailed) {
+    await sendText(from, 'Não entendi — quer o *resumo por categoria* ou o *detalhado* por dia? Responde "resumo" ou "detalhado".');
+    return;
+  }
+
+  clearPendingListChoice(from);
+  const range = lastNDaysRange(days);
+
+  if (wantsSummary) {
+    logActivity(from, "expense_report", range.label);
+    await sendText(from, buildExpenseReportText(range, { fromNumber: from }));
+    return;
+  }
+
+  const items = getExpensesBetween(from, range.start, range.end);
+  if (!items.length) {
+    logActivity(from, "list_expenses", `nenhum gasto em ${range.label}`);
+    await sendText(from, `Nenhum gasto registrado em ${range.label}.`);
+    return;
+  }
+  setLastShownExpenses(from, items.map((item) => item.id));
+  logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label} (detalhado)`);
+  await sendText(from, buildGroupedExpenseListText(items, range.label));
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation) {
@@ -410,6 +478,19 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "list_expenses": {
+      // periodo de mais de 1 dia: pergunta se quer o resumo por categoria (como
+      // era antes) ou o detalhado, gasto a gasto separado por dia, em vez de
+      // decidir por conta propria
+      if (interpretation.days && interpretation.days > 1) {
+        setPendingListChoice(from, interpretation.days);
+        logActivity(from, "list_expenses", `perguntou formato pros ultimos ${interpretation.days} dias`);
+        await sendText(
+          from,
+          `Você quer o *resumo por categoria* (com o total, como antes) ou o *detalhado*, com cada gasto separado por dia? Responde "resumo" ou "detalhado".`
+        );
+        break;
+      }
+
       // pedido vago tipo "editar compras", sem dia nenhum mencionado: antes de
       // mostrar a lista, avisa qual dia foi assumido, pra nao confundir quem
       // queria outro dia
