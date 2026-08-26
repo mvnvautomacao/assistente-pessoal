@@ -9,6 +9,7 @@ import "./db";
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(webhookRouter);
 app.use(adminRouter);
 app.use(dashboardRouter);

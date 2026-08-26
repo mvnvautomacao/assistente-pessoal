@@ -93,6 +93,30 @@ export function getOrCreateCategory(fromNumber: string, name: string): Category 
   return findCategoryByName(fromNumber, cleanName)!;
 }
 
+export function getCategoryById(fromNumber: string, id: number): Category | null {
+  const row = db.prepare(`SELECT id, name FROM categories WHERE id = ? AND from_number = ?`).get(id, fromNumber) as Category | undefined;
+  return row ?? null;
+}
+
+export function renameCategory(fromNumber: string, id: number, newName: string): boolean {
+  const category = getCategoryById(fromNumber, id);
+  if (!category) return false;
+  db.prepare(`UPDATE categories SET name = ? WHERE id = ? AND from_number = ?`).run(newName.trim(), id, fromNumber);
+  return true;
+}
+
+// Apaga a categoria e desfaz os vinculos: gastos ficam "sem categoria" em vez de
+// sumir, orcamento e palavras-chave aprendidas pra ela sao removidos.
+export function deleteCategory(fromNumber: string, id: number): boolean {
+  const category = getCategoryById(fromNumber, id);
+  if (!category) return false;
+  db.prepare(`UPDATE expenses SET category_id = NULL WHERE category_id = ? AND from_number = ?`).run(id, fromNumber);
+  db.prepare(`DELETE FROM category_keywords WHERE category_id = ? AND from_number = ?`).run(id, fromNumber);
+  db.prepare(`DELETE FROM budgets WHERE category_id = ? AND from_number = ?`).run(id, fromNumber);
+  db.prepare(`DELETE FROM categories WHERE id = ? AND from_number = ?`).run(id, fromNumber);
+  return true;
+}
+
 export interface PaymentMethod {
   id: number;
   name: string;
@@ -120,6 +144,34 @@ export function getOrCreatePaymentMethod(fromNumber: string, name: string): Paym
   const cleanName = name.trim();
   db.prepare(`INSERT INTO payment_methods (from_number, name) VALUES (?, ?)`).run(fromNumber, cleanName);
   return findPaymentMethodByName(fromNumber, cleanName)!;
+}
+
+export function getPaymentMethodById(fromNumber: string, id: number): PaymentMethod | null {
+  const row = db.prepare(`SELECT id, name FROM payment_methods WHERE id = ? AND from_number = ?`).get(id, fromNumber) as
+    | PaymentMethod
+    | undefined;
+  return row ?? null;
+}
+
+export function renamePaymentMethod(fromNumber: string, id: number, newName: string): boolean {
+  const method = getPaymentMethodById(fromNumber, id);
+  if (!method) return false;
+  db.prepare(`UPDATE payment_methods SET name = ? WHERE id = ? AND from_number = ?`).run(newName.trim(), id, fromNumber);
+  return true;
+}
+
+// Apaga a forma de pagamento: gastos que usavam ela ficam sem forma de pagamento
+// definida, e se era a padrao do usuario, o padrao e desligado.
+export function deletePaymentMethod(fromNumber: string, id: number): boolean {
+  const method = getPaymentMethodById(fromNumber, id);
+  if (!method) return false;
+  db.prepare(`UPDATE expenses SET payment_method_id = NULL WHERE payment_method_id = ? AND from_number = ?`).run(id, fromNumber);
+  db.prepare(`UPDATE user_settings SET default_payment_method_id = NULL WHERE default_payment_method_id = ? AND from_number = ?`).run(
+    id,
+    fromNumber
+  );
+  db.prepare(`DELETE FROM payment_methods WHERE id = ? AND from_number = ?`).run(id, fromNumber);
+  return true;
 }
 
 export function getDefaultPaymentMethod(fromNumber: string): PaymentMethod | null {
@@ -169,7 +221,7 @@ export function insertExpense(params: {
   fromNumber: string;
   amount: number;
   description: string;
-  categoryId: number;
+  categoryId: number | null;
   paymentMethodId: number | null;
   date: string;
 }) {
@@ -192,7 +244,32 @@ export interface ExpenseRecord {
   amount: number;
   description: string;
   category_id: number | null;
+  payment_method_id: number | null;
   date: string;
+}
+
+export function getExpenseById(fromNumber: string, id: number): ExpenseRecord | null {
+  const row = db.prepare(`SELECT * FROM expenses WHERE id = ? AND from_number = ?`).get(id, fromNumber) as ExpenseRecord | undefined;
+  return row ?? null;
+}
+
+export function updateExpense(
+  fromNumber: string,
+  id: number,
+  params: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null }
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE expenses SET amount = ?, description = ?, date = ?, category_id = ?, payment_method_id = ?
+       WHERE id = ? AND from_number = ?`
+    )
+    .run(params.amount, params.description, params.date, params.categoryId, params.paymentMethodId, id, fromNumber);
+  return result.changes > 0;
+}
+
+export function deleteExpense(fromNumber: string, id: number): boolean {
+  const result = db.prepare(`DELETE FROM expenses WHERE id = ? AND from_number = ?`).run(id, fromNumber);
+  return result.changes > 0;
 }
 
 export function findRecentExpense(fromNumber: string, query?: string): ExpenseRecord | null {
