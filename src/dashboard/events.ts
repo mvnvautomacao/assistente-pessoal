@@ -1,12 +1,13 @@
 import { Router } from "express";
-import { listUpcomingEvents, createCalendarEvent, getCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from "../google/calendar";
 import {
+  listUpcomingEvents,
+  createEvent,
+  getEventById,
+  updateEvent,
+  deleteEvent,
   getEventReminderMinutes,
   setEventReminderMinutes,
-  upsertEventReminder,
-  deleteEventReminder,
-  getEventReminderByEventId,
-} from "../events/notifications";
+} from "../events/service";
 import { renderPage, renderPhoneGate } from "./layout";
 import { normalizeBrazilPhone, escapeHtml, toSPDateTimeLocal, fromSPDateTimeLocal } from "./utils";
 
@@ -16,45 +17,25 @@ function getPhone(req: { query: Record<string, unknown> }): string {
   return typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
 }
 
-function eventDateLabel(dateTime?: string | null, date?: string | null): string {
-  if (dateTime) return toSPDateTimeLocal(dateTime).replace("T", " ");
-  if (date) return `${date} (dia todo)`;
-  return "—";
-}
-
-eventsRouter.get("/dashboard/events", async (req, res) => {
+eventsRouter.get("/dashboard/events", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
 
   const qs = `phone=${encodeURIComponent(phone)}`;
   const days = req.query.days === "60" || req.query.days === "90" ? Number(req.query.days) : 30;
-
-  let events: Awaited<ReturnType<typeof listUpcomingEvents>> = [];
-  try {
-    events = await listUpcomingEvents(days);
-  } catch (err) {
-    console.error("Erro ao listar eventos do Google Calendar:", err);
-    return res.send(
-      renderPage({
-        title: "Agenda",
-        phone,
-        active: "events",
-        body: `<header><h1>Agenda</h1></header><p class="empty">Não foi possível carregar a agenda agora. Tenta de novo em instantes.</p>`,
-      })
-    );
-  }
+  const events = listUpcomingEvents(phone, days);
 
   const rows = events.length
     ? events
         .map(
           (e) => `
       <tr>
-        <td>${escapeHtml(eventDateLabel(e.start?.dateTime, e.start?.date))}</td>
-        <td>${escapeHtml(e.summary ?? "(sem título)")}</td>
+        <td>${escapeHtml(toSPDateTimeLocal(e.start)).replace("T", " ")}</td>
+        <td>${escapeHtml(e.title)}</td>
         <td>${escapeHtml(e.location ?? "—")}</td>
         <td class="row-actions">
-          <a class="link-action" href="/dashboard/events/${encodeURIComponent(e.id ?? "")}/edit?${qs}">Editar</a>
-          <form class="inline" method="post" action="/dashboard/events/${encodeURIComponent(e.id ?? "")}/delete?${qs}" onsubmit="return confirm('Excluir esse evento da agenda?')">
+          <a class="link-action" href="/dashboard/events/${e.id}/edit?${qs}">Editar</a>
+          <form class="inline" method="post" action="/dashboard/events/${e.id}/delete?${qs}" onsubmit="return confirm('Excluir esse evento da agenda?')">
             <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
           </form>
         </td>
@@ -74,7 +55,7 @@ eventsRouter.get("/dashboard/events", async (req, res) => {
     <a class="btn" href="/dashboard/events/new?${qs}">+ Novo evento</a>
   </header>
   <p class="hint" style="color:var(--muted);font-size:0.82rem;margin:-8px 0 20px">
-    A agenda do Google é única e compartilhada — não é separada por número de WhatsApp.
+    Agenda própria, guardada no banco de dados e isolada por número — ainda não sincroniza com o Google Calendar.
   </p>
   <div class="chip-row">${dayChip(30, "30 dias")}${dayChip(60, "60 dias")}${dayChip(90, "90 dias")}</div>
 
@@ -151,7 +132,7 @@ eventsRouter.get("/dashboard/events/new", (req, res) => {
   res.send(renderPage({ title: "Novo evento", phone, active: "events", body }));
 });
 
-eventsRouter.post("/dashboard/events/new", async (req, res) => {
+eventsRouter.post("/dashboard/events/new", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
   const title = String(req.body.title || "").trim();
@@ -160,46 +141,39 @@ eventsRouter.post("/dashboard/events/new", async (req, res) => {
   const location = String(req.body.location || "").trim();
   const reminderMinutes = Number(req.body.reminder_minutes);
   if (title && start) {
-    const startIso = fromSPDateTimeLocal(start);
-    const created = await createCalendarEvent({
+    createEvent({
+      fromNumber: phone,
       title,
-      start: startIso,
+      start: fromSPDateTimeLocal(start),
       end: end ? fromSPDateTimeLocal(end) : undefined,
       location: location || undefined,
+      reminderMinutes: Number.isFinite(reminderMinutes) ? reminderMinutes : undefined,
     });
-    if (created.id) {
-      upsertEventReminder({
-        eventId: created.id,
-        fromNumber: phone,
-        title,
-        eventStart: startIso,
-        reminderMinutes: Number.isFinite(reminderMinutes) ? reminderMinutes : getEventReminderMinutes(phone),
-      });
-    }
   }
   res.redirect(`/dashboard/events?phone=${encodeURIComponent(phone)}`);
 });
 
-eventsRouter.get("/dashboard/events/:id/edit", async (req, res) => {
+eventsRouter.get("/dashboard/events/:id/edit", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
 
-  const event = await getCalendarEvent(req.params.id);
-  const existingReminder = getEventReminderByEventId(req.params.id);
+  const event = getEventById(phone, Number(req.params.id));
+  if (!event) return res.status(404).send("Evento não encontrado.");
+
   const body = eventForm({
     phone,
-    action: `/dashboard/events/${encodeURIComponent(req.params.id)}?phone=${encodeURIComponent(phone)}`,
+    action: `/dashboard/events/${event.id}?phone=${encodeURIComponent(phone)}`,
     submitLabel: "Salvar",
-    title: event.summary ?? "",
-    start: event.start?.dateTime ? toSPDateTimeLocal(event.start.dateTime) : "",
-    end: event.end?.dateTime ? toSPDateTimeLocal(event.end.dateTime) : "",
+    title: event.title,
+    start: toSPDateTimeLocal(event.start),
+    end: toSPDateTimeLocal(event.end),
     location: event.location ?? "",
-    reminderMinutes: existingReminder?.reminder_minutes ?? getEventReminderMinutes(phone),
+    reminderMinutes: event.reminder_minutes,
   });
   res.send(renderPage({ title: "Editar evento", phone, active: "events", body }));
 });
 
-eventsRouter.post("/dashboard/events/:id", async (req, res) => {
+eventsRouter.post("/dashboard/events/:id", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
   const title = String(req.body.title || "").trim();
@@ -208,28 +182,20 @@ eventsRouter.post("/dashboard/events/:id", async (req, res) => {
   const location = String(req.body.location || "").trim();
   const reminderMinutes = Number(req.body.reminder_minutes);
   if (title && start) {
-    const startIso = fromSPDateTimeLocal(start);
-    await updateCalendarEvent(req.params.id, {
+    updateEvent(phone, Number(req.params.id), {
       title,
-      start: startIso,
+      start: fromSPDateTimeLocal(start),
       end: end ? fromSPDateTimeLocal(end) : undefined,
       location: location || undefined,
-    });
-    upsertEventReminder({
-      eventId: req.params.id,
-      fromNumber: phone,
-      title,
-      eventStart: startIso,
       reminderMinutes: Number.isFinite(reminderMinutes) ? reminderMinutes : getEventReminderMinutes(phone),
     });
   }
   res.redirect(`/dashboard/events?phone=${encodeURIComponent(phone)}`);
 });
 
-eventsRouter.post("/dashboard/events/:id/delete", async (req, res) => {
+eventsRouter.post("/dashboard/events/:id/delete", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
-  await deleteCalendarEvent(req.params.id);
-  deleteEventReminder(req.params.id);
+  deleteEvent(phone, Number(req.params.id));
   res.redirect(`/dashboard/events?phone=${encodeURIComponent(phone)}`);
 });

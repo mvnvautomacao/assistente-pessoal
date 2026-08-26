@@ -1,8 +1,7 @@
 import { sendText } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
-import { createCalendarEvent, findUpcomingEvents, deleteCalendarEvent, listUpcomingEvents } from "./google/calendar";
-import { getEventReminderMinutes, upsertEventReminder, deleteEventReminder } from "./events/notifications";
+import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents } from "./events/service";
 import { createReminder, getRemindersWithinDays } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
@@ -28,15 +27,8 @@ import {
   getExpenseSummaryBetween,
   PendingCategorization,
 } from "./expenses/service";
-import type { calendar_v3 } from "googleapis";
-
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-}
-
-function formatEventStart(start?: calendar_v3.Schema$EventDateTime): string {
-  const value = start?.dateTime ?? start?.date;
-  return value ? formatDateTime(value) : "data desconhecida";
 }
 
 // Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
@@ -225,36 +217,29 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "event": {
-      const created = await createCalendarEvent(interpretation);
-      const reminderMinutes = getEventReminderMinutes(from);
-      if (created.id) {
-        upsertEventReminder({
-          eventId: created.id,
-          fromNumber: from,
-          title: interpretation.title,
-          eventStart: interpretation.start,
-          reminderMinutes,
-        });
-      }
+      const created = createEvent({
+        fromNumber: from,
+        title: interpretation.title,
+        start: interpretation.start,
+        end: interpretation.end,
+        location: interpretation.location,
+      });
       logActivity(from, "event", `${interpretation.title} — ${interpretation.start}`);
-      await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${reminderMinutes} min antes)`);
+      await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${created.reminder_minutes} min antes)`);
       break;
     }
     case "delete_event": {
-      const matches = await findUpcomingEvents(interpretation.query);
+      const matches = findUpcomingEvents(from, interpretation.query);
       if (matches.length === 0) {
         logActivity(from, "delete_event", `nenhum evento encontrado para "${interpretation.query}"`);
         await sendText(from, `Não encontrei nenhum evento parecido com "${interpretation.query}" nos próximos 60 dias.`);
       } else if (matches.length === 1) {
         const event = matches[0];
-        await deleteCalendarEvent(event.id!);
-        deleteEventReminder(event.id!);
-        logActivity(from, "delete_event", `removido: ${event.summary}`);
-        await sendText(from, `🗑️ Evento "${event.summary}" removido da agenda`);
+        deleteEvent(from, event.id);
+        logActivity(from, "delete_event", `removido: ${event.title}`);
+        await sendText(from, `🗑️ Evento "${event.title}" removido da agenda`);
       } else {
-        const list = matches
-          .map((e) => `• ${e.summary} — ${formatEventStart(e.start)}`)
-          .join("\n");
+        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
         logActivity(from, "delete_event", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
         await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer cancelar.`);
       }
@@ -268,10 +253,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "report": {
       const days = interpretation.days ?? 7;
-      const [events, reminders] = await Promise.all([listUpcomingEvents(days), Promise.resolve(getRemindersWithinDays(days))]);
+      const events = listUpcomingEvents(from, days);
+      const reminders = getRemindersWithinDays(days);
 
       const eventsText = events.length
-        ? events.map((e) => `• ${e.summary} — ${formatEventStart(e.start)}`).join("\n")
+        ? events.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n")
         : "Nenhum evento agendado.";
       const remindersText = reminders.length
         ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n")

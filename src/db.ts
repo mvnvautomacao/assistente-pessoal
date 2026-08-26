@@ -63,7 +63,7 @@ db.exec(`
 
   -- forma de pagamento padrao e dia do relatorio semanal de cada numero.
   -- report_day_of_week: 0=domingo .. 6=sabado (igual Date.getDay()). NULL = relatorio semanal desligado ate o usuario escolher um dia.
-  -- event_reminder_minutes: quantos minutos antes de um evento da agenda avisar no WhatsApp (padrao do usuario, pode ser sobrescrito por evento).
+  -- event_reminder_minutes: padrao de "avisar X min antes" pra eventos novos (pode ser sobrescrito por evento).
   CREATE TABLE IF NOT EXISTS user_settings (
     from_number TEXT PRIMARY KEY,
     default_payment_method_id INTEGER REFERENCES payment_methods(id),
@@ -71,16 +71,18 @@ db.exec(`
     event_reminder_minutes INTEGER NOT NULL DEFAULT 60
   );
 
-  -- rastreia, por evento do Google Calendar, quando avisar no WhatsApp antes dele
-  -- acontecer. A agenda em si vive no Google; essa tabela so guarda o "lembrete local".
-  CREATE TABLE IF NOT EXISTS event_reminders (
+  -- agenda propria, isolada por numero (nao depende de conta do Google).
+  -- reminder_sent controla se o aviso automatico no WhatsApp ja foi enviado.
+  CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id TEXT NOT NULL UNIQUE,
     from_number TEXT NOT NULL,
     title TEXT NOT NULL,
-    event_start TEXT NOT NULL,
-    reminder_minutes INTEGER NOT NULL,
-    notified INTEGER NOT NULL DEFAULT 0
+    start TEXT NOT NULL,
+    end TEXT NOT NULL,
+    location TEXT,
+    reminder_minutes INTEGER NOT NULL DEFAULT 60,
+    reminder_sent INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   -- orcamento mensal por usuario+categoria; alerta quando o gasto do mes na
@@ -146,6 +148,10 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "r
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
 }
+
+// event_reminders foi uma tabela de transicao (ponte pra agenda do Google) que durou
+// um commit so: a agenda virou local (tabela "events" acima), entao ela nao serve mais.
+db.exec(`DROP TABLE IF EXISTS event_reminders`);
 
 // categories/payment_methods/category_keywords existiam como tabelas globais
 // (compartilhadas entre todos os numeros). Migra pra isolado por numero,
