@@ -590,6 +590,28 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(from, `✏️ Gasto "${expense.description}" atualizado: ${changeText}`);
       break;
     }
+    case "help": {
+      logActivity(from, "help", "explicou funcionalidades");
+      await sendText(
+        from,
+        `🤖 O que eu faço:
+
+💰 *Gastos*
+Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e pergunto se não souber). Diga "editar compras de ontem" pra corrigir algo, ou "quanto gastei esse mês" pra um resumo.
+
+📅 *Agenda e lembretes*
+"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento.
+
+🎯 *Orçamento*
+"Me avisa se eu passar de R$300 em mercado" — eu aviso quando chegar perto ou passar.
+
+📊 *Relatórios*
+Automáticos (semanal + mensal) ou sob demanda, tipo "gastos dos últimos 15 dias em lazer".
+
+Manda uma dessas mensagens que eu entendo 🙂`
+      );
+      break;
+    }
     default: {
       logActivity(from, "unknown", interpretation.description ?? "nao classificado");
       await sendText(from, unknownFollowUp(interpretation.likely_intent));
