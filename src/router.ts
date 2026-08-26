@@ -410,6 +410,17 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "list_expenses": {
+      // pedido vago tipo "editar compras", sem dia nenhum mencionado: antes de
+      // mostrar a lista, avisa qual dia foi assumido, pra nao confundir quem
+      // queria outro dia
+      const noDaySpecified = !interpretation.date && !interpretation.days;
+      if (noDaySpecified) {
+        await sendText(
+          from,
+          `Você não disse o dia, então vou te mostrar as compras de hoje. Se quiser outro dia, é só especificar, ex: "editar compras de ontem" ou "gastos do dia 20".`
+        );
+      }
+
       const range = interpretation.date
         ? singleDayRange(interpretation.date.slice(0, 10), formatDateOnly(interpretation.date))
         : interpretation.days
