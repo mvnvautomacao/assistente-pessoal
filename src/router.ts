@@ -20,6 +20,19 @@ import {
   PendingMergeCategories,
 } from "./expenses/pendingMergeCategories";
 import {
+  setPendingEditExpense,
+  getPendingEditExpense,
+  clearPendingEditExpense,
+  PendingEditExpense,
+  EditExpenseParams,
+} from "./expenses/pendingEditExpense";
+import {
+  setPendingCorrectCategory,
+  getPendingCorrectCategory,
+  clearPendingCorrectCategory,
+  PendingCorrectCategory,
+} from "./expenses/pendingCorrectCategory";
+import {
   createRecurringExpense,
   listRecurringExpenses,
   findActiveRecurringExpenseByDescription,
@@ -40,6 +53,7 @@ import {
   findCategoryByKeyword,
   findCategoryMentionedIn,
   getOrCreateCategory,
+  getCategoryById,
   learnKeyword,
   insertExpense,
   findRecentExpense,
@@ -196,7 +210,9 @@ Primeiro, peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje"
 
 Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número, tipo "muda o valor do 2 pra 45".
 
-Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro".`;
+Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro".
+
+Antes de mudar de verdade, eu sempre confirmo com você mostrando o que vai virar o quê — se eu errar, é só me dizer o valor certo antes de confirmar.`;
     case "category":
       return `🏷️ Como funcionam as categorias:
 
@@ -365,6 +381,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingMerge = getPendingMergeCategories(from);
     if (pendingMerge) {
       await resolveMergeCategoriesConfirmation(from, pendingMerge, text);
+      return;
+    }
+
+    const pendingEditExpense = getPendingEditExpense(from);
+    if (pendingEditExpense) {
+      await resolveEditExpenseConfirmation(from, pendingEditExpense, text);
+      return;
+    }
+
+    const pendingCorrectCategory = getPendingCorrectCategory(from);
+    if (pendingCorrectCategory) {
+      await resolveCorrectCategoryConfirmation(from, pendingCorrectCategory, text);
       return;
     }
   }
@@ -628,6 +656,110 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
   );
 }
 
+// calcula o novo valor de um campo de gasto (usado tanto no pedido inicial de
+// edicao quanto quando o usuario ajusta o valor proposto antes de confirmar)
+function parseEditFieldValue(
+  from: string,
+  field: "amount" | "date" | "description" | "payment_method",
+  rawValue: string,
+  baseParams: EditExpenseParams
+): { params: EditExpenseParams; changeText: string } | { error: string } {
+  const params = { ...baseParams };
+  if (field === "amount") {
+    const amount = Number(rawValue.replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0) return { error: `Não entendi o valor "${rawValue}".` };
+    params.amount = amount;
+    return { params, changeText: `valor agora é R$${amount.toFixed(2)}` };
+  }
+  if (field === "date") {
+    params.date = rawValue;
+    return { params, changeText: `data agora é ${formatDateOnly(rawValue)}` };
+  }
+  if (field === "description") {
+    params.description = rawValue;
+    return { params, changeText: `descrição agora é "${rawValue}"` };
+  }
+  const paymentMethod = getOrCreatePaymentMethod(from, rawValue);
+  params.paymentMethodId = paymentMethod.id;
+  return { params, changeText: `forma de pagamento agora é "${paymentMethod.name}"` };
+}
+
+// resposta a "vou mudar X, confirma?" -- "sim" aplica, "nao" cancela, qualquer
+// outra coisa e tratada como um AJUSTE (novo valor pro mesmo campo) e volta a
+// pedir confirmacao com o valor corrigido, em vez de assumir ou travar
+async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (yes) {
+    clearPendingEditExpense(from);
+    updateExpense(from, pending.expenseId, pending.proposedParams);
+    setPendingUndo(from, {
+      kind: "restore_expense",
+      expenseId: pending.expenseId,
+      previous: pending.previous,
+      description: pending.description,
+    });
+    logActivity(from, "edit_expense", `confirmado: #${pending.expenseId} ${pending.description}: ${pending.changeText}`);
+    await sendText(from, `✏️ Gasto "${pending.description}" atualizado: ${pending.changeText}`);
+    return;
+  }
+  if (no) {
+    clearPendingEditExpense(from);
+    logActivity(from, "edit_expense", `edicao de #${pending.expenseId} nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  const result = parseEditFieldValue(from, pending.field, answerText.trim(), pending.previous);
+  if ("error" in result) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga o valor certo.`);
+    return;
+  }
+  setPendingEditExpense(from, { ...pending, proposedParams: result.params, changeText: result.changeText });
+  await sendText(from, `Ok, vou alterar "${pending.description}": ${result.changeText}. Confirma? Responde "sim" ou "não".`);
+}
+
+// mesma ideia da confirmacao de edicao, mas pra correct_category: "nao" ou
+// texto ambiguo tenta reinterpretar como uma categoria diferente, igual
+// resolvePendingCategorization ja faz pra gasto pendente de categoria
+async function resolveCorrectCategoryConfirmation(from: string, pending: PendingCorrectCategory, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (yes) {
+    clearPendingCorrectCategory(from);
+    updateExpenseCategory(pending.expenseId, pending.proposedCategoryId);
+    learnKeyword(from, pending.description, pending.proposedCategoryId);
+    if (pending.previousCategoryId != null) {
+      setPendingUndo(from, {
+        kind: "restore_category",
+        expenseId: pending.expenseId,
+        previousCategoryId: pending.previousCategoryId,
+        description: pending.description,
+      });
+    }
+    logActivity(from, "correct_category", `confirmado: ${pending.description} agora e "${pending.proposedCategoryName}"`);
+    await sendText(from, `✏️ Categoria de "${pending.description}" (R$${pending.amount.toFixed(2)}) corrigida para "${pending.proposedCategoryName}"`);
+    return;
+  }
+  if (no) {
+    clearPendingCorrectCategory(from);
+    logActivity(from, "correct_category", `correcao de ${pending.description} nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
+  const categoryName =
+    findCategoryMentionedIn(from, answerText)?.name ?? (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
+  const newCategory = getOrCreateCategory(from, categoryName);
+  setPendingCorrectCategory(from, { ...pending, proposedCategoryId: newCategory.id, proposedCategoryName: newCategory.name });
+  await sendText(from, `Ok, vou mudar a categoria de "${pending.description}" pra "${newCategory.name}" então. Confirma? Responde "sim" ou "não".`);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -687,19 +819,30 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
       const category = getOrCreateCategory(from, interpretation.category);
-      const previousCategoryId = expense.category_id;
-      updateExpenseCategory(expense.id, category.id);
-      learnKeyword(from, expense.description, category.id);
-      if (previousCategoryId != null) {
-        setPendingUndo(from, {
-          kind: "restore_category",
-          expenseId: expense.id,
-          previousCategoryId,
-          description: expense.description,
-        });
+      const previousCategory = expense.category_id ? getCategoryById(from, expense.category_id) : null;
+      if (previousCategory?.id === category.id) {
+        await sendText(from, `"${expense.description}" já está em "${category.name}".`);
+        break;
       }
-      logActivity(from, "correct_category", `${expense.description} — R$${expense.amount.toFixed(2)} agora e "${category.name}"`);
-      await sendText(from, `✏️ Categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) corrigida para "${category.name}"`);
+
+      setPendingCorrectCategory(from, {
+        expenseId: expense.id,
+        description: expense.description,
+        amount: expense.amount,
+        previousCategoryId: expense.category_id,
+        previousCategoryName: previousCategory?.name ?? "sem categoria",
+        proposedCategoryId: category.id,
+        proposedCategoryName: category.name,
+      });
+      logActivity(
+        from,
+        "correct_category",
+        `pediu confirmacao: ${expense.description} de "${previousCategory?.name ?? "sem categoria"}" pra "${category.name}"`
+      );
+      await sendText(
+        from,
+        `Vou mudar a categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) de "${previousCategory?.name ?? "sem categoria"}" pra "${category.name}". Confirma? Responde "sim"/"não", ou diga a categoria certa.`
+      );
       break;
     }
     case "set_default_payment": {
@@ -752,7 +895,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const reminderId = createReminder(from, interpretation.message, dueAt);
       setPendingUndo(from, { kind: "delete_reminder", reminderId, description: interpretation.message });
       logActivity(from, "reminder", `${interpretation.message} — ${dueAt}`);
-      await sendText(from, `⏰ Lembrete criado: "${interpretation.message}"`);
+      await sendText(from, `⏰ Lembrete criado: "${interpretation.message}" — vou avisar em ${formatDateTime(dueAt)}`);
       break;
     }
     case "report": {
@@ -1070,56 +1213,33 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         }
       }
 
-      const params = {
+      const baseParams: EditExpenseParams = {
         amount: expense.amount,
         description: expense.description,
         date: expense.date,
         categoryId: expense.category_id,
         paymentMethodId: expense.payment_method_id,
       };
-      let changeText = "";
-      let errorText = "";
-
-      if (interpretation.field === "amount") {
-        const amount = Number(interpretation.value.replace(",", "."));
-        if (!Number.isFinite(amount) || amount <= 0) errorText = `Não entendi o valor "${interpretation.value}".`;
-        else {
-          params.amount = amount;
-          changeText = `valor agora é R$${amount.toFixed(2)}`;
-        }
-      } else if (interpretation.field === "date") {
-        params.date = interpretation.value;
-        changeText = `data agora é ${formatDateOnly(interpretation.value)}`;
-      } else if (interpretation.field === "description") {
-        params.description = interpretation.value;
-        changeText = `descrição agora é "${interpretation.value}"`;
-      } else if (interpretation.field === "payment_method") {
-        const paymentMethod = getOrCreatePaymentMethod(from, interpretation.value);
-        params.paymentMethodId = paymentMethod.id;
-        changeText = `forma de pagamento agora é "${paymentMethod.name}"`;
-      }
-
-      if (errorText) {
-        logActivity(from, "edit_expense", errorText);
-        await sendText(from, errorText);
+      const result = parseEditFieldValue(from, interpretation.field, interpretation.value, baseParams);
+      if ("error" in result) {
+        logActivity(from, "edit_expense", result.error);
+        await sendText(from, result.error);
         break;
       }
 
-      updateExpense(from, expense.id, params);
-      setPendingUndo(from, {
-        kind: "restore_expense",
+      setPendingEditExpense(from, {
         expenseId: expense.id,
-        previous: {
-          amount: expense.amount,
-          description: expense.description,
-          date: expense.date,
-          categoryId: expense.category_id,
-          paymentMethodId: expense.payment_method_id,
-        },
+        field: interpretation.field,
         description: expense.description,
+        previous: baseParams,
+        proposedParams: result.params,
+        changeText: result.changeText,
       });
-      logActivity(from, "edit_expense", `#${expense.id} ${expense.description}: ${changeText}`);
-      await sendText(from, `✏️ Gasto "${expense.description}" atualizado: ${changeText}`);
+      logActivity(from, "edit_expense", `pediu confirmacao: #${expense.id} ${expense.description}: ${result.changeText}`);
+      await sendText(
+        from,
+        `Vou alterar "${expense.description}": ${result.changeText}. Confirma? Responde "sim"/"não", ou me diga o valor certo se eu errei.`
+      );
       break;
     }
     case "set_recurring_expense": {

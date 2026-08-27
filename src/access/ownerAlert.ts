@@ -11,3 +11,8 @@ export function shouldAlertOwner(key: string): boolean {
   lastAlertedAt.set(key, now);
   return true;
 }
+
+// so pra testes: mesmo motivo do resetRateLimitForTests em rateLimit.ts.
+export function resetOwnerAlertForTests() {
+  lastAlertedAt.clear();
+}

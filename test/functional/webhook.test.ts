@@ -13,6 +13,8 @@ import {
   findCategoryByName,
 } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
+import { resetRateLimitForTests } from "../../src/access/rateLimit";
+import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
 import { getRecentBlockedAttempts } from "../../src/activity/service";
 import { config } from "../../src/config";
 import { setBudget } from "../../src/expenses/budgets";
@@ -35,6 +37,12 @@ function evolutionMessage(from: string, text: string) {
 // (fila vazia = simula a IA nao ter sido chamada, retornando nenhuma acao — util
 // pra confirmar que fluxos de resposta pendente interceptam ANTES da IA).
 function withMocks(t: TestContext) {
+  // reseta contadores globais em memoria (rate limit, alerta pro dono) -- sem
+  // isso, testes que reusam o mesmo numero repetidas vezes no arquivo (convencao
+  // estabelecida aqui) acumulariam mensagens de cenarios sem relacao entre si e
+  // dispararia o freio de emergencia sem ter nada a ver com o que o teste testa.
+  resetRateLimitForTests();
+  resetOwnerAlertForTests();
   const sent: { to: string; text: string }[] = [];
   t.mock.method(whatsappClient, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
@@ -119,10 +127,12 @@ test("correct_category: corrige a categoria do gasto mais recente e aprende a pa
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "correct_category", category: "Lazer-correct", query: "cabeleireiro corrigir" }]);
   await handleIncomingMessage(evolutionMessage(C, "corrige a categoria do cabeleireiro pra lazer"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  await handleIncomingMessage(evolutionMessage(C, "sim"));
 
   const expense = findRecentExpense(C, "cabeleireiro corrigir");
   assert.equal(expense?.category_id, cat.id);
-  assert.match(sent[0].text, /corrigida/);
+  assert.match(sent[1].text, /corrigida/);
 });
 
 test("orcamento estourado: a confirmacao do gasto vem com o alerta junto", async (t) => {
@@ -151,6 +161,8 @@ test("list_expenses + edit_expense por numero, com cache de curta duracao", asyn
 
   queueReply([{ type: "edit_expense", list_ref: 1, field: "amount", value: "77" }]);
   await handleIncomingMessage(evolutionMessage(A, "muda o valor do 1 pra 77"));
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  await handleIncomingMessage(evolutionMessage(A, "sim"));
   const edited = findRecentExpense(A, "item cache 2");
   assert.equal(edited?.amount, 77);
 });
@@ -317,6 +329,7 @@ test("undo: reverte a ultima edicao de um gasto (restore_expense)", async (t) =>
   const { queueReply } = withMocks(t);
   queueReply([{ type: "edit_expense", query: "gasto a editar undo", field: "amount", value: "99" }]);
   await handleIncomingMessage(evolutionMessage(U3, "muda o gasto a editar undo pra 99"));
+  await handleIncomingMessage(evolutionMessage(U3, "sim"));
   const edited = findRecentExpense(U3, "gasto a editar undo");
   assert.equal(edited?.amount, 99);
 
@@ -336,6 +349,7 @@ test("undo: reverte a ultima correcao de categoria (restore_category)", async (t
   const { queueReply } = withMocks(t);
   queueReply([{ type: "correct_category", category: "Undo-mudada", query: "gasto categoria undo" }]);
   await handleIncomingMessage(evolutionMessage(U4, "muda a categoria do gasto categoria undo pra undo-mudada"));
+  await handleIncomingMessage(evolutionMessage(U4, "sim"));
   let expense = findRecentExpense(U4, "gasto categoria undo");
   assert.equal(expense?.category_id, changed.id);
 
@@ -760,4 +774,90 @@ test("merge_categories: undo recria a categoria de origem e devolve os gastos pr
   const recreated = findCategoryByName(MC2, "Lazer-merge-undo");
   assert.ok(recreated);
   assert.equal(getExpenseById(MC2, e1.id)?.category_id, recreated!.id);
+});
+
+// Pedido do usuario: nenhuma alteracao (gasto, categoria...) deve ser aplicada
+// sem antes mostrar "de X pra Y" e pedir confirmacao -- e se a resposta nao for
+// um "sim"/"nao" claro, deve dar pra AJUSTAR o valor proposto antes de efetivar.
+test("edit_expense: pede confirmacao antes de mudar, e permite ajustar o valor antes de confirmar", async (t) => {
+  const EE1 = "551100090095";
+  seed(EE1);
+  const cat = getOrCreateCategory(EE1, "Edit-confirm");
+  insertExpense({ fromNumber: EE1, amount: 40, description: "gasto edit confirm", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "gasto edit confirm", field: "amount", value: "45" }]);
+  await handleIncomingMessage(evolutionMessage(EE1, "muda o gasto edit confirm pra 45"));
+  assert.match(sent[0].text, /45/);
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(findRecentExpense(EE1, "gasto edit confirm")?.amount, 40); // ainda nao mudou, so perguntou
+
+  // nem "sim" nem "nao": trata como ajuste do valor proposto
+  await handleIncomingMessage(evolutionMessage(EE1, "46,50"));
+  assert.match(sent[1].text, /46\.50/); // mesmo formato ja usado no resto das mensagens (R$X.XX)
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.equal(findRecentExpense(EE1, "gasto edit confirm")?.amount, 40); // continua sem confirmar
+
+  await handleIncomingMessage(evolutionMessage(EE1, "sim"));
+  assert.equal(findRecentExpense(EE1, "gasto edit confirm")?.amount, 46.5);
+});
+
+test("edit_expense: responder 'nao' nao muda nada", async (t) => {
+  const EE2 = "551100090096";
+  seed(EE2);
+  const cat = getOrCreateCategory(EE2, "Edit-nao");
+  insertExpense({ fromNumber: EE2, amount: 20, description: "gasto edit nao", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "gasto edit nao", field: "amount", value: "99" }]);
+  await handleIncomingMessage(evolutionMessage(EE2, "muda o gasto edit nao pra 99"));
+  await handleIncomingMessage(evolutionMessage(EE2, "não, deixa"));
+  assert.match(sent[1].text, /não mexi/i);
+  assert.equal(findRecentExpense(EE2, "gasto edit nao")?.amount, 20);
+});
+
+test("correct_category: pede confirmacao antes de mudar, e permite ajustar a categoria antes de confirmar", async (t) => {
+  const CC10 = "551100090097";
+  seed(CC10);
+  const original = getOrCreateCategory(CC10, "Categoria-original-confirm");
+  insertExpense({ fromNumber: CC10, amount: 30, description: "gasto categoria confirm", categoryId: original.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "correct_category", category: "Lazer-confirm", query: "gasto categoria confirm" }]);
+  await handleIncomingMessage(evolutionMessage(CC10, "muda a categoria do gasto categoria confirm pra lazer-confirm"));
+  assert.match(sent[0].text, /Categoria-original-confirm/);
+  assert.match(sent[0].text, /Lazer-confirm/);
+  assert.equal(findRecentExpense(CC10, "gasto categoria confirm")?.category_id, original.id); // ainda nao mudou
+
+  // ajuste com ate 3 palavras: resolve direto (nao chama extractCategoryFromAnswer,
+  // que faria uma chamada de verdade a IA -- ver resolvePendingCategorization,
+  // mesma convencao ja usada nos outros testes desse arquivo)
+  await handleIncomingMessage(evolutionMessage(CC10, "Viagem-confirm"));
+  assert.match(sent[1].text, /Viagem-confirm/);
+  assert.equal(findRecentExpense(CC10, "gasto categoria confirm")?.category_id, original.id);
+
+  await handleIncomingMessage(evolutionMessage(CC10, "sim"));
+  const final = findRecentExpense(CC10, "gasto categoria confirm");
+  assert.equal(findCategoryByName(CC10, "Viagem-confirm")?.id, final?.category_id);
+});
+
+test("correct_category: ja esta na categoria pedida, avisa sem pedir confirmacao", async (t) => {
+  const CC11 = "551100090098";
+  seed(CC11);
+  const cat = getOrCreateCategory(CC11, "Ja-esta-confirm");
+  insertExpense({ fromNumber: CC11, amount: 10, description: "gasto ja esta", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "correct_category", category: "Ja-esta-confirm", query: "gasto ja esta" }]);
+  await handleIncomingMessage(evolutionMessage(CC11, "muda a categoria do gasto ja esta pra ja-esta-confirm"));
+  assert.match(sent[0].text, /já está/i);
+});
+
+test("reminder: mensagem de criacao mostra o horario que vai avisar", async (t) => {
+  const REM1 = "551100090100";
+  seed(REM1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "tomar remedio", due_at: "2026-09-10T20:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(REM1, "me lembra de tomar remedio as 20h"));
+  assert.match(sent[0].text, /20:00/);
 });

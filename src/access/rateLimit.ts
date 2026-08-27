@@ -33,3 +33,12 @@ export function recordMessageAndCheckLimit(fromNumber: string): boolean {
   timestamps.set(fromNumber, recent);
   return false;
 }
+
+// so pra testes: os contadores sao um Map em memoria que vive pelo processo
+// inteiro, entao testes que reusam o mesmo numero de teste repetidas vezes no
+// mesmo arquivo (convencao estabelecida nesse projeto) podem acumular mensagens
+// de cenarios sem nenhuma relacao entre si e disparar o limite sem querer.
+export function resetRateLimitForTests() {
+  timestamps.clear();
+  cooldownUntil.clear();
+}
