@@ -18,6 +18,9 @@ import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDele
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
+import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
+import { shouldAlertOwner } from "./access/ownerAlert";
+import { config } from "./config";
 import { spDateString } from "./timeSP";
 import {
   ensureUserSeeded,
@@ -245,13 +248,44 @@ const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp
 Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.`;
 
 export async function handleIncomingMessage(data: EvolutionMessage) {
+  // Mensagem de grupo (JID termina em @g.us): nunca processa, incondicional --
+  // mesmo que alguem aprove um grupo por engano no /admin, essa checagem
+  // independente evita o bot responder pra varias pessoas de uma vez.
+  if (data.key.remoteJid.endsWith("@g.us")) return;
+
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
 
   // Numero nao autorizado: ignora em silencio, sem mandar nada de volta. Evita
   // loop de bot conversando com bot de outra empresa (ja aconteceu em producao).
-  // Liberar numeros novos no /admin.
+  // Liberar numeros novos no /admin. Avisa o dono (uma vez por hora por numero,
+  // ver ownerAlert.ts) pra ele saber na hora em vez de descobrir depois.
   if (!isNumberAllowed(from)) {
-    logActivity(from, "blocked", `mensagem bloqueada (numero nao autorizado): ${blockedMessagePreview(data)}`);
+    const preview = blockedMessagePreview(data);
+    logActivity(from, "blocked", `mensagem bloqueada (numero nao autorizado): ${preview}`);
+    if (shouldAlertOwner(`blocked:${from}`)) {
+      await sendText(
+        config.myWhatsappNumber,
+        `🚨 Número não autorizado tentou falar comigo: ${from}\nMensagem: "${preview}"\n\nSe for legítimo, aprove em /admin.`
+      ).catch((err) => console.error("Erro ao avisar o dono sobre numero bloqueado:", err));
+    }
+    return;
+  }
+
+  // Freio de emergencia: numero ja autorizado mandando mensagens rapido demais
+  // (loop de outro tipo, script travado etc) tambem pausa, pra nunca gastar API
+  // sem limite. Ver rateLimit.ts.
+  if (isRateLimited(from)) return;
+  if (recordMessageAndCheckLimit(from)) {
+    logActivity(from, "rate_limited", "mais de 20 mensagens em 5 min -- pausado por 30 min");
+    await sendText(from, "Você mandou muitas mensagens muito rápido. Vou pausar por 30 min pra não sobrecarregar. Se não foi você, pode ignorar.").catch(
+      (err) => console.error("Erro ao avisar numero sobre rate limit:", err)
+    );
+    if (shouldAlertOwner(`rate_limited:${from}`)) {
+      await sendText(
+        config.myWhatsappNumber,
+        `🚨 Número ${from} mandou muitas mensagens muito rápido (possível loop) e foi pausado por 30 min.`
+      ).catch((err) => console.error("Erro ao avisar o dono sobre rate limit:", err));
+    }
     return;
   }
 

@@ -7,6 +7,7 @@ import { Interpretation } from "../../src/ai/interpret";
 import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded, getExpenseById } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { getRecentBlockedAttempts } from "../../src/activity/service";
+import { config } from "../../src/config";
 import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
@@ -449,8 +450,12 @@ test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita
   queueReply([{ type: "expense", amount: 999, category: "Nao Deveria Processar", description: "nao deveria registrar", date: today() }]);
   await handleIncomingMessage(evolutionMessage(BLOCKED, "oi, aqui e a empresa XPTO"));
 
-  assert.equal(sent.length, 0); // nenhuma mensagem enviada de volta, nem erro nem confirmacao
+  assert.ok(!sent.some((s) => s.to === BLOCKED)); // o proprio numero bloqueado nao recebe nada de volta
   assert.equal(findRecentExpense(BLOCKED), null); // e nao processou a acao (nao criou o gasto)
+  // o dono recebe um alerta (uma vez), pra saber na hora em vez de descobrir depois
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, config.myWhatsappNumber);
+  assert.match(sent[0].text, new RegExp(BLOCKED));
   const blocked = getRecentBlockedAttempts(50);
   assert.ok(blocked.some((b) => b.from_number === BLOCKED && b.summary.includes("oi, aqui e a empresa XPTO")));
 });
@@ -462,10 +467,51 @@ test("numero autorizado depois de bloqueado passa a receber resposta normalmente
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "help" }]);
   await handleIncomingMessage(evolutionMessage(LATE, "o que voce faz"));
-  assert.equal(sent.length, 0); // ainda bloqueado
+  assert.ok(!sent.some((s) => s.to === LATE)); // ainda bloqueado, LATE nao recebe nada
+  assert.equal(sent.length, 1); // so o alerta pro dono
 
   allowNumber(LATE, "aprovado pelo /admin");
   queueReply([{ type: "help" }]);
   await handleIncomingMessage(evolutionMessage(LATE, "o que voce faz"));
-  assert.equal(sent.length, 2); // a primeira mensagem (boas-vindas, numero novo) + a resposta da ajuda
+  assert.equal(sent.length, 3); // + boas-vindas (numero novo) + a resposta da ajuda
+});
+
+test("mensagem de grupo (@g.us) e ignorada incondicionalmente, mesmo que o JID esteja liberado por engano", async (t) => {
+  const GROUP_JID = "123456789-987654321@g.us";
+  allowNumber(GROUP_JID); // simula alguem aprovando um grupo por engano no /admin
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage({
+    key: { remoteJid: GROUP_JID, id: "test-group-1", fromMe: false },
+    messageType: "conversation",
+    message: { conversation: "mensagem de um grupo" },
+  });
+
+  assert.equal(sent.length, 0); // nao responde em grupo, mesmo autorizado
+});
+
+test("rate limit: mais de 20 mensagens em 5 min pausa o numero, avisa ele uma vez e avisa o dono uma vez", async (t) => {
+  const RL = "551100090051";
+  seed(RL);
+  const { sent, queueReply } = withMocks(t);
+
+  // 20 mensagens dentro do limite: fila de IA vazia -> [] de interpretacoes -> nao manda nada
+  for (let i = 0; i < 20; i++) {
+    await handleIncomingMessage(evolutionMessage(RL, `mensagem numero ${i}`));
+  }
+  assert.equal(sent.length, 0);
+
+  // a 21a estoura o limite
+  await handleIncomingMessage(evolutionMessage(RL, "mensagem que estoura o limite"));
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].to, RL);
+  assert.match(sent[0].text, /pausar/i);
+  assert.equal(sent[1].to, config.myWhatsappNumber);
+  assert.match(sent[1].text, new RegExp(RL));
+
+  // enquanto o cooldown estiver ativo, fica em silencio total (nao repete o aviso)
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage(evolutionMessage(RL, "mensagem durante o cooldown"));
+  assert.equal(sent.length, 2); // nao aumentou
 });
