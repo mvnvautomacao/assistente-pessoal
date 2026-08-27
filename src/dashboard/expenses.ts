@@ -12,6 +12,7 @@ import {
   listPaymentMethods,
   searchExpenses,
   getAllExpenses,
+  bulkUpdateExpenseCategory,
   ExpenseListItem,
 } from "../expenses/service";
 import { renderPage, renderPhoneGate } from "./layout";
@@ -64,9 +65,13 @@ function paymentMethodOptions(phone: string, selectedId: number | null) {
   return `<option value="">Não informado</option>${options}`;
 }
 
+// o checkbox usa o atributo form="bulk-cat-form" pra pertencer aquele form
+// mesmo estando dentro da <tr> -- assim nao precisa aninhar <form> dentro de
+// <form> (a linha ja tem o form de Excluir), o que o HTML nao permite.
 function expenseRow(phone: string, e: ExpenseListItem) {
   return `
       <tr>
+        <td><input type="checkbox" class="bulk-select-checkbox" name="expense_ids" value="${e.id}" form="bulk-cat-form"></td>
         <td>${formatDate(e.date)}</td>
         <td>${escapeHtml(e.description)}</td>
         <td><span class="tag">${escapeHtml(e.category ?? "Sem categoria")}</span></td>
@@ -79,6 +84,43 @@ function expenseRow(phone: string, e: ExpenseListItem) {
           </form>
         </td>
       </tr>`;
+}
+
+// barra de recategorizacao em lote: fica fora da tabela, mas os checkboxes de
+// cada linha apontam pra ela via form="bulk-cat-form" (ver expenseRow acima).
+function bulkRecategorizeBar(phone: string) {
+  return `
+  <form id="bulk-cat-form" class="bulk-bar" method="post" action="/dashboard/expenses/bulk-recategorize?phone=${encodeURIComponent(phone)}">
+    <label class="bulk-select-all"><input type="checkbox" id="bulk-select-all"> <span id="bulk-count">0 selecionado(s)</span></label>
+    <select name="category_id" required>
+      <option value="">Mudar categoria selecionada(s) pra...</option>
+      ${categoryOptions(phone, null).replace('<option value="">Sem categoria</option>', "")}
+    </select>
+    <button type="submit" class="btn secondary">Aplicar</button>
+  </form>
+  <script>
+    (function () {
+      var selectAll = document.getElementById("bulk-select-all");
+      var countEl = document.getElementById("bulk-count");
+      var form = document.getElementById("bulk-cat-form");
+      function checkboxes() { return document.querySelectorAll(".bulk-select-checkbox"); }
+      function updateCount() {
+        var n = document.querySelectorAll(".bulk-select-checkbox:checked").length;
+        if (countEl) countEl.textContent = n + " selecionado(s)";
+      }
+      if (selectAll) selectAll.addEventListener("change", function () {
+        checkboxes().forEach(function (cb) { cb.checked = selectAll.checked; });
+        updateCount();
+      });
+      checkboxes().forEach(function (cb) { cb.addEventListener("change", updateCount); });
+      if (form) form.addEventListener("submit", function (e) {
+        if (document.querySelectorAll(".bulk-select-checkbox:checked").length === 0) {
+          e.preventDefault();
+          alert("Marque pelo menos um gasto pra mudar a categoria.");
+        }
+      });
+    })();
+  </script>`;
 }
 
 // campo de busca no topo da pagina de gastos: navegacao normal e so mes a mes,
@@ -125,7 +167,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     const results = searchExpenses(phone, q);
     const rows = results.length
       ? results.map((e) => expenseRow(phone, e)).join("")
-      : `<tr><td colspan="6" class="empty">Nenhum gasto encontrado pra "${escapeHtml(q)}".</td></tr>`;
+      : `<tr><td colspan="7" class="empty">Nenhum gasto encontrado pra "${escapeHtml(q)}".</td></tr>`;
 
     const body = `
     <header>
@@ -137,8 +179,9 @@ expensesRouter.get("/dashboard", (req, res) => {
     </header>
     ${searchBox(phone, q)}
     <p class="empty" style="text-align:left;padding:0 0 16px">${results.length} gasto(s) encontrado(s), de todos os meses.</p>
+    ${results.length ? bulkRecategorizeBar(phone) : ""}
     <div class="table-wrap"><table>
-      <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
+      <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
       ${rows}
     </table></div>`;
 
@@ -162,7 +205,7 @@ expensesRouter.get("/dashboard", (req, res) => {
 
   const expenseRows = expenses.length
     ? expenses.map((e) => expenseRow(phone, e)).join("")
-    : `<tr><td colspan="6" class="empty">Nenhum gasto registrado neste mês.</td></tr>`;
+    : `<tr><td colspan="7" class="empty">Nenhum gasto registrado neste mês.</td></tr>`;
 
   const body = `
   <header>
@@ -193,8 +236,9 @@ expensesRouter.get("/dashboard", (req, res) => {
     <div class="panel"><h2>Por forma de pagamento</h2>${barList(paymentTotals)}</div>
   </div>
 
+  ${expenses.length ? bulkRecategorizeBar(phone) : ""}
   <div class="table-wrap"><table>
-    <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
+    <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
     ${expenseRows}
   </table></div>`;
 
@@ -262,6 +306,25 @@ expensesRouter.post("/dashboard/expenses/new", (req, res) => {
     categoryId: category_id ? Number(category_id) : null,
     paymentMethodId: payment_method_id ? Number(payment_method_id) : null,
   });
+
+  res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
+});
+
+// aplica a mesma categoria a varios gastos marcados na tabela (checkboxes) de
+// uma vez. Registrada ANTES das rotas com :id -- senao "bulk-recategorize"
+// seria capturado pelo "/dashboard/expenses/:id" (POST) de editar, ja que :id
+// combina com qualquer string (Express casa rotas na ordem em que foram registradas).
+expensesRouter.post("/dashboard/expenses/bulk-recategorize", (req, res) => {
+  const phone = getPhone(req);
+  if (!phone) return res.send(renderPhoneGate());
+
+  const categoryId = Number(req.body.category_id);
+  const rawIds = req.body.expense_ids;
+  const ids = (Array.isArray(rawIds) ? rawIds : rawIds ? [rawIds] : []).map(Number).filter((n) => Number.isFinite(n));
+
+  if (categoryId && ids.length) {
+    bulkUpdateExpenseCategory(phone, ids, categoryId);
+  }
 
   res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
 });

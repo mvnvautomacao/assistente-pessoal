@@ -340,10 +340,14 @@ export function getExpensesByCategoryId(fromNumber: string, categoryId: number):
     .all(fromNumber, categoryId) as unknown as ExpenseListItem[];
 }
 
-// aplica a mesma categoria a varios gastos de uma vez
-export function bulkUpdateExpenseCategory(expenseIds: number[], categoryId: number) {
-  const stmt = db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ?`);
-  for (const id of expenseIds) stmt.run(categoryId, id);
+// aplica a mesma categoria a varios gastos de uma vez. Filtra por from_number
+// tambem (nao so id) -- essencial na rota do dashboard, onde os ids vem direto
+// do formulario (dado do usuario) e um numero poderia tentar mexer em gasto de
+// outro numero manipulando a requisicao. No fluxo do WhatsApp isso e redundante
+// (os ids ja vem de uma query filtrada por numero), mas nao custa nada garantir aqui tambem.
+export function bulkUpdateExpenseCategory(fromNumber: string, expenseIds: number[], categoryId: number) {
+  const stmt = db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ? AND from_number = ?`);
+  for (const id of expenseIds) stmt.run(categoryId, id, fromNumber);
 }
 
 export interface PendingCategorization {

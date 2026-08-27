@@ -65,6 +65,13 @@ const STYLE = `
   .chip-row { display: flex; align-items: center; gap: 8px; margin-bottom: 26px; flex-wrap: wrap; }
   .search-row { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
   .search-row input[type="text"] { flex: 1; min-width: 220px; }
+  .bulk-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px;
+  }
+  .bulk-bar select { flex: 1; min-width: 200px; }
+  .bulk-select-all { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.84rem; white-space: nowrap; }
+  table input[type="checkbox"], .bulk-select-all input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
   select, input {
     padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);

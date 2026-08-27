@@ -249,8 +249,21 @@ test("getExpensesByCategoryId / bulkUpdateExpenseCategory: acha e move todos os 
   const byCategory = getExpensesByCategoryId(J, origem.id);
   assert.equal(byCategory.length, 2);
 
-  bulkUpdateExpenseCategory([e1.id, e2.id], destino.id);
+  bulkUpdateExpenseCategory(J, [e1.id, e2.id], destino.id);
   assert.equal(getExpenseById(J, e1.id)?.category_id, destino.id);
   assert.equal(getExpenseById(J, e2.id)?.category_id, destino.id);
   assert.equal(getExpensesByCategoryId(J, origem.id).length, 0);
+});
+
+test("SEGURANCA: bulkUpdateExpenseCategory nunca alcanca gasto de outro numero, mesmo passando o id certo", () => {
+  const K = "551100010094";
+  const L = "551100010093";
+  const catK = getOrCreateCategory(K, "Categoria-K");
+  const catL = getOrCreateCategory(L, "Categoria-L");
+  const gastoDeL = insertExpense({ fromNumber: L, amount: 50, description: "gasto de L", categoryId: catL.id, paymentMethodId: null, date: "2026-01-01" });
+
+  // K tenta mudar a categoria de um gasto que na verdade e do numero L
+  bulkUpdateExpenseCategory(K, [gastoDeL.id], catK.id);
+
+  assert.equal(getExpenseById(L, gastoDeL.id)?.category_id, catL.id); // continua intacto
 });

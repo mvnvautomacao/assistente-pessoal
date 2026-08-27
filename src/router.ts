@@ -581,7 +581,7 @@ async function resolveBulkRecategorizeConfirmation(from: string, pending: Pendin
     return;
   }
 
-  bulkUpdateExpenseCategory(pending.expenseIds, pending.toCategoryId);
+  bulkUpdateExpenseCategory(from, pending.expenseIds, pending.toCategoryId);
   setPendingUndo(from, {
     kind: "bulk_restore_category",
     changes: pending.previous,
@@ -613,7 +613,7 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
     return;
   }
 
-  bulkUpdateExpenseCategory(pending.expenseIds, pending.targetCategoryId);
+  bulkUpdateExpenseCategory(from, pending.expenseIds, pending.targetCategoryId);
   deleteCategory(from, pending.sourceCategoryId);
   setPendingUndo(from, {
     kind: "undo_merge_categories",
