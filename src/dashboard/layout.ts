@@ -146,8 +146,14 @@ const STYLE = `
   }
   .calendar-cell.empty { background: transparent; border-color: transparent; }
   .calendar-cell.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .calendar-cell.selected { background: var(--card-hover); border-color: var(--accent); }
   .calendar-cell .day-num { display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
   .calendar-cell.today .day-num { color: var(--accent); }
+  .calendar-cell .day-select {
+    color: inherit; text-decoration: none; padding: 1px 5px; border-radius: 6px; margin: -1px -5px;
+  }
+  .calendar-cell .day-select:hover { background: var(--accent-soft); color: var(--accent); }
+  .calendar-cell.selected .day-select { background: var(--accent); color: #fff; }
   .calendar-cell .day-add { color: var(--muted); text-decoration: none; font-size: 0.85rem; line-height: 1; padding: 0 2px; }
   .calendar-cell .day-add:hover { color: var(--accent); }
   .calendar-cell .ev {

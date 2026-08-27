@@ -30,7 +30,22 @@ function getPhone(req: { query: Record<string, unknown> }): string {
 
 const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function renderCalendar(phone: string, month: string, today: string, eventsByDay: Map<string, EventRow[]>): string {
+// "Hoje" se for o dia de hoje, senao a data por extenso (ex: "Terca-feira, 25 de agosto")
+function spotlightLabel(selected: string, today: string): string {
+  if (selected === today) return "Hoje";
+  const [y, m, d] = selected.split("-").map(Number);
+  // meio-dia UTC = 09h em Sao Paulo (UTC-3): mesmo dia calendario, sem risco de
+  // virar pro dia adjacente ao formatar
+  const label = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    timeZone: "America/Sao_Paulo",
+  }).format(new Date(Date.UTC(y, m - 1, d, 12)));
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function renderCalendar(phone: string, month: string, today: string, selected: string, eventsByDay: Map<string, EventRow[]>): string {
   const qs = `phone=${encodeURIComponent(phone)}`;
   const cells = calendarCells(month)
     .map((date) => {
@@ -39,10 +54,18 @@ function renderCalendar(phone: string, month: string, today: string, eventsByDay
       const dayNum = Number(date.slice(8, 10));
       const shown = dayEvents.slice(0, 2);
       const extra = dayEvents.length - shown.length;
+      const classes = [
+        "calendar-cell",
+        date === today ? "today" : "",
+        date === selected ? "selected" : "",
+        dayEvents.length ? "has-events" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       return `
-      <div class="calendar-cell${date === today ? " today" : ""}${dayEvents.length ? " has-events" : ""}">
+      <div class="${classes}">
         <div class="day-num">
-          <span>${dayNum}</span>
+          <a class="day-select" href="/dashboard/events?${qs}&month=${month}&selected=${date}" title="Ver eventos de ${date.split("-").reverse().join("/")}">${dayNum}</a>
           <a class="day-add" href="/dashboard/events/new?${qs}&date=${date}" title="Novo evento em ${date.split("-").reverse().join("/")}">+</a>
         </div>
         ${shown.map((e) => `<a class="ev" href="/dashboard/events/${e.id}/edit?${qs}" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}</a>`).join("")}
@@ -73,11 +96,13 @@ eventsRouter.get("/dashboard/events", (req, res) => {
 
   const today = todaySP();
   const month = typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : today.slice(0, 7);
+  const selected = typeof req.query.selected === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.selected) ? req.query.selected : today;
 
-  // eventos de hoje sao buscados separado do mes navegado no calendario, pra
-  // o destaque continuar certo mesmo se o usuario estiver vendo outro mes
-  const todaysEvents = getEventsForMonth(phone, today.slice(0, 7))
-    .filter((e) => e.start.slice(0, 10) === today)
+  // eventos do dia selecionado (hoje, por padrao) sao buscados separado do mes
+  // navegado no calendario, pra o destaque continuar certo mesmo se o dia
+  // selecionado for de um mes diferente do que esta sendo mostrado
+  const selectedEvents = getEventsForMonth(phone, selected.slice(0, 7))
+    .filter((e) => e.start.slice(0, 10) === selected)
     .sort((a, b) => a.start.localeCompare(b.start));
 
   const monthEvents = getEventsForMonth(phone, month);
@@ -90,10 +115,10 @@ eventsRouter.get("/dashboard/events", (req, res) => {
 
   const spotlight = `
   <div class="spotlight">
-    <h2>Hoje</h2>
+    <h2>${escapeHtml(spotlightLabel(selected, today))}</h2>
     ${
-      todaysEvents.length
-        ? todaysEvents
+      selectedEvents.length
+        ? selectedEvents
             .map(
               (e) => `
       <div class="spotlight-event">
@@ -104,7 +129,7 @@ eventsRouter.get("/dashboard/events", (req, res) => {
       </div>`
             )
             .join("")
-        : `<p style="color:var(--muted);font-size:0.88rem;margin:0">Nenhum evento hoje.</p>`
+        : `<p style="color:var(--muted);font-size:0.88rem;margin:0">Nenhum evento ${selected === today ? "hoje" : "nesse dia"}.</p>`
     }
   </div>`;
 
@@ -143,7 +168,7 @@ eventsRouter.get("/dashboard/events", (req, res) => {
 
   ${spotlight}
 
-  ${renderCalendar(phone, month, today, eventsByDay)}
+  ${renderCalendar(phone, month, today, selected, eventsByDay)}
 
   <h2 style="font-size:0.95rem;margin:0 0 12px">Próximos eventos</h2>
   <div class="chip-row">${dayChip(30, "30 dias")}${dayChip(60, "60 dias")}${dayChip(90, "90 dias")}</div>
