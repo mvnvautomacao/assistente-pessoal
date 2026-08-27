@@ -51,6 +51,7 @@ const STYLE = `
     flex-wrap: wrap; gap: 16px; margin-bottom: 18px;
   }
   h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.01em; margin: 0; }
+  .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { font-weight: 700; }
 
   .month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 26px; }

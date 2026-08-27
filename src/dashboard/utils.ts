@@ -89,6 +89,26 @@ export function fromSPDateTimeLocal(value: string): string {
   return `${value}:00-03:00`;
 }
 
+// Monta um CSV pro Excel em portugues do Brasil: ";" como separador de campo
+// (a virgula ali e o separador decimal no Excel PT-BR, entao usar virgula como
+// separador de campo quebraria a leitura), e um BOM UTF-8 no inicio, senao o
+// Excel abre acento (á, ã, ç...) corrompido.
+function csvField(value: string): string {
+  return /[;"\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+export function buildCsv(headers: string[], rows: string[][]): string {
+  const BOM = "﻿";
+  const lines = [headers, ...rows].map((row) => row.map(csvField).join(";"));
+  return BOM + lines.join("\r\n");
+}
+
+// "1234.5" -> "1234,50", pra celula de valor no CSV (decimal com virgula, sem
+// separador de milhar, pra nao confundir com o separador de campo)
+export function formatAmountCsv(amount: number): string {
+  return amount.toFixed(2).replace(".", ",");
+}
+
 // Mascara de moeda BR (milhar com ponto, 2 casas decimais com virgula), reutilizavel
 // em qualquer pagina: cada <input class="money-mask"> precisa de um
 // <input type="hidden"> logo em seguida no HTML, que recebe o valor decimal puro

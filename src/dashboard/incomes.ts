@@ -1,13 +1,48 @@
 import { Router } from "express";
-import { getIncomesForMonth, getAvailableIncomeMonths, getIncomeById, updateIncome, deleteIncome, insertIncome } from "../incomes/service";
+import {
+  getIncomesForMonth,
+  getAvailableIncomeMonths,
+  getIncomeById,
+  updateIncome,
+  deleteIncome,
+  insertIncome,
+  getAllIncomes,
+} from "../incomes/service";
 import { renderPage, renderPhoneGate } from "./layout";
-import { normalizeBrazilPhone, escapeHtml, formatMoney, formatAmountInput, formatDate, monthLabel, shiftMonth, todaySP, MONEY_MASK_SCRIPT } from "./utils";
+import {
+  normalizeBrazilPhone,
+  escapeHtml,
+  formatMoney,
+  formatAmountInput,
+  formatDate,
+  monthLabel,
+  shiftMonth,
+  todaySP,
+  MONEY_MASK_SCRIPT,
+  buildCsv,
+  formatAmountCsv,
+} from "./utils";
 
 export const incomesRouter = Router();
 
 function getPhone(req: { query: Record<string, unknown> }): string {
   return typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
 }
+
+// exporta TODAS as entradas (todo o historico, nao so o mes em tela) -- pensado
+// pra declarar imposto de renda ou levar pra uma planilha externa.
+incomesRouter.get("/dashboard/incomes/export.csv", (req, res) => {
+  const phone = getPhone(req);
+  if (!phone) return res.send(renderPhoneGate());
+
+  const items = getAllIncomes(phone);
+  const rows = items.map((i) => [formatDate(i.date), i.description, formatAmountCsv(i.amount)]);
+  const csv = buildCsv(["Data", "Descrição", "Valor (R$)"], rows);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="entradas-${phone}.csv"`);
+  res.send(csv);
+});
 
 incomesRouter.get("/dashboard/incomes", (req, res) => {
   const phone = getPhone(req);
@@ -46,7 +81,10 @@ incomesRouter.get("/dashboard/incomes", (req, res) => {
   const body = `
   <header>
     <h1>${escapeHtml(monthLabel(month))}</h1>
-    <a class="btn" href="/dashboard/incomes/new?phone=${encodeURIComponent(phone)}">+ Nova entrada</a>
+    <div class="header-actions">
+      <a class="btn secondary" href="/dashboard/incomes/export.csv?phone=${encodeURIComponent(phone)}">Exportar CSV</a>
+      <a class="btn" href="/dashboard/incomes/new?phone=${encodeURIComponent(phone)}">+ Nova entrada</a>
+    </div>
   </header>
   <div class="month-nav">
     <a class="arrow" href="/dashboard/incomes?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, -1)}">‹</a>

@@ -390,6 +390,21 @@ export function getExpensesForMonth(fromNumber: string, yearMonth: string): Expe
     .all(fromNumber, yearMonth) as unknown as ExpenseListItem[];
 }
 
+// todos os gastos de um numero, sem limite de mes -- pra exportar em CSV
+// (ex: declarar imposto de renda precisa do ano inteiro, nao so o mes atual).
+export function getAllExpenses(fromNumber: string): ExpenseListItem[] {
+  return db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE e.from_number = ?
+       ORDER BY e.date DESC, e.id DESC`
+    )
+    .all(fromNumber) as unknown as ExpenseListItem[];
+}
+
 // busca por texto na descricao, em TODOS os meses (nao so o mes atual) -- pro
 // campo de busca do dashboard, ja que a navegacao normal e so mes a mes.
 // Filtra em JS com normalize() (ignora acento/maiuscula, igual findRecentExpense)

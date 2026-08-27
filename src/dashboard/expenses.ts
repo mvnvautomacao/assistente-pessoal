@@ -11,6 +11,7 @@ import {
   listCategories,
   listPaymentMethods,
   searchExpenses,
+  getAllExpenses,
   ExpenseListItem,
 } from "../expenses/service";
 import { renderPage, renderPhoneGate } from "./layout";
@@ -24,6 +25,8 @@ import {
   shiftMonth,
   todaySP,
   MONEY_MASK_SCRIPT,
+  buildCsv,
+  formatAmountCsv,
 } from "./utils";
 
 export const expensesRouter = Router();
@@ -91,6 +94,27 @@ function searchBox(phone: string, q: string) {
   </form>`;
 }
 
+// exporta TODOS os gastos (todo o historico, nao so o mes em tela) -- pensado
+// pra declarar imposto de renda ou levar pra uma planilha externa.
+expensesRouter.get("/dashboard/expenses/export.csv", (req, res) => {
+  const phone = getPhone(req);
+  if (!phone) return res.send(renderPhoneGate());
+
+  const items = getAllExpenses(phone);
+  const rows = items.map((e) => [
+    formatDate(e.date),
+    e.description,
+    e.category ?? "Sem categoria",
+    e.payment_method ?? "",
+    formatAmountCsv(e.amount),
+  ]);
+  const csv = buildCsv(["Data", "Descrição", "Categoria", "Forma de pagamento", "Valor (R$)"], rows);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="gastos-${phone}.csv"`);
+  res.send(csv);
+});
+
 expensesRouter.get("/dashboard", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
@@ -106,7 +130,10 @@ expensesRouter.get("/dashboard", (req, res) => {
     const body = `
     <header>
       <h1>Busca: "${escapeHtml(q)}"</h1>
-      <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
+      <div class="header-actions">
+        <a class="btn secondary" href="/dashboard/expenses/export.csv?phone=${encodeURIComponent(phone)}">Exportar CSV</a>
+        <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
+      </div>
     </header>
     ${searchBox(phone, q)}
     <p class="empty" style="text-align:left;padding:0 0 16px">${results.length} gasto(s) encontrado(s), de todos os meses.</p>
@@ -140,7 +167,10 @@ expensesRouter.get("/dashboard", (req, res) => {
   const body = `
   <header>
     <h1>${escapeHtml(monthLabel(month))}</h1>
-    <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
+    <div class="header-actions">
+      <a class="btn secondary" href="/dashboard/expenses/export.csv?phone=${encodeURIComponent(phone)}">Exportar CSV</a>
+      <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
+    </div>
   </header>
   ${searchBox(phone, q)}
   <div class="month-nav">

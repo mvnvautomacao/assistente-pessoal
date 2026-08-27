@@ -71,6 +71,13 @@ export function getIncomeSummaryBetween(start: string, end: string, fromNumber?:
   return row;
 }
 
+// todas as entradas de um numero, sem limite de mes -- pra exportar em CSV.
+export function getAllIncomes(fromNumber: string): IncomeRecord[] {
+  return db
+    .prepare(`SELECT * FROM incomes WHERE from_number = ? ORDER BY date DESC, id DESC`)
+    .all(fromNumber) as unknown as IncomeRecord[];
+}
+
 export function getIncomesForMonth(fromNumber: string, yearMonth: string): IncomeRecord[] {
   return db
     .prepare(`SELECT * FROM incomes WHERE from_number = ? AND strftime('%Y-%m', date) = ? ORDER BY date DESC, id DESC`)

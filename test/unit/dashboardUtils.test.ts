@@ -11,6 +11,8 @@ import {
   toSPDateTimeLocal,
   fromSPDateTimeLocal,
   calendarCells,
+  buildCsv,
+  formatAmountCsv,
 } from "../../src/dashboard/utils";
 
 test("normalizeBrazilPhone remove o 9 extra do numero digitado no formato padrao", () => {
@@ -88,4 +90,25 @@ test("calendarCells: cada mes tem exatamente o numero certo de dias, sem duplica
   assert.equal(days.length, 30);
   assert.deepEqual(days[0], "2026-04-01");
   assert.deepEqual(days[29], "2026-04-30");
+});
+
+test("formatAmountCsv usa virgula decimal, sem separador de milhar", () => {
+  assert.equal(formatAmountCsv(45.9), "45,90");
+  assert.equal(formatAmountCsv(1234.5), "1234,50");
+  assert.equal(formatAmountCsv(0), "0,00");
+});
+
+test("buildCsv usa ; como separador de campo e comeca com o BOM UTF-8 (Excel PT-BR)", () => {
+  const csv = buildCsv(["Data", "Descrição"], [["27/08/2026", "Mercado"]]);
+  assert.equal(csv.charCodeAt(0), 0xfeff); // BOM
+  const withoutBom = csv.slice(1);
+  const lines = withoutBom.split("\r\n");
+  assert.equal(lines[0], "Data;Descrição");
+  assert.equal(lines[1], "27/08/2026;Mercado");
+});
+
+test("buildCsv coloca entre aspas (e escapa aspas internas) campo que tem ; ou aspas", () => {
+  const csv = buildCsv(["Descrição"], [['Compra "grande"; especial']]);
+  const line = csv.slice(1).split("\r\n")[1];
+  assert.equal(line, '"Compra ""grande""; especial"');
 });

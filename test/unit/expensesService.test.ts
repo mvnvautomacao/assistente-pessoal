@@ -28,6 +28,7 @@ import {
   getExpensesBetween,
   getCategoryTotalsForMonth,
   searchExpenses,
+  getAllExpenses,
 } from "../../src/expenses/service";
 
 const A = "551100010001";
@@ -204,4 +205,17 @@ test("searchExpenses busca por descricao em qualquer mes, ignorando maiuscula, e
   assert.ok(results.some((e) => e.description === "farmacia popular"));
   assert.ok(!results.some((e) => e.description === "mercado"));
   assert.ok(!results.some((e) => e.description === "farmacia do B")); // isolado por numero
+});
+
+test("getAllExpenses traz todo o historico (sem limite de mes), isolado por numero", () => {
+  const F = "551100010099";
+  const G = "551100010098";
+  const cat = getOrCreateCategory(F, "Export-teste");
+  insertExpense({ fromNumber: F, amount: 10, description: "ano passado", categoryId: cat.id, paymentMethodId: null, date: "2024-01-01" });
+  insertExpense({ fromNumber: F, amount: 20, description: "esse ano", categoryId: cat.id, paymentMethodId: null, date: "2026-06-01" });
+  insertExpense({ fromNumber: G, amount: 999, description: "de outro numero", categoryId: null, paymentMethodId: null, date: "2026-06-01" });
+
+  const all = getAllExpenses(F);
+  assert.equal(all.length, 2);
+  assert.ok(!all.some((e) => e.description === "de outro numero"));
 });
