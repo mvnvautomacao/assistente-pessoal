@@ -141,22 +141,31 @@ const STYLE = `
   .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 26px; }
   .calendar-weekday { text-align: center; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding-bottom: 4px; }
   .calendar-cell {
-    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     min-height: 76px; padding: 6px; display: flex; flex-direction: column; gap: 3px;
   }
   .calendar-cell.empty { background: transparent; border-color: transparent; }
   .calendar-cell.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .calendar-cell.selected { background: var(--card-hover); border-color: var(--accent); }
-  .calendar-cell .day-num { display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
-  .calendar-cell.today .day-num { color: var(--accent); }
-  .calendar-cell .day-select {
-    color: inherit; text-decoration: none; padding: 1px 5px; border-radius: 6px; margin: -1px -5px;
+  .calendar-cell:not(.empty):hover { border-color: #3a4a78; }
+  .calendar-cell .day-fill {
+    position: absolute; inset: 0; z-index: 0; border-radius: inherit;
   }
-  .calendar-cell .day-select:hover { background: var(--accent-soft); color: var(--accent); }
-  .calendar-cell.selected .day-select { background: var(--accent); color: #fff; }
-  .calendar-cell .day-add { color: var(--muted); text-decoration: none; font-size: 0.85rem; line-height: 1; padding: 0 2px; }
+  .calendar-cell .day-num {
+    position: relative; z-index: 1; pointer-events: none;
+    display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem; font-weight: 700; color: var(--muted);
+  }
+  .calendar-cell.today .day-num { color: var(--accent); }
+  .calendar-cell.selected .day-num span {
+    background: var(--accent); color: #fff; padding: 1px 6px; border-radius: 6px; margin: -1px -6px;
+  }
+  .calendar-cell .day-add {
+    position: relative; z-index: 1; pointer-events: auto;
+    color: var(--muted); text-decoration: none; font-size: 0.85rem; line-height: 1; padding: 0 2px;
+  }
   .calendar-cell .day-add:hover { color: var(--accent); }
   .calendar-cell .ev {
+    position: relative; z-index: 1;
     display: block; background: var(--accent-soft); color: #bcd3ff; text-decoration: none;
     font-size: 0.68rem; padding: 2px 5px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }

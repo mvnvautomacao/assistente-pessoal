@@ -64,8 +64,9 @@ function renderCalendar(phone: string, month: string, today: string, selected: s
         .join(" ");
       return `
       <div class="${classes}">
+        <a class="day-fill" href="/dashboard/events?${qs}&month=${month}&selected=${date}" title="Ver eventos de ${date.split("-").reverse().join("/")}" aria-label="Ver eventos de ${date.split("-").reverse().join("/")}"></a>
         <div class="day-num">
-          <a class="day-select" href="/dashboard/events?${qs}&month=${month}&selected=${date}" title="Ver eventos de ${date.split("-").reverse().join("/")}">${dayNum}</a>
+          <span>${dayNum}</span>
           <a class="day-add" href="/dashboard/events/new?${qs}&date=${date}" title="Novo evento em ${date.split("-").reverse().join("/")}">+</a>
         </div>
         ${shown.map((e) => `<a class="ev" href="/dashboard/events/${e.id}/edit?${qs}" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}</a>`).join("")}
