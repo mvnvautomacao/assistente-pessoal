@@ -28,6 +28,7 @@ const TYPE_LABEL: Record<string, string> = {
   list_categories: "🏷️ Lista de categorias",
   create_category: "🏷️ Categoria criada",
   bulk_recategorize: "🏷️ Recategorização em lote",
+  merge_categories: "🏷️ Categorias unidas",
   welcome: "👋 Boas-vindas (número novo)",
   help: "🤖 Explicou funcionalidades",
   list_expenses: "🧾 Lista de gastos",

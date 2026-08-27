@@ -25,6 +25,15 @@ export type UndoAction =
       kind: "bulk_restore_category";
       changes: { expenseId: number; previousCategoryId: number | null }[];
       description: string;
+    }
+  | {
+      // merge apaga a categoria de origem, entao desfazer nao pode voltar pro
+      // MESMO id (nao existe mais) -- recria a categoria pelo nome e move os
+      // gastos de volta pra ela.
+      kind: "undo_merge_categories";
+      expenseIds: number[];
+      sourceCategoryName: string;
+      description: string;
     };
 
 interface PendingUndo {

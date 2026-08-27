@@ -687,3 +687,77 @@ test("bulk_recategorize: undo desfaz a recategorizacao em lote inteira", async (
   assert.equal(getExpenseById(BR6, e1.id)?.category_id, origem.id);
   assert.equal(getExpenseById(BR6, e2.id)?.category_id, null); // volta pra "sem categoria", nao fica preso no destino
 });
+
+test("bulk_recategorize (scope=period): move so os gastos do intervalo de datas exato", async (t) => {
+  const BR7 = "551100090086";
+  seed(BR7);
+  const origem = getOrCreateCategory(BR7, "Origem-periodo");
+  const destino = getOrCreateCategory(BR7, "Destino-periodo");
+  const dentro = insertExpense({ fromNumber: BR7, amount: 10, description: "dentro do intervalo", categoryId: origem.id, paymentMethodId: null, date: "2026-03-15" });
+  const fora = insertExpense({ fromNumber: BR7, amount: 20, description: "fora do intervalo", categoryId: origem.id, paymentMethodId: null, date: "2026-04-01" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([
+    { type: "bulk_recategorize", scope: "period", date_start: "2026-03-10", date_end: "2026-03-20", to_category: "Destino-periodo" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BR7, "muda os gastos de 10 a 20 de marco pra destino-periodo"));
+  await handleIncomingMessage(evolutionMessage(BR7, "sim"));
+
+  assert.equal(getExpenseById(BR7, dentro.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR7, fora.id)?.category_id, origem.id); // fora do intervalo, nao mexeu
+});
+
+test("bulk_recategorize (scope=keyword): move so os gastos cuja descricao bate com a palavra", async (t) => {
+  const BR8 = "551100090087";
+  seed(BR8);
+  const origem = getOrCreateCategory(BR8, "Origem-keyword");
+  const destino = getOrCreateCategory(BR8, "Alimentacao-keyword");
+  const bate = insertExpense({ fromNumber: BR8, amount: 10, description: "iFood lanche", categoryId: origem.id, paymentMethodId: null, date: "2026-01-01" });
+  const naoBate = insertExpense({ fromNumber: BR8, amount: 20, description: "uber corrida", categoryId: origem.id, paymentMethodId: null, date: "2026-01-02" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "keyword", query: "ifood", to_category: "Alimentacao-keyword" }]);
+  await handleIncomingMessage(evolutionMessage(BR8, "muda todo gasto com ifood na descricao pra alimentacao-keyword"));
+  await handleIncomingMessage(evolutionMessage(BR8, "sim"));
+
+  assert.equal(getExpenseById(BR8, bate.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR8, naoBate.id)?.category_id, origem.id);
+});
+
+test("merge_categories: junta a categoria de origem na de destino, apaga a origem, e move os gastos", async (t) => {
+  const MC1 = "551100090090";
+  seed(MC1);
+  const origem = getOrCreateCategory(MC1, "Mercado-merge");
+  const destino = getOrCreateCategory(MC1, "Supermercado-merge");
+  const e1 = insertExpense({ fromNumber: MC1, amount: 10, description: "merge 1", categoryId: origem.id, paymentMethodId: null, date: "2026-01-01" });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "merge_categories", category: "Mercado-merge", to_category: "Supermercado-merge" }]);
+  await handleIncomingMessage(evolutionMessage(MC1, "junta a categoria mercado-merge com supermercado-merge"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.ok(findCategoryByName(MC1, "Mercado-merge")); // ainda existe, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(MC1, "sim"));
+  assert.equal(findCategoryByName(MC1, "Mercado-merge"), null); // categoria de origem foi apagada
+  assert.equal(getExpenseById(MC1, e1.id)?.category_id, destino.id);
+});
+
+test("merge_categories: undo recria a categoria de origem e devolve os gastos pra ela", async (t) => {
+  const MC2 = "551100090091";
+  seed(MC2);
+  const origem = getOrCreateCategory(MC2, "Lazer-merge-undo");
+  const destino = getOrCreateCategory(MC2, "Diversao-merge-undo");
+  const e1 = insertExpense({ fromNumber: MC2, amount: 10, description: "merge undo 1", categoryId: origem.id, paymentMethodId: null, date: "2026-01-01" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "merge_categories", category: "Lazer-merge-undo", to_category: "Diversao-merge-undo" }]);
+  await handleIncomingMessage(evolutionMessage(MC2, "junta lazer-merge-undo em diversao-merge-undo"));
+  await handleIncomingMessage(evolutionMessage(MC2, "sim"));
+  assert.equal(findCategoryByName(MC2, "Lazer-merge-undo"), null);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(MC2, "desfaz isso"));
+  const recreated = findCategoryByName(MC2, "Lazer-merge-undo");
+  assert.ok(recreated);
+  assert.equal(getExpenseById(MC2, e1.id)?.category_id, recreated!.id);
+});

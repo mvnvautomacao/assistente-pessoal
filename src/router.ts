@@ -14,6 +14,12 @@ import {
   PendingBulkRecategorize,
 } from "./expenses/pendingBulkRecategorize";
 import {
+  setPendingMergeCategories,
+  getPendingMergeCategories,
+  clearPendingMergeCategories,
+  PendingMergeCategories,
+} from "./expenses/pendingMergeCategories";
+import {
   createRecurringExpense,
   listRecurringExpenses,
   findActiveRecurringExpenseByDescription,
@@ -54,6 +60,8 @@ import {
   getRecentExpensesList,
   getExpensesByCategoryId,
   bulkUpdateExpenseCategory,
+  searchExpenses,
+  deleteCategory,
   ExpenseRecord,
   ExpenseListItem,
   PendingCategorization,
@@ -68,6 +76,13 @@ function formatDateTime(value: string): string {
 function formatDateOnly(value: string): string {
   const [year, month, day] = value.slice(0, 10).split("-");
   return `${day}/${month}/${year}`;
+}
+
+// "2026-08-20" -> "2026-08-21". Sempre em Date.UTC (nunca new Date(dateString)
+// puro), pra nao cair na mesma cilada de fuso horario do comentario acima.
+function addOneDayToDateString(dateStr: string): string {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
 }
 
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
@@ -193,7 +208,9 @@ Pra ver quais você tem: "quais categorias eu tenho"
 
 Pra corrigir a categoria de UM gasto: "muda a categoria do mercado pra lazer"
 
-Pra mudar VÁRIOS de uma vez: "muda os gastos de hoje pra lazer", "muda os últimos 5 gastos pra mercado", ou "muda os gastos de mercado pra lazer" (troca todos que estão numa categoria)`;
+Pra mudar VÁRIOS de uma vez: "muda os gastos de hoje pra lazer", "muda os últimos 5 gastos pra mercado", "muda os gastos de 10 a 20 desse mês pra lazer", ou "muda todo gasto com ifood na descrição pra alimentação"
+
+Pra juntar duas categorias numa só (a de origem deixa de existir): "junta a categoria Mercado com Supermercado"`;
     case "payment_method":
       return `💳 Como definir a forma de pagamento:
 
@@ -342,6 +359,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingBulkRecat = getPendingBulkRecategorize(from);
     if (pendingBulkRecat) {
       await resolveBulkRecategorizeConfirmation(from, pendingBulkRecat, text);
+      return;
+    }
+
+    const pendingMerge = getPendingMergeCategories(from);
+    if (pendingMerge) {
+      await resolveMergeCategoriesConfirmation(from, pendingMerge, text);
       return;
     }
   }
@@ -566,6 +589,43 @@ async function resolveBulkRecategorizeConfirmation(from: string, pending: Pendin
   });
   logActivity(from, "bulk_recategorize", `confirmado: ${pending.summary} -> "${pending.toCategoryName}"`);
   await sendText(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
+}
+
+// resposta a "confirma que quer juntar a categoria X na Y?" -- so apaga a
+// categoria de origem de verdade com um "sim" claro
+async function resolveMergeCategoriesConfirmation(from: string, pending: PendingMergeCategories, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(
+      from,
+      `Não entendi — confirma que quer juntar "${pending.sourceCategoryName}" em "${pending.targetCategoryName}"? Responde "sim" ou "não".`
+    );
+    return;
+  }
+
+  clearPendingMergeCategories(from);
+  if (no) {
+    logActivity(from, "merge_categories", `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}" nao confirmado`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  bulkUpdateExpenseCategory(pending.expenseIds, pending.targetCategoryId);
+  deleteCategory(from, pending.sourceCategoryId);
+  setPendingUndo(from, {
+    kind: "undo_merge_categories",
+    expenseIds: pending.expenseIds,
+    sourceCategoryName: pending.sourceCategoryName,
+    description: `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}"`,
+  });
+  logActivity(from, "merge_categories", `confirmado: "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}"`);
+  await sendText(
+    from,
+    `✅ Categoria "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}". ${pending.expenseIds.length} gasto(s) movido(s), e "${pending.sourceCategoryName}" não existe mais.`
+  );
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation) {
@@ -830,6 +890,34 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       );
       break;
     }
+    case "merge_categories": {
+      const sourceCategory = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
+      if (!sourceCategory) {
+        logActivity(from, "merge_categories", `categoria de origem "${interpretation.category}" nao encontrada`);
+        await sendText(from, `Não achei uma categoria parecida com "${interpretation.category}".`);
+        break;
+      }
+      const targetCategory = getOrCreateCategory(from, interpretation.to_category);
+      if (sourceCategory.id === targetCategory.id) {
+        await sendText(from, "Essas duas já são a mesma categoria.");
+        break;
+      }
+
+      const items = getExpensesByCategoryId(from, sourceCategory.id);
+      setPendingMergeCategories(from, {
+        sourceCategoryId: sourceCategory.id,
+        sourceCategoryName: sourceCategory.name,
+        targetCategoryId: targetCategory.id,
+        targetCategoryName: targetCategory.name,
+        expenseIds: items.map((i) => i.id),
+      });
+      logActivity(from, "merge_categories", `pediu confirmacao: "${sourceCategory.name}" -> "${targetCategory.name}" (${items.length} gasto(s))`);
+      await sendText(
+        from,
+        `Encontrei ${items.length} gasto(s) em "${sourceCategory.name}". Confirma que quer juntar essa categoria em "${targetCategory.name}"? "${sourceCategory.name}" vai deixar de existir. Responde "sim" ou "não".`
+      );
+      break;
+    }
     case "bulk_recategorize": {
       const toCategory = getOrCreateCategory(from, interpretation.to_category);
 
@@ -843,7 +931,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         const n = interpretation.n ?? 5;
         items = getRecentExpensesList(from, n);
         summary = `os últimos ${items.length} gasto(s)`;
-      } else {
+      } else if (interpretation.scope === "from_category") {
         const fromCategory = interpretation.category
           ? (findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category))
           : null;
@@ -854,6 +942,29 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         }
         items = getExpensesByCategoryId(from, fromCategory.id);
         summary = `os gastos de "${fromCategory.name}"`;
+      } else if (interpretation.scope === "period") {
+        const range =
+          interpretation.date_start && interpretation.date_end
+            ? {
+                start: interpretation.date_start.slice(0, 10),
+                end: addOneDayToDateString(interpretation.date_end),
+                label: `${formatDateOnly(interpretation.date_start)} a ${formatDateOnly(interpretation.date_end)}`,
+              }
+            : interpretation.days
+              ? lastNDaysRange(interpretation.days)
+              : interpretation.period === "week"
+                ? currentWeekRange()
+                : currentMonthRange();
+        items = getExpensesBetween(from, range.start, range.end);
+        summary = `os gastos de ${range.label}`;
+      } else {
+        const query = interpretation.query?.trim() ?? "";
+        if (!query) {
+          await sendText(from, "Não entendi qual palavra usar pra encontrar os gastos. Pode dizer de novo com um exemplo, tipo \"muda os gastos com ifood pra alimentação\"?");
+          break;
+        }
+        items = searchExpenses(from, query);
+        summary = `os gastos com "${query}" na descrição`;
       }
 
       if (!items.length) {
@@ -1156,6 +1267,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           logActivity(from, "undo", `recategorizacao em lote desfeita: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz a mudança de categoria de ${undo.changes.length} gasto(s).`);
           break;
+        case "undo_merge_categories": {
+          // a categoria de origem foi apagada no merge -- recria pelo nome (fica
+          // com um id novo, mas mesma funcao pro usuario) e move os gastos de volta
+          const recreated = getOrCreateCategory(from, undo.sourceCategoryName);
+          for (const expenseId of undo.expenseIds) updateExpenseCategory(expenseId, recreated.id);
+          logActivity(from, "undo", `merge de categorias desfeito: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, recriei "${undo.sourceCategoryName}" e devolvi ${undo.expenseIds.length} gasto(s) pra ela.`);
+          break;
+        }
       }
       break;
     }
