@@ -390,6 +390,26 @@ export function getExpensesForMonth(fromNumber: string, yearMonth: string): Expe
     .all(fromNumber, yearMonth) as unknown as ExpenseListItem[];
 }
 
+// busca por texto na descricao, em TODOS os meses (nao so o mes atual) -- pro
+// campo de busca do dashboard, ja que a navegacao normal e so mes a mes.
+// Filtra em JS com normalize() (ignora acento/maiuscula, igual findRecentExpense)
+// em vez de LIKE puro no SQL, que nao ignoraria acento ("farmacia" nao acharia
+// "Farmácia").
+export function searchExpenses(fromNumber: string, query: string): ExpenseListItem[] {
+  const target = normalize(query);
+  const all = db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE e.from_number = ?
+       ORDER BY e.date DESC, e.id DESC`
+    )
+    .all(fromNumber) as unknown as ExpenseListItem[];
+  return all.filter((e) => normalize(e.description).includes(target)).slice(0, 200);
+}
+
 export interface NamedTotal {
   name: string;
   total: number;

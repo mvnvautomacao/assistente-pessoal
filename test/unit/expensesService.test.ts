@@ -27,6 +27,7 @@ import {
   getExpensesForMonth,
   getExpensesBetween,
   getCategoryTotalsForMonth,
+  searchExpenses,
 } from "../../src/expenses/service";
 
 const A = "551100010001";
@@ -189,4 +190,18 @@ test("getExpensesForMonth / getExpensesBetween / getCategoryTotalsForMonth so tr
   const totals = getCategoryTotalsForMonth(A, "2026-05");
   const catTotal = totals.find((t) => t.name === "Mes-teste");
   assert.equal(catTotal?.total, 150);
+});
+
+test("searchExpenses busca por descricao em qualquer mes, ignorando maiuscula, e isolado por numero", () => {
+  const cat = getOrCreateCategory(A, "Busca-teste");
+  insertExpense({ fromNumber: A, amount: 30, description: "Farmácia São João", categoryId: cat.id, paymentMethodId: null, date: "2025-01-10" });
+  insertExpense({ fromNumber: A, amount: 40, description: "farmacia popular", categoryId: cat.id, paymentMethodId: null, date: "2026-06-20" });
+  insertExpense({ fromNumber: A, amount: 999, description: "mercado", categoryId: cat.id, paymentMethodId: null, date: "2026-06-21" });
+  insertExpense({ fromNumber: B, amount: 999, description: "farmacia do B", categoryId: null, paymentMethodId: null, date: "2026-06-21" });
+
+  const results = searchExpenses(A, "FARMACIA");
+  assert.equal(results.length, 2); // acha nos dois meses diferentes (2025 e 2026)
+  assert.ok(results.some((e) => e.description === "farmacia popular"));
+  assert.ok(!results.some((e) => e.description === "mercado"));
+  assert.ok(!results.some((e) => e.description === "farmacia do B")); // isolado por numero
 });

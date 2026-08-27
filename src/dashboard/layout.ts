@@ -62,6 +62,8 @@ const STYLE = `
   }
   .month-nav a.arrow:hover { border-color: var(--accent); color: var(--accent); }
   .chip-row { display: flex; align-items: center; gap: 8px; margin-bottom: 26px; flex-wrap: wrap; }
+  .search-row { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .search-row input[type="text"] { flex: 1; min-width: 220px; }
 
   select, input {
     padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);

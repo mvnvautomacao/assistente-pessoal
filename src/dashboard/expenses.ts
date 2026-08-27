@@ -10,6 +10,8 @@ import {
   insertExpense,
   listCategories,
   listPaymentMethods,
+  searchExpenses,
+  ExpenseListItem,
 } from "../expenses/service";
 import { renderPage, renderPhoneGate } from "./layout";
 import {
@@ -59,9 +61,63 @@ function paymentMethodOptions(phone: string, selectedId: number | null) {
   return `<option value="">Não informado</option>${options}`;
 }
 
+function expenseRow(phone: string, e: ExpenseListItem) {
+  return `
+      <tr>
+        <td>${formatDate(e.date)}</td>
+        <td>${escapeHtml(e.description)}</td>
+        <td><span class="tag">${escapeHtml(e.category ?? "Sem categoria")}</span></td>
+        <td>${escapeHtml(e.payment_method ?? "—")}</td>
+        <td class="amount">${formatMoney(e.amount)}</td>
+        <td class="row-actions">
+          <a class="link-action" href="/dashboard/expenses/${e.id}/edit?phone=${encodeURIComponent(phone)}">Editar</a>
+          <form class="inline" method="post" action="/dashboard/expenses/${e.id}/delete?phone=${encodeURIComponent(phone)}" onsubmit="return confirm('Excluir esse gasto?')">
+            <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
+          </form>
+        </td>
+      </tr>`;
+}
+
+// campo de busca no topo da pagina de gastos: navegacao normal e so mes a mes,
+// entao pra achar um gasto antigo sem lembrar o mes exato precisa de uma busca
+// por texto que olhe todos os meses de uma vez (ver searchExpenses).
+function searchBox(phone: string, q: string) {
+  return `
+  <form class="search-row" method="get" action="/dashboard">
+    <input type="hidden" name="phone" value="${escapeHtml(phone)}">
+    <input type="text" name="q" placeholder="Buscar gasto por descrição (todos os meses)..." value="${escapeHtml(q)}">
+    <button type="submit" class="btn secondary">Buscar</button>
+    ${q ? `<a href="/dashboard?phone=${encodeURIComponent(phone)}" class="btn secondary">Limpar</a>` : ""}
+  </form>`;
+}
+
 expensesRouter.get("/dashboard", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
+
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+
+  if (q) {
+    const results = searchExpenses(phone, q);
+    const rows = results.length
+      ? results.map((e) => expenseRow(phone, e)).join("")
+      : `<tr><td colspan="6" class="empty">Nenhum gasto encontrado pra "${escapeHtml(q)}".</td></tr>`;
+
+    const body = `
+    <header>
+      <h1>Busca: "${escapeHtml(q)}"</h1>
+      <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
+    </header>
+    ${searchBox(phone, q)}
+    <p class="empty" style="text-align:left;padding:0 0 16px">${results.length} gasto(s) encontrado(s), de todos os meses.</p>
+    <div class="table-wrap"><table>
+      <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
+      ${rows}
+    </table></div>`;
+
+    res.send(renderPage({ title: `Busca: ${q}`, phone, active: "expenses", body }));
+    return;
+  }
 
   const months = getAvailableMonths(phone);
   const currentMonth = new Date().toISOString().slice(0, 7);
@@ -78,24 +134,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     : `<option value="${month}" selected>${escapeHtml(monthLabel(month))}</option>`;
 
   const expenseRows = expenses.length
-    ? expenses
-        .map(
-          (e) => `
-      <tr>
-        <td>${formatDate(e.date)}</td>
-        <td>${escapeHtml(e.description)}</td>
-        <td><span class="tag">${escapeHtml(e.category ?? "Sem categoria")}</span></td>
-        <td>${escapeHtml(e.payment_method ?? "—")}</td>
-        <td class="amount">${formatMoney(e.amount)}</td>
-        <td class="row-actions">
-          <a class="link-action" href="/dashboard/expenses/${e.id}/edit?phone=${encodeURIComponent(phone)}">Editar</a>
-          <form class="inline" method="post" action="/dashboard/expenses/${e.id}/delete?phone=${encodeURIComponent(phone)}" onsubmit="return confirm('Excluir esse gasto?')">
-            <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
-          </form>
-        </td>
-      </tr>`
-        )
-        .join("")
+    ? expenses.map((e) => expenseRow(phone, e)).join("")
     : `<tr><td colspan="6" class="empty">Nenhum gasto registrado neste mês.</td></tr>`;
 
   const body = `
@@ -103,6 +142,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     <h1>${escapeHtml(monthLabel(month))}</h1>
     <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
   </header>
+  ${searchBox(phone, q)}
   <div class="month-nav">
     <a class="arrow" href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, -1)}">‹</a>
     <form method="get" style="margin:0">
