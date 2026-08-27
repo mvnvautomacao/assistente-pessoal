@@ -66,9 +66,11 @@ function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): strin
 // clara e um exemplo pronto pra copiar — pensado pra quem tem menos familiaridade
 // com tecnologia, entao frases curtas e nada de termos tecnicos
 function helpTopicMessage(
-  topic?: "expense" | "event" | "reminder" | "budget" | "expense_report" | "edit_expense" | "category" | "payment_method"
+  topic?: "expense" | "event" | "reminder" | "budget" | "expense_report" | "edit_expense" | "category" | "payment_method" | "welcome"
 ): string | null {
   switch (topic) {
+    case "welcome":
+      return WELCOME_MESSAGE;
     case "expense":
       return `💰 Como registrar um gasto:
 
@@ -176,6 +178,16 @@ async function resolveMediaBase64(data: EvolutionMessage): Promise<string | unde
   }
 }
 
+const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp. Te ajudo a controlar gastos, agenda e lembretes.
+
+É bem simples: me conte o que precisar, do jeito que você fala naturalmente. Alguns exemplos:
+
+💰 "gastei 50 reais no mercado" — registro o gasto
+📅 "marca dentista amanhã 15h" — agendo o compromisso
+⏰ "me lembra de tomar remédio às 20h" — crio um lembrete
+
+Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.`;
+
 export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
 
@@ -184,18 +196,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   const isNewUser = ensureUserSeeded(from);
   if (isNewUser) {
     logActivity(from, "welcome", "primeira mensagem desse numero");
-    await sendText(
-      from,
-      `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp. Te ajudo a controlar gastos, agenda e lembretes.
-
-É bem simples: me conte o que precisar, do jeito que você fala naturalmente. Alguns exemplos:
-
-💰 "gastei 50 reais no mercado" — registro o gasto
-📅 "marca dentista amanhã 15h" — agendo o compromisso
-⏰ "me lembra de tomar remédio às 20h" — crio um lembrete
-
-Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.`
-    );
+    await sendText(from, WELCOME_MESSAGE);
   }
 
   let text: string | undefined;
