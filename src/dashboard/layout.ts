@@ -87,13 +87,52 @@ export function renderPhoneGate(): string {
 <html lang="pt-BR"><head><meta charset="UTF-8"><title>Gastos</title>
 <style>body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;max-width:420px;margin:80px auto;padding:0 16px;color:#1f2937}
 input{width:100%;padding:10px;border-radius:8px;border:1px solid #e5e7eb;font-size:1rem;box-sizing:border-box}
+input.invalid{border-color:#dc2626}
 button{margin-top:12px;padding:10px 16px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:1rem;cursor:pointer}
-p.hint{color:#6b7280;font-size:0.85rem}</style></head>
+button:disabled{background:#9ca3af;cursor:not-allowed}
+p.hint{color:#6b7280;font-size:0.85rem}
+p.error{color:#dc2626;font-size:0.85rem;margin:6px 0 0;display:none}</style></head>
 <body>
 <h1>Gastos</h1>
 <p>Digite o número de WhatsApp (o mesmo que manda mensagem pro bot) pra ver e gerenciar os gastos dele.</p>
-<form method="get" action="/dashboard"><input name="phone" placeholder="Ex: 5561999999999" autofocus><button type="submit">Ver gastos</button></form>
+<form id="phone-form" method="get" action="/dashboard">
+  <input name="phone" id="phone-input" placeholder="55 (61) 99921-0718" inputmode="numeric" autocomplete="off" autofocus required>
+  <p class="error" id="phone-error">Número incompleto — precisa do DDI (55), DDD e os 9 dígitos do celular.</p>
+  <button type="submit" id="phone-submit">Ver gastos</button>
+</form>
 <p class="hint">Isso não é um login de verdade — qualquer um com o link e o número certo acessa. Pra virar produto de vários clientes, essa parte precisa de autenticação real.</p>
+<script>
+  (function () {
+    var input = document.getElementById("phone-input");
+    var error = document.getElementById("phone-error");
+    var form = document.getElementById("phone-form");
+
+    function formatPhone(raw) {
+      var digits = raw.replace(/\\D/g, "").slice(0, 13);
+      var out = digits.slice(0, 2);
+      if (digits.length > 2) out += " (" + digits.slice(2, 4);
+      if (digits.length >= 4) out += ")";
+      if (digits.length > 4) out += " " + digits.slice(4, 9);
+      if (digits.length > 9) out += "-" + digits.slice(9, 13);
+      return out;
+    }
+
+    input.addEventListener("input", function () {
+      input.value = formatPhone(input.value);
+      input.classList.remove("invalid");
+      error.style.display = "none";
+    });
+
+    form.addEventListener("submit", function (e) {
+      var digitCount = input.value.replace(/\\D/g, "").length;
+      if (digitCount !== 13) {
+        e.preventDefault();
+        input.classList.add("invalid");
+        error.style.display = "block";
+      }
+    });
+  })();
+</script>
 </body></html>`;
 }
 
