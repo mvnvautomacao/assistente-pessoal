@@ -4,7 +4,7 @@ import * as whatsappClient from "../../src/whatsapp/client";
 import * as aiInterpret from "../../src/ai/interpret";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
-import { getOrCreateCategory, findRecentExpense, insertExpense } from "../../src/expenses/service";
+import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded } from "../../src/expenses/service";
 import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 
@@ -35,6 +35,9 @@ const today = () => spDateString();
 
 const A = "551100090001";
 const B = "551100090002";
+// pre-seeda pra nenhum teste receber a mensagem de boas-vindas (so dispara na
+// primeira mensagem de um numero) misturada com a resposta que o teste espera
+[A, B].forEach(ensureUserSeeded);
 
 test("mensagem de gasto com categoria existente: registra direto e confirma", async (t) => {
   const { sent, queueReply } = withMocks(t);
@@ -69,6 +72,7 @@ test("fila de categorizacao pendente e isolada por numero (outro numero nao inte
   // deste teste, entao nao pode reusar A/B (usados por outros testes depois)
   const P = "551100090005";
   const Q = "551100090006";
+  [P, Q].forEach(ensureUserSeeded);
 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "expense", amount: 15, category: "CategoriaSoParaFila", description: "gasto na fila", date: "2026-01-12" }]);
@@ -87,6 +91,7 @@ test("correct_category: corrige a categoria do gasto mais recente e aprende a pa
   // proposito uma pendencia sem resolver pro numero A, que interceptaria essa
   // mensagem como resposta da pendencia em vez de passar pela IA
   const C = "551100090004";
+  ensureUserSeeded(C);
   const cat = getOrCreateCategory(C, "Lazer-correct");
   insertExpense({ fromNumber: C, amount: 22, description: "cabeleireiro corrigir", categoryId: null, paymentMethodId: null, date: "2026-01-13" });
 
@@ -185,4 +190,21 @@ test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consult
   queueReply([{ type: "list_expenses" }]);
   await handleIncomingMessage(evolutionMessage(B, "quais gastos eu tive hoje"));
   assert.doesNotMatch(sent[0].text, /nao pode vazar pra B/);
+});
+
+test("numero novo recebe mensagem de boas-vindas antes da resposta normal; numero ja conhecido nao recebe de novo", async (t) => {
+  const NEW_NUMBER = "551100090099";
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "expense", amount: 20, category: "Mercado", description: "primeira compra", date: "2026-01-14" }]);
+  await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "20 no mercado"));
+
+  assert.equal(sent.length, 2);
+  assert.match(sent[0].text, /assistente pessoal/i);
+  assert.match(sent[1].text, /✅/); // a confirmacao normal do gasto ainda acontece, so depois
+
+  queueReply([{ type: "expense", amount: 30, category: "Mercado", description: "segunda compra", date: "2026-01-15" }]);
+  await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "30 no mercado"));
+  assert.equal(sent.length, 3); // nao mandou boas-vindas de novo, so a confirmacao
+  assert.match(sent[2].text, /✅/);
 });

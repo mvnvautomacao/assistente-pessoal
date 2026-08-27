@@ -30,9 +30,13 @@ const DEFAULT_PAYMENT_METHODS = ["Pix", "Dinheiro", "Cartão de crédito", "Cart
 
 // Chamado uma vez por numero (na primeira mensagem dele) pra ele comecar com as
 // categorias/formas de pagamento padrao, sem herdar nada de outro numero.
-export function ensureUserSeeded(fromNumber: string) {
+// retorna true se esse numero nunca tinha mandado mensagem antes (pra disparar
+// a mensagem de boas-vindas) -- categorias so ficam vazias na primeira vez, ja
+// que essa mesma funcao cria as padrao logo em seguida
+export function ensureUserSeeded(fromNumber: string): boolean {
   const categoryCount = db.prepare(`SELECT COUNT(*) AS n FROM categories WHERE from_number = ?`).get(fromNumber) as { n: number };
-  if (categoryCount.n === 0) {
+  const isNewUser = categoryCount.n === 0;
+  if (isNewUser) {
     const insert = db.prepare(`INSERT INTO categories (from_number, name) VALUES (?, ?)`);
     for (const name of DEFAULT_CATEGORIES) insert.run(fromNumber, name);
   }
@@ -42,6 +46,8 @@ export function ensureUserSeeded(fromNumber: string) {
     const insert = db.prepare(`INSERT INTO payment_methods (from_number, name) VALUES (?, ?)`);
     for (const name of DEFAULT_PAYMENT_METHODS) insert.run(fromNumber, name);
   }
+
+  return isNewUser;
 }
 
 export function listCategories(fromNumber: string): Category[] {

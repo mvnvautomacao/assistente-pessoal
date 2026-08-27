@@ -181,7 +181,22 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
   // Cada numero tem categorias/formas de pagamento proprias, isoladas dos demais;
   // na primeira mensagem desse numero, cria as categorias/formas padrao pra ele.
-  ensureUserSeeded(from);
+  const isNewUser = ensureUserSeeded(from);
+  if (isNewUser) {
+    logActivity(from, "welcome", "primeira mensagem desse numero");
+    await sendText(
+      from,
+      `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp. Te ajudo a controlar gastos, agenda e lembretes.
+
+É bem simples: me conte o que precisar, do jeito que você fala naturalmente. Alguns exemplos:
+
+💰 "gastei 50 reais no mercado" — registro o gasto
+📅 "marca dentista amanhã 15h" — agendo o compromisso
+⏰ "me lembra de tomar remédio às 20h" — crio um lembrete
+
+Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.`
+    );
+  }
 
   let text: string | undefined;
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
