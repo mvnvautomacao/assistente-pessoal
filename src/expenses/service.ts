@@ -303,8 +303,47 @@ export function findRecentExpense(fromNumber: string, query?: string): ExpenseRe
   return last ?? null;
 }
 
-export function updateExpenseCategory(expenseId: number, categoryId: number) {
+// categoryId aceita null pra permitir desfazer uma recategorizacao em lote que
+// tirou um gasto de "sem categoria" (ver bulk_recategorize / undo em router.ts)
+export function updateExpenseCategory(expenseId: number, categoryId: number | null) {
   db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ?`).run(categoryId, expenseId);
+}
+
+// os N gastos mais recentes de um numero, pra recategorizacao em lote ("muda os
+// ultimos 5 gastos pra mercado")
+export function getRecentExpensesList(fromNumber: string, n: number): ExpenseListItem[] {
+  return db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE e.from_number = ?
+       ORDER BY e.date DESC, e.id DESC
+       LIMIT ?`
+    )
+    .all(fromNumber, n) as unknown as ExpenseListItem[];
+}
+
+// todos os gastos de uma categoria especifica, pra recategorizacao em lote
+// ("muda os gastos de mercado pra lazer")
+export function getExpensesByCategoryId(fromNumber: string, categoryId: number): ExpenseListItem[] {
+  return db
+    .prepare(
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+       FROM expenses e
+       LEFT JOIN categories c ON c.id = e.category_id
+       LEFT JOIN payment_methods p ON p.id = e.payment_method_id
+       WHERE e.from_number = ? AND e.category_id = ?
+       ORDER BY e.date DESC, e.id DESC`
+    )
+    .all(fromNumber, categoryId) as unknown as ExpenseListItem[];
+}
+
+// aplica a mesma categoria a varios gastos de uma vez
+export function bulkUpdateExpenseCategory(expenseIds: number[], categoryId: number) {
+  const stmt = db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ?`);
+  for (const id of expenseIds) stmt.run(categoryId, id);
 }
 
 export interface PendingCategorization {

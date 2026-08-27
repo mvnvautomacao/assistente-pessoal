@@ -584,3 +584,106 @@ test("create_category: categoria que ja existe avisa em vez de fingir que criou 
 
   assert.match(sent[0].text, /já tem/i);
 });
+
+test("bulk_recategorize (scope=today): pede confirmacao, so aplica com 'sim', e nao mexe em gasto de outro dia", async (t) => {
+  const BR1 = "551100090080";
+  seed(BR1);
+  const origem = getOrCreateCategory(BR1, "Origem-hoje");
+  const destino = getOrCreateCategory(BR1, "Lazer-hoje");
+  const hoje1 = insertExpense({ fromNumber: BR1, amount: 10, description: "hoje 1", categoryId: origem.id, paymentMethodId: null, date: today() });
+  const hoje2 = insertExpense({ fromNumber: BR1, amount: 20, description: "hoje 2", categoryId: origem.id, paymentMethodId: null, date: today() });
+  const ontem = insertExpense({ fromNumber: BR1, amount: 30, description: "ontem", categoryId: origem.id, paymentMethodId: null, date: "2020-01-01" });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "today", to_category: "Lazer-hoje" }]);
+  await handleIncomingMessage(evolutionMessage(BR1, "muda os gastos de hoje pra lazer-hoje"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(getExpenseById(BR1, hoje1.id)?.category_id, origem.id); // ainda nao mudou, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(BR1, "sim"));
+  assert.equal(getExpenseById(BR1, hoje1.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR1, hoje2.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR1, ontem.id)?.category_id, origem.id); // gasto de outro dia nao foi mexido
+});
+
+test("bulk_recategorize (scope=last_n): move so os N mais recentes", async (t) => {
+  const BR2 = "551100090081";
+  seed(BR2);
+  const origem = getOrCreateCategory(BR2, "Origem-n");
+  const destino = getOrCreateCategory(BR2, "Mercado-n");
+  const antigo = insertExpense({ fromNumber: BR2, amount: 1, description: "antigo", categoryId: origem.id, paymentMethodId: null, date: "2026-01-01" });
+  const novo1 = insertExpense({ fromNumber: BR2, amount: 2, description: "novo 1", categoryId: origem.id, paymentMethodId: null, date: "2026-02-01" });
+  const novo2 = insertExpense({ fromNumber: BR2, amount: 3, description: "novo 2", categoryId: origem.id, paymentMethodId: null, date: "2026-03-01" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "last_n", n: 2, to_category: "Mercado-n" }]);
+  await handleIncomingMessage(evolutionMessage(BR2, "muda os ultimos 2 gastos pra mercado-n"));
+  await handleIncomingMessage(evolutionMessage(BR2, "sim"));
+
+  assert.equal(getExpenseById(BR2, novo1.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR2, novo2.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR2, antigo.id)?.category_id, origem.id); // fora dos 2 mais recentes
+});
+
+test("bulk_recategorize (scope=from_category): move todos os gastos de uma categoria pra outra", async (t) => {
+  const BR3 = "551100090082";
+  seed(BR3);
+  const origem = getOrCreateCategory(BR3, "Mercado-swap");
+  const destino = getOrCreateCategory(BR3, "Lazer-swap");
+  const e1 = insertExpense({ fromNumber: BR3, amount: 10, description: "swap 1", categoryId: origem.id, paymentMethodId: null, date: "2026-05-01" });
+  const e2 = insertExpense({ fromNumber: BR3, amount: 20, description: "swap 2", categoryId: origem.id, paymentMethodId: null, date: "2026-05-02" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "from_category", category: "Mercado-swap", to_category: "Lazer-swap" }]);
+  await handleIncomingMessage(evolutionMessage(BR3, "muda os gastos de mercado-swap pra lazer-swap"));
+  await handleIncomingMessage(evolutionMessage(BR3, "sim"));
+
+  assert.equal(getExpenseById(BR3, e1.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR3, e2.id)?.category_id, destino.id);
+});
+
+test("bulk_recategorize: responder 'nao' nao muda nada", async (t) => {
+  const BR4 = "551100090083";
+  seed(BR4);
+  const origem = getOrCreateCategory(BR4, "Origem-nao");
+  const destino = getOrCreateCategory(BR4, "Destino-nao");
+  const e1 = insertExpense({ fromNumber: BR4, amount: 10, description: "fica igual", categoryId: origem.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "today", to_category: "Destino-nao" }]);
+  await handleIncomingMessage(evolutionMessage(BR4, "muda os gastos de hoje pra destino-nao"));
+  await handleIncomingMessage(evolutionMessage(BR4, "não, deixa"));
+
+  assert.match(sent[1].text, /não mexi/i);
+  assert.equal(getExpenseById(BR4, e1.id)?.category_id, origem.id);
+});
+
+test("bulk_recategorize: sem gasto encontrado avisa em vez de pedir confirmacao do nada", async (t) => {
+  const BR5 = "551100090084";
+  seed(BR5);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "today", to_category: "Qualquer" }]);
+  await handleIncomingMessage(evolutionMessage(BR5, "muda os gastos de hoje pra qualquer"));
+  assert.match(sent[0].text, /[Nn]ão encontrei/);
+});
+
+test("bulk_recategorize: undo desfaz a recategorizacao em lote inteira", async (t) => {
+  const BR6 = "551100090085";
+  seed(BR6);
+  const origem = getOrCreateCategory(BR6, "Origem-undo");
+  const destino = getOrCreateCategory(BR6, "Destino-undo");
+  const e1 = insertExpense({ fromNumber: BR6, amount: 10, description: "undo 1", categoryId: origem.id, paymentMethodId: null, date: today() });
+  const e2 = insertExpense({ fromNumber: BR6, amount: 20, description: "undo 2", categoryId: null, paymentMethodId: null, date: today() }); // sem categoria antes
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "bulk_recategorize", scope: "today", to_category: "Destino-undo" }]);
+  await handleIncomingMessage(evolutionMessage(BR6, "muda os gastos de hoje pra destino-undo"));
+  await handleIncomingMessage(evolutionMessage(BR6, "sim"));
+  assert.equal(getExpenseById(BR6, e1.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(BR6, e2.id)?.category_id, destino.id);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(BR6, "desfaz isso"));
+  assert.equal(getExpenseById(BR6, e1.id)?.category_id, origem.id);
+  assert.equal(getExpenseById(BR6, e2.id)?.category_id, null); // volta pra "sem categoria", nao fica preso no destino
+});

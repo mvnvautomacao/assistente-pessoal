@@ -8,6 +8,12 @@ import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } fro
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
 import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
 import {
+  setPendingBulkRecategorize,
+  getPendingBulkRecategorize,
+  clearPendingBulkRecategorize,
+  PendingBulkRecategorize,
+} from "./expenses/pendingBulkRecategorize";
+import {
   createRecurringExpense,
   listRecurringExpenses,
   findActiveRecurringExpenseByDescription,
@@ -45,6 +51,9 @@ import {
   getExpenseById,
   updateExpense,
   deleteExpense,
+  getRecentExpensesList,
+  getExpensesByCategoryId,
+  bulkUpdateExpenseCategory,
   ExpenseRecord,
   ExpenseListItem,
   PendingCategorization,
@@ -182,7 +191,9 @@ Mas se quiser criar uma categoria nova de propósito: "cria uma categoria chamad
 
 Pra ver quais você tem: "quais categorias eu tenho"
 
-Pra corrigir a categoria de um gasto: "muda a categoria do mercado pra lazer"`;
+Pra corrigir a categoria de UM gasto: "muda a categoria do mercado pra lazer"
+
+Pra mudar VÁRIOS de uma vez: "muda os gastos de hoje pra lazer", "muda os últimos 5 gastos pra mercado", ou "muda os gastos de mercado pra lazer" (troca todos que estão numa categoria)`;
     case "payment_method":
       return `💳 Como definir a forma de pagamento:
 
@@ -325,6 +336,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingDeletion = getPendingEventDeletion(from);
     if (pendingDeletion) {
       await resolveEventDeletionConfirmation(from, pendingDeletion, text);
+      return;
+    }
+
+    const pendingBulkRecat = getPendingBulkRecategorize(from);
+    if (pendingBulkRecat) {
+      await resolveBulkRecategorizeConfirmation(from, pendingBulkRecat, text);
       return;
     }
   }
@@ -520,6 +537,35 @@ async function resolveEventDeletionConfirmation(from: string, pending: { eventId
   }
   logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
   await sendText(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
+}
+
+// resposta a "confirma que quer mudar N gastos pra categoria X?" -- so aplica de
+// verdade com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
+async function resolveBulkRecategorizeConfirmation(from: string, pending: PendingBulkRecategorize, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer mudar ${pending.summary} pra "${pending.toCategoryName}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingBulkRecategorize(from);
+  if (no) {
+    logActivity(from, "bulk_recategorize", `${pending.summary} -> "${pending.toCategoryName}" nao confirmado`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  bulkUpdateExpenseCategory(pending.expenseIds, pending.toCategoryId);
+  setPendingUndo(from, {
+    kind: "bulk_restore_category",
+    changes: pending.previous,
+    description: `${pending.summary} -> ${pending.toCategoryName}`,
+  });
+  logActivity(from, "bulk_recategorize", `confirmado: ${pending.summary} -> "${pending.toCategoryName}"`);
+  await sendText(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation) {
@@ -781,6 +827,62 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         alreadyExisted
           ? `Você já tem uma categoria chamada "${category.name}".`
           : `✅ Categoria "${category.name}" criada. Já pode usar ela nos seus gastos, tipo "50 no mercado categoria ${category.name}".`
+      );
+      break;
+    }
+    case "bulk_recategorize": {
+      const toCategory = getOrCreateCategory(from, interpretation.to_category);
+
+      let items: ExpenseListItem[];
+      let summary: string;
+      if (interpretation.scope === "today") {
+        const range = singleDayRange(spDateString(), "hoje");
+        items = getExpensesBetween(from, range.start, range.end);
+        summary = "os gastos de hoje";
+      } else if (interpretation.scope === "last_n") {
+        const n = interpretation.n ?? 5;
+        items = getRecentExpensesList(from, n);
+        summary = `os últimos ${items.length} gasto(s)`;
+      } else {
+        const fromCategory = interpretation.category
+          ? (findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category))
+          : null;
+        if (!fromCategory) {
+          logActivity(from, "bulk_recategorize", `categoria de origem "${interpretation.category ?? ""}" nao encontrada`);
+          await sendText(from, `Não achei uma categoria parecida com "${interpretation.category ?? ""}".`);
+          break;
+        }
+        items = getExpensesByCategoryId(from, fromCategory.id);
+        summary = `os gastos de "${fromCategory.name}"`;
+      }
+
+      if (!items.length) {
+        logActivity(from, "bulk_recategorize", `nenhum gasto encontrado (${summary})`);
+        await sendText(from, "Não encontrei nenhum gasto nessas condições.");
+        break;
+      }
+
+      const previous = items.map((i) => {
+        const full = getExpenseById(from, i.id)!;
+        return { expenseId: i.id, previousCategoryId: full.category_id };
+      });
+      setPendingBulkRecategorize(from, {
+        expenseIds: items.map((i) => i.id),
+        previous,
+        toCategoryId: toCategory.id,
+        toCategoryName: toCategory.name,
+        summary,
+      });
+
+      const preview = items
+        .slice(0, 5)
+        .map((i) => `• R$${i.amount.toFixed(2)} — ${i.description}`)
+        .join("\n");
+      const extra = items.length > 5 ? `\n… e mais ${items.length - 5}` : "";
+      logActivity(from, "bulk_recategorize", `pediu confirmacao: ${summary} -> "${toCategory.name}" (${items.length} gasto(s))`);
+      await sendText(
+        from,
+        `Encontrei ${items.length} gasto(s) (${summary}):\n${preview}${extra}\n\nConfirma que quer mudar ${items.length === 1 ? "ele" : "todos"} pra categoria "${toCategory.name}"? Responde "sim" ou "não".`
       );
       break;
     }
@@ -1048,6 +1150,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           deleteIncome(from, undo.incomeId);
           logActivity(from, "undo", `entrada removida: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: entrada de ${undo.description} removida.`);
+          break;
+        case "bulk_restore_category":
+          for (const change of undo.changes) updateExpenseCategory(change.expenseId, change.previousCategoryId);
+          logActivity(from, "undo", `recategorizacao em lote desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz a mudança de categoria de ${undo.changes.length} gasto(s).`);
           break;
       }
       break;

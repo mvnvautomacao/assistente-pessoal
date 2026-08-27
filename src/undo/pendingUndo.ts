@@ -20,7 +20,12 @@ export type UndoAction =
       description: string;
     }
   | { kind: "delete_reminder"; reminderId: number; description: string }
-  | { kind: "delete_income"; incomeId: number; description: string };
+  | { kind: "delete_income"; incomeId: number; description: string }
+  | {
+      kind: "bulk_restore_category";
+      changes: { expenseId: number; previousCategoryId: number | null }[];
+      description: string;
+    };
 
 interface PendingUndo {
   action: UndoAction;

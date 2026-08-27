@@ -29,6 +29,9 @@ import {
   getCategoryTotalsForMonth,
   searchExpenses,
   getAllExpenses,
+  getRecentExpensesList,
+  getExpensesByCategoryId,
+  bulkUpdateExpenseCategory,
 } from "../../src/expenses/service";
 
 const A = "551100010001";
@@ -218,4 +221,36 @@ test("getAllExpenses traz todo o historico (sem limite de mes), isolado por nume
   const all = getAllExpenses(F);
   assert.equal(all.length, 2);
   assert.ok(!all.some((e) => e.description === "de outro numero"));
+});
+
+test("getRecentExpensesList traz os N mais recentes, mais novo primeiro, isolado por numero", () => {
+  const H = "551100010097";
+  const I = "551100010096";
+  const cat = getOrCreateCategory(H, "Recentes-teste");
+  insertExpense({ fromNumber: H, amount: 1, description: "mais antigo", categoryId: cat.id, paymentMethodId: null, date: "2026-01-01" });
+  insertExpense({ fromNumber: H, amount: 2, description: "do meio", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" });
+  insertExpense({ fromNumber: H, amount: 3, description: "mais novo", categoryId: cat.id, paymentMethodId: null, date: "2026-03-01" });
+  insertExpense({ fromNumber: I, amount: 999, description: "de outro numero", categoryId: null, paymentMethodId: null, date: "2026-03-02" });
+
+  const recent = getRecentExpensesList(H, 2);
+  assert.equal(recent.length, 2);
+  assert.equal(recent[0].description, "mais novo");
+  assert.equal(recent[1].description, "do meio");
+});
+
+test("getExpensesByCategoryId / bulkUpdateExpenseCategory: acha e move todos os gastos de uma categoria de uma vez", () => {
+  const J = "551100010095";
+  const origem = getOrCreateCategory(J, "Origem-lote");
+  const destino = getOrCreateCategory(J, "Destino-lote");
+  const e1 = insertExpense({ fromNumber: J, amount: 10, description: "lote 1", categoryId: origem.id, paymentMethodId: null, date: "2026-04-01" });
+  const e2 = insertExpense({ fromNumber: J, amount: 20, description: "lote 2", categoryId: origem.id, paymentMethodId: null, date: "2026-04-02" });
+  insertExpense({ fromNumber: J, amount: 30, description: "outra categoria", categoryId: destino.id, paymentMethodId: null, date: "2026-04-03" });
+
+  const byCategory = getExpensesByCategoryId(J, origem.id);
+  assert.equal(byCategory.length, 2);
+
+  bulkUpdateExpenseCategory([e1.id, e2.id], destino.id);
+  assert.equal(getExpenseById(J, e1.id)?.category_id, destino.id);
+  assert.equal(getExpenseById(J, e2.id)?.category_id, destino.id);
+  assert.equal(getExpensesByCategoryId(J, origem.id).length, 0);
 });

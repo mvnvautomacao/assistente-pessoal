@@ -27,6 +27,7 @@ const TYPE_LABEL: Record<string, string> = {
   list_budgets: "📋 Lista de orçamentos",
   list_categories: "🏷️ Lista de categorias",
   create_category: "🏷️ Categoria criada",
+  bulk_recategorize: "🏷️ Recategorização em lote",
   welcome: "👋 Boas-vindas (número novo)",
   help: "🤖 Explicou funcionalidades",
   list_expenses: "🧾 Lista de gastos",
