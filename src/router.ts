@@ -81,6 +81,23 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
   const base64Media = data.message?.base64 ?? data.base64;
 
+  // debug temporario: descobrir onde o base64 vem nessa versao da Evolution API
+  // quando nao acha no lugar esperado (nunca loga o valor em si, so as chaves)
+  if ((data.messageType === "audioMessage" || data.messageType === "imageMessage") && !base64Media) {
+    console.log(
+      "[debug base64] messageType:",
+      data.messageType,
+      "chaves em data:",
+      Object.keys(data),
+      "chaves em data.message:",
+      Object.keys(data.message ?? {}),
+      "chaves em data.message.audioMessage:",
+      Object.keys((data.message as Record<string, unknown> | undefined)?.audioMessage ?? {}),
+      "chaves em data.message.imageMessage:",
+      Object.keys((data.message as Record<string, unknown> | undefined)?.imageMessage ?? {})
+    );
+  }
+
   // Cada numero tem categorias/formas de pagamento proprias, isoladas dos demais;
   // na primeira mensagem desse numero, cria as categorias/formas padrao pra ele.
   ensureUserSeeded(from);
