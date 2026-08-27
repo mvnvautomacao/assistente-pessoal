@@ -1,13 +1,14 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
-import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents } from "./events/service";
-import { createReminder, getRemindersWithinDays } from "./reminders/service";
+import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents, getEventById } from "./events/service";
+import { createReminder, getRemindersWithinDays, deleteReminder } from "./reminders/service";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
 import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
+import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { logActivity } from "./activity/service";
 import { spDateString } from "./timeSP";
 import {
@@ -32,6 +33,7 @@ import {
   getExpensesBetween,
   getExpenseById,
   updateExpense,
+  deleteExpense,
   ExpenseRecord,
   ExpenseListItem,
   PendingCategorization,
@@ -287,7 +289,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     const category = getOrCreateCategory(from, categoryName);
     const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
 
-    insertExpense({
+    const created = insertExpense({
       fromNumber: from,
       amount: pending.amount,
       description: pending.description,
@@ -301,6 +303,11 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     clearPendingCategorization(pending.id);
 
     const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+    setPendingUndo(from, {
+      kind: "delete_expense",
+      expenseId: created.id,
+      description: `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description}`,
+    });
     logActivity(
       from,
       "expense",
@@ -398,7 +405,22 @@ async function resolveEventDeletionConfirmation(from: string, pending: { eventId
     return;
   }
 
+  const fullEvent = getEventById(from, pending.eventId);
   deleteEvent(from, pending.eventId);
+  if (fullEvent) {
+    setPendingUndo(from, {
+      kind: "recreate_event",
+      params: {
+        fromNumber: from,
+        title: fullEvent.title,
+        start: fullEvent.start,
+        end: fullEvent.end,
+        location: fullEvent.location ?? undefined,
+        reminderMinutes: fullEvent.reminder_minutes,
+      },
+      description: fullEvent.title,
+    });
+  }
   logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
   await sendText(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
 }
@@ -420,7 +442,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
 
       if (category) {
         const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
-        insertExpense({
+        const created = insertExpense({
           fromNumber: from,
           amount: interpretation.amount,
           description,
@@ -429,6 +451,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           date,
         });
         const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+        setPendingUndo(from, {
+          kind: "delete_expense",
+          expenseId: created.id,
+          description: `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${description}`,
+        });
         logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${description}`);
         const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
         await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix}${budgetAlert}`);
@@ -457,8 +484,17 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
       const category = getOrCreateCategory(from, interpretation.category);
+      const previousCategoryId = expense.category_id;
       updateExpenseCategory(expense.id, category.id);
       learnKeyword(from, expense.description, category.id);
+      if (previousCategoryId != null) {
+        setPendingUndo(from, {
+          kind: "restore_category",
+          expenseId: expense.id,
+          previousCategoryId,
+          description: expense.description,
+        });
+      }
       logActivity(from, "correct_category", `${expense.description} — R$${expense.amount.toFixed(2)} agora e "${category.name}"`);
       await sendText(from, `✏️ Categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) corrigida para "${category.name}"`);
       break;
@@ -478,6 +514,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         end: interpretation.end,
         location: interpretation.location,
       });
+      setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: interpretation.title });
       logActivity(from, "event", `${interpretation.title} — ${interpretation.start}`);
       await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${created.reminder_minutes} min antes)`);
       break;
@@ -503,7 +540,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "reminder": {
-      createReminder(from, interpretation.message, interpretation.due_at);
+      const reminderId = createReminder(from, interpretation.message, interpretation.due_at);
+      setPendingUndo(from, { kind: "delete_reminder", reminderId, description: interpretation.message });
       logActivity(from, "reminder", `${interpretation.message} — ${interpretation.due_at}`);
       await sendText(from, `⏰ Lembrete criado: "${interpretation.message}"`);
       break;
@@ -740,8 +778,62 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
 
       updateExpense(from, expense.id, params);
+      setPendingUndo(from, {
+        kind: "restore_expense",
+        expenseId: expense.id,
+        previous: {
+          amount: expense.amount,
+          description: expense.description,
+          date: expense.date,
+          categoryId: expense.category_id,
+          paymentMethodId: expense.payment_method_id,
+        },
+        description: expense.description,
+      });
       logActivity(from, "edit_expense", `#${expense.id} ${expense.description}: ${changeText}`);
       await sendText(from, `✏️ Gasto "${expense.description}" atualizado: ${changeText}`);
+      break;
+    }
+    case "undo": {
+      const undo = getPendingUndo(from);
+      if (!undo) {
+        logActivity(from, "undo", "nada pendente pra desfazer");
+        await sendText(from, "Não tem nada recente pra eu desfazer.");
+        break;
+      }
+      clearPendingUndo(from);
+      switch (undo.kind) {
+        case "delete_expense":
+          deleteExpense(from, undo.expenseId);
+          logActivity(from, "undo", `gasto removido: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: gasto de ${undo.description} removido.`);
+          break;
+        case "restore_expense":
+          updateExpense(from, undo.expenseId, undo.previous);
+          logActivity(from, "undo", `gasto revertido: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz a última alteração em "${undo.description}".`);
+          break;
+        case "restore_category":
+          updateExpenseCategory(undo.expenseId, undo.previousCategoryId);
+          logActivity(from, "undo", `categoria revertida: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: categoria de "${undo.description}" voltou como estava.`);
+          break;
+        case "delete_event":
+          deleteEvent(from, undo.eventId);
+          logActivity(from, "undo", `evento removido: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: evento "${undo.description}" removido da agenda.`);
+          break;
+        case "recreate_event":
+          createEvent(undo.params);
+          logActivity(from, "undo", `evento recriado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, "${undo.description}" voltou pra agenda.`);
+          break;
+        case "delete_reminder":
+          deleteReminder(from, undo.reminderId);
+          logActivity(from, "undo", `lembrete removido: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: lembrete "${undo.description}" removido.`);
+          break;
+      }
       break;
     }
     case "help": {

@@ -29,6 +29,7 @@ const TYPE_LABEL: Record<string, string> = {
   list_expenses: "🧾 Lista de gastos",
   edit_expense: "✏️ Gasto editado",
   reminder: "⏰ Lembrete",
+  undo: "↩️ Desfeito",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
 };

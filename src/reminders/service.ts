@@ -1,7 +1,10 @@
 import { db } from "../db";
 
-export function createReminder(toNumber: string, message: string, dueAt: string) {
-  db.prepare(`INSERT INTO reminders (to_number, message, due_at) VALUES (?, ?, ?)`).run(toNumber, message, dueAt);
+export function createReminder(toNumber: string, message: string, dueAt: string): number {
+  const result = db
+    .prepare(`INSERT INTO reminders (to_number, message, due_at) VALUES (?, ?, ?)`)
+    .run(toNumber, message, dueAt);
+  return Number(result.lastInsertRowid);
 }
 
 export function getDueReminders() {

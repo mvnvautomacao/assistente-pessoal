@@ -4,10 +4,11 @@ import * as whatsappClient from "../../src/whatsapp/client";
 import * as aiInterpret from "../../src/ai/interpret";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
-import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded } from "../../src/expenses/service";
+import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded, getExpenseById } from "../../src/expenses/service";
 import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
-import { createEvent, getEventById } from "../../src/events/service";
+import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
+import { listReminders } from "../../src/reminders/service";
 
 function evolutionMessage(from: string, text: string) {
   return {
@@ -255,4 +256,115 @@ test("delete_event: resposta ambigua pergunta de novo, sem excluir nem manter re
   // agora confirma de verdade, ainda funcionando (estado nao foi perdido)
   await handleIncomingMessage(evolutionMessage(A, "sim"));
   assert.equal(getEventById(A, event.id), undefined);
+});
+
+// numeros dedicados pra cada teste de undo: cada acao (expense/event/reminder/...)
+// grava a ultima acao reversivel pro numero, entao reusar A/B poderia pegar
+// pendencia deixada por outro teste anterior no arquivo.
+
+test("undo: desfaz o gasto acabado de registrar (delete_expense)", async (t) => {
+  const U1 = "551100090020";
+  ensureUserSeeded(U1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 40, category: "Mercado", description: "gasto pra desfazer", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(U1, "40 no mercado"));
+  const expense = findRecentExpense(U1, "gasto pra desfazer");
+  assert.ok(expense);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U1, "desfaz isso"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /↩️/);
+  assert.equal(getExpenseById(U1, expense!.id), null);
+});
+
+test("undo: sem nada pendente, avisa que nao tem o que desfazer", async (t) => {
+  const U2 = "551100090021";
+  ensureUserSeeded(U2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U2, "desfaz isso"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /não tem nada/i);
+});
+
+test("undo: reverte a ultima edicao de um gasto (restore_expense)", async (t) => {
+  const U3 = "551100090022";
+  ensureUserSeeded(U3);
+  const cat = getOrCreateCategory(U3, "Undo-edit");
+  insertExpense({ fromNumber: U3, amount: 10, description: "gasto a editar undo", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "gasto a editar undo", field: "amount", value: "99" }]);
+  await handleIncomingMessage(evolutionMessage(U3, "muda o gasto a editar undo pra 99"));
+  const edited = findRecentExpense(U3, "gasto a editar undo");
+  assert.equal(edited?.amount, 99);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U3, "desfaz isso"));
+  const reverted = findRecentExpense(U3, "gasto a editar undo");
+  assert.equal(reverted?.amount, 10);
+});
+
+test("undo: reverte a ultima correcao de categoria (restore_category)", async (t) => {
+  const U4 = "551100090023";
+  ensureUserSeeded(U4);
+  const original = getOrCreateCategory(U4, "Undo-original");
+  const changed = getOrCreateCategory(U4, "Undo-mudada");
+  insertExpense({ fromNumber: U4, amount: 15, description: "gasto categoria undo", categoryId: original.id, paymentMethodId: null, date: today() });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "correct_category", category: "Undo-mudada", query: "gasto categoria undo" }]);
+  await handleIncomingMessage(evolutionMessage(U4, "muda a categoria do gasto categoria undo pra undo-mudada"));
+  let expense = findRecentExpense(U4, "gasto categoria undo");
+  assert.equal(expense?.category_id, changed.id);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U4, "desfaz isso"));
+  expense = findRecentExpense(U4, "gasto categoria undo");
+  assert.equal(expense?.category_id, original.id);
+});
+
+test("undo: desfaz o evento acabado de criar (delete_event)", async (t) => {
+  const U5 = "551100090024";
+  ensureUserSeeded(U5);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "event", title: "Evento pra desfazer", start: nearFuture() }]);
+  await handleIncomingMessage(evolutionMessage(U5, "marca evento pra desfazer amanha"));
+  assert.equal(findUpcomingEvents(U5, "Evento pra desfazer").length, 1);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U5, "desfaz isso"));
+  assert.equal(findUpcomingEvents(U5, "Evento pra desfazer").length, 0);
+});
+
+test("undo: recria o evento que acabou de ser cancelado (recreate_event)", async (t) => {
+  const U6 = "551100090025";
+  ensureUserSeeded(U6);
+  const event = createEvent({ fromNumber: U6, title: "Evento pra recriar", start: nearFuture(), location: "Sala 2" });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "delete_event", query: "evento pra recriar" }]);
+  await handleIncomingMessage(evolutionMessage(U6, "cancela o evento pra recriar"));
+  await handleIncomingMessage(evolutionMessage(U6, "sim"));
+  assert.equal(getEventById(U6, event.id), undefined);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U6, "desfaz isso"));
+  const recreated = findUpcomingEvents(U6, "Evento pra recriar");
+  assert.equal(recreated.length, 1);
+  assert.equal(recreated[0].location, "Sala 2");
+});
+
+test("undo: desfaz o lembrete acabado de criar (delete_reminder)", async (t) => {
+  const U7 = "551100090026";
+  ensureUserSeeded(U7);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "lembrete pra desfazer", due_at: nearFuture() }]);
+  await handleIncomingMessage(evolutionMessage(U7, "me lembra de algo amanha"));
+  assert.equal(listReminders(U7).length, 1);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(U7, "desfaz isso"));
+  assert.equal(listReminders(U7).length, 0);
 });

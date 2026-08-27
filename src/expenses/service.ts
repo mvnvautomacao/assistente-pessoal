@@ -236,18 +236,21 @@ export function insertExpense(params: {
   categoryId: number | null;
   paymentMethodId: number | null;
   date: string;
-}) {
-  db.prepare(
-    `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    params.fromNumber,
-    params.amount,
-    params.description,
-    params.categoryId,
-    params.paymentMethodId,
-    params.date,
-    new Date().toISOString()
-  );
+}): ExpenseRecord {
+  const result = db
+    .prepare(
+      `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      params.fromNumber,
+      params.amount,
+      params.description,
+      params.categoryId,
+      params.paymentMethodId,
+      params.date,
+      new Date().toISOString()
+    );
+  return getExpenseById(params.fromNumber, Number(result.lastInsertRowid))!;
 }
 
 export interface ExpenseRecord {
