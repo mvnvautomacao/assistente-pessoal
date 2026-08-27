@@ -176,7 +176,9 @@ Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia fo
     case "category":
       return `🏷️ Como funcionam as categorias:
 
-São os grupos que organizam seus gastos, tipo "Mercado", "Saúde", "Lazer". Eu já crio algumas prontas e vou aprendendo com o tempo.
+São os grupos que organizam seus gastos, tipo "Mercado", "Saúde", "Lazer". Eu já crio algumas prontas e vou aprendendo com o tempo — geralmente nem precisa criar na mão, elas surgem conforme você registra os gastos.
+
+Mas se quiser criar uma categoria nova de propósito: "cria uma categoria chamada Pets"
 
 Pra ver quais você tem: "quais categorias eu tenho"
 
@@ -768,6 +770,18 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
       const lines = categories.map((c) => `• ${c.name}`).join("\n");
       await sendText(from, `🏷️ Suas categorias:\n\n${lines}`);
+      break;
+    }
+    case "create_category": {
+      const alreadyExisted = findCategoryByName(from, interpretation.category) !== null;
+      const category = getOrCreateCategory(from, interpretation.category);
+      logActivity(from, "create_category", alreadyExisted ? `"${category.name}" ja existia` : `"${category.name}" criada`);
+      await sendText(
+        from,
+        alreadyExisted
+          ? `Você já tem uma categoria chamada "${category.name}".`
+          : `✅ Categoria "${category.name}" criada. Já pode usar ela nos seus gastos, tipo "50 no mercado categoria ${category.name}".`
+      );
       break;
     }
     case "list_expenses": {

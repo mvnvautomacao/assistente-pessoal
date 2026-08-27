@@ -4,7 +4,14 @@ import * as whatsappClient from "../../src/whatsapp/client";
 import * as aiInterpret from "../../src/ai/interpret";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
-import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded, getExpenseById } from "../../src/expenses/service";
+import {
+  getOrCreateCategory,
+  findRecentExpense,
+  insertExpense,
+  ensureUserSeeded,
+  getExpenseById,
+  findCategoryByName,
+} from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { getRecentBlockedAttempts } from "../../src/activity/service";
 import { config } from "../../src/config";
@@ -547,4 +554,33 @@ test("lembrete criado com horario sem offset explicito guarda o horario certo, n
   const reminders = listReminders(TZ2);
   assert.equal(reminders.length, 1);
   assert.equal(new Date(reminders[0].due_at).toISOString(), "2026-09-10T23:00:00.000Z");
+});
+
+// Regressao de um bug real relatado em producao: "criar caregoria 'marina' nos
+// meus gastos" (erro de digitacao em "categoria") foi a PRIMEIRA mensagem de um
+// numero novo, e foi entendida como um gasto em vez de criar a categoria --
+// porque nao existia nenhuma acao dedicada pra "so criar uma categoria vazia",
+// so pra corrigir a categoria de um gasto ja existente (correct_category).
+test("create_category: cria a categoria mesmo sem gasto nenhum associado ainda", async (t) => {
+  const CC1 = "551100090070";
+  allowNumber(CC1); // numero novo de proposito (sem ensureUserSeeded), igual o caso relatado
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "create_category", category: "Marina" }]);
+  await handleIncomingMessage(evolutionMessage(CC1, "criar caregoria 'marina' nos meus gastos"));
+
+  assert.ok(findCategoryByName(CC1, "Marina"));
+  assert.match(sent[sent.length - 1].text, /criada/);
+  assert.doesNotMatch(sent[sent.length - 1].text, /gasto registrado/i);
+});
+
+test("create_category: categoria que ja existe avisa em vez de fingir que criou de novo", async (t) => {
+  const CC2 = "551100090071";
+  seed(CC2);
+  getOrCreateCategory(CC2, "Pets");
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "create_category", category: "Pets" }]);
+  await handleIncomingMessage(evolutionMessage(CC2, "cria uma categoria chamada Pets"));
+
+  assert.match(sent[0].text, /já tem/i);
 });
