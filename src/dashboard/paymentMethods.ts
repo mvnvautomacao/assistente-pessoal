@@ -40,10 +40,10 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   const body = `
   <header><h1>Formas de pagamento</h1></header>
 
-  <table>
+  <div class="table-wrap"><table>
     <tr><th>Nome</th><th></th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
-  </table>
+  </table></div>
   <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">A forma padrão é usada quando você não especifica no WhatsApp. Pra mudar, mande uma mensagem tipo "meu pagamento padrão é pix".</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova forma de pagamento</h2>

@@ -48,10 +48,10 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
   const body = `
   <header><h1>Categorias</h1></header>
 
-  <table>
+  <div class="table-wrap"><table>
     <tr><th>Nome</th><th>Orçamento mensal (R$)</th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma categoria ainda.</td></tr>`}
-  </table>
+  </table></div>
   <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">Orçamento é opcional. Deixe em branco e salve pra remover o limite de uma categoria. Você é avisado no WhatsApp ao chegar perto ou passar do valor.</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova categoria</h2>

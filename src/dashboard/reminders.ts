@@ -23,7 +23,7 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
       <tr>
         <td>${escapeHtml(toSPDateTimeLocal(r.due_at)).replace("T", " ")}</td>
         <td>${escapeHtml(r.message)}</td>
-        <td><span class="tag" style="${r.sent ? "background:#e5e7eb;color:#374151" : ""}">${r.sent ? "Enviado" : "Pendente"}</span></td>
+        <td><span class="tag" style="${r.sent ? "background:var(--border);color:var(--muted)" : ""}">${r.sent ? "Enviado" : "Pendente"}</span></td>
         <td class="row-actions">
           <a class="link-action" href="/dashboard/reminders/${r.id}/edit?${qs}">Editar</a>
           <form class="inline" method="post" action="/dashboard/reminders/${r.id}/delete?${qs}" onsubmit="return confirm('Excluir esse lembrete?')">
@@ -41,10 +41,10 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
     <a class="btn" href="/dashboard/reminders/new?${qs}">+ Novo lembrete</a>
   </header>
 
-  <table>
+  <div class="table-wrap"><table>
     <tr><th>Data/hora</th><th>Mensagem</th><th>Status</th><th></th></tr>
     ${rows}
-  </table>`;
+  </table></div>`;
 
   res.send(renderPage({ title: "Lembretes", phone, active: "reminders", body }));
 });

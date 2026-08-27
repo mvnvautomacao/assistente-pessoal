@@ -59,10 +59,10 @@ eventsRouter.get("/dashboard/events", (req, res) => {
   </p>
   <div class="chip-row">${dayChip(30, "30 dias")}${dayChip(60, "60 dias")}${dayChip(90, "90 dias")}</div>
 
-  <table>
+  <div class="table-wrap"><table>
     <tr><th>Quando</th><th>Título</th><th>Local</th><th></th></tr>
     ${rows}
-  </table>
+  </table></div>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Aviso padrão antes dos eventos</h2>
   <form class="card-form" method="post" action="/dashboard/events/settings?${qs}">

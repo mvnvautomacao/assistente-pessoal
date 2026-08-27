@@ -123,10 +123,10 @@ expensesRouter.get("/dashboard", (req, res) => {
     <div class="panel"><h2>Por forma de pagamento</h2>${barList(paymentTotals)}</div>
   </div>
 
-  <table>
+  <div class="table-wrap"><table>
     <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
     ${expenseRows}
-  </table>`;
+  </table></div>`;
 
   res.send(renderPage({ title: `Gastos — ${monthLabel(month)}`, phone, active: "expenses", body }));
 });
