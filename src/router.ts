@@ -1,4 +1,4 @@
-import { sendText } from "./whatsapp/client";
+import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
 import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents } from "./events/service";
@@ -63,9 +63,11 @@ function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): strin
 }
 
 // Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
-// em base64 pode vir em lugares diferentes dependendo da versao/config da API.
+// em base64 pode vir em lugares diferentes dependendo da versao/config da API — e em
+// algumas versoes nao vem de jeito nenhum no payload do webhook (so uma referencia
+// criptografada), sendo preciso buscar via getBase64FromMediaMessage (ver resolveMediaBase64).
 interface EvolutionMessage {
-  key: { remoteJid: string; fromMe: boolean };
+  key: { remoteJid: string; id: string; fromMe: boolean };
   messageType: string;
   message?: {
     conversation?: string;
@@ -77,26 +79,24 @@ interface EvolutionMessage {
   base64?: string;
 }
 
+async function resolveMediaBase64(data: EvolutionMessage): Promise<string | undefined> {
+  const inline = data.message?.base64 ?? data.base64;
+  if (inline) return inline;
+  try {
+    const fetched = await getBase64FromMediaMessage({
+      remoteJid: data.key.remoteJid,
+      id: data.key.id,
+      fromMe: data.key.fromMe,
+    });
+    return fetched.base64;
+  } catch (err) {
+    console.error("Erro ao buscar midia via getBase64FromMediaMessage:", err);
+    return undefined;
+  }
+}
+
 export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
-  const base64Media = data.message?.base64 ?? data.base64;
-
-  // debug temporario: descobrir onde o base64 vem nessa versao da Evolution API
-  // quando nao acha no lugar esperado (nunca loga o valor em si, so as chaves)
-  if ((data.messageType === "audioMessage" || data.messageType === "imageMessage") && !base64Media) {
-    console.log(
-      "[debug base64] messageType:",
-      data.messageType,
-      "chaves em data:",
-      Object.keys(data),
-      "chaves em data.message:",
-      Object.keys(data.message ?? {}),
-      "chaves em data.message.audioMessage:",
-      Object.keys((data.message as Record<string, unknown> | undefined)?.audioMessage ?? {}),
-      "chaves em data.message.imageMessage:",
-      Object.keys((data.message as Record<string, unknown> | undefined)?.imageMessage ?? {})
-    );
-  }
 
   // Cada numero tem categorias/formas de pagamento proprias, isoladas dos demais;
   // na primeira mensagem desse numero, cria as categorias/formas padrao pra ele.
@@ -105,8 +105,9 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   let text: string | undefined;
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
     text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
-  } else if (data.messageType === "audioMessage" && base64Media) {
-    text = await transcribeAudio(Buffer.from(base64Media, "base64"));
+  } else if (data.messageType === "audioMessage") {
+    const audioBase64 = await resolveMediaBase64(data);
+    if (audioBase64) text = await transcribeAudio(Buffer.from(audioBase64, "base64"));
   }
 
   // Enquanto tiver categorizacao pendente pra esse numero, a proxima mensagem
@@ -128,9 +129,14 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   let interpretations: Interpretation[];
   if (text !== undefined) {
     interpretations = await interpretText(from, text);
-  } else if (data.messageType === "imageMessage" && base64Media) {
+  } else if (data.messageType === "imageMessage") {
+    const imageBase64 = await resolveMediaBase64(data);
+    if (!imageBase64) {
+      await sendText(from, "Não consegui baixar essa imagem. Tenta mandar de novo?");
+      return;
+    }
     const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
-    interpretations = await interpretReceiptImage(from, base64Media, mimeType);
+    interpretations = await interpretReceiptImage(from, imageBase64, mimeType);
   } else {
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;

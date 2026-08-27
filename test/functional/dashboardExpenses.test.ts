@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startDashboardTestServer } from "../helpers/app";
 import { ensureUserSeeded, findRecentExpense, getExpenseById } from "../../src/expenses/service";
+import { spDateString } from "../../src/timeSP";
 
 const A = "551100050001";
 const B = "551100050002";
@@ -31,7 +32,7 @@ test("criar gasto novo sem data usa hoje; com data (mesmo retroativa) usa a info
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ amount: "50.00", description: "sem data especificada" }),
     });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = spDateString();
     const created = findRecentExpense(A, "sem data especificada")!;
     assert.equal(created.date, today);
 

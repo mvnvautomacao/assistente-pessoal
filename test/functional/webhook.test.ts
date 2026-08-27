@@ -6,10 +6,11 @@ import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
 import { getOrCreateCategory, findRecentExpense, insertExpense } from "../../src/expenses/service";
 import { setBudget } from "../../src/expenses/budgets";
+import { spDateString } from "../../src/timeSP";
 
 function evolutionMessage(from: string, text: string) {
   return {
-    key: { remoteJid: `${from}@s.whatsapp.net`, fromMe: false },
+    key: { remoteJid: `${from}@s.whatsapp.net`, id: `test-${Math.random().toString(36).slice(2)}`, fromMe: false },
     messageType: "conversation" as const,
     message: { conversation: text },
   };
@@ -30,7 +31,7 @@ function withMocks(t: TestContext) {
   return { sent, queueReply: (actions: Interpretation[]) => queue.push(actions) };
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => spDateString();
 
 const A = "551100090001";
 const B = "551100090002";
