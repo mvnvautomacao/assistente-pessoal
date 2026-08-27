@@ -515,3 +515,36 @@ test("rate limit: mais de 20 mensagens em 5 min pausa o numero, avisa ele uma ve
   await handleIncomingMessage(evolutionMessage(RL, "mensagem durante o cooldown"));
   assert.equal(sent.length, 2); // nao aumentou
 });
+
+// Regressao de um bug real relatado em producao: "atender carol as quinze horas"
+// foi marcado 12h em vez de 15h. A IA devolveu o horario sem o offset -03:00
+// explicito; o container de producao roda em UTC, entao new Date(string sem
+// offset) tratava como se ja fosse UTC, adiantando o evento em 3h. Local nao
+// pegava porque o dev roda em America/Sao_Paulo por coincidencia -- por isso o
+// teste confere new Date(...).toISOString(), que normaliza pra UTC sempre,
+// independente do fuso da maquina que roda o teste.
+test("evento criado com horario sem offset explicito (como a IA as vezes devolve) guarda o horario certo, nao adiantado", async (t) => {
+  const TZ1 = "551100090060";
+  seed(TZ1);
+  const { queueReply } = withMocks(t);
+  // 15h sem "-03:00" no final, exatamente como o bug relatado
+  queueReply([{ type: "event", title: "atender Carol", start: "2026-09-10T15:00:00" }]);
+  await handleIncomingMessage(evolutionMessage(TZ1, "atender carol as quinze horas"));
+
+  const matches = findUpcomingEvents(TZ1, "atender Carol");
+  assert.equal(matches.length, 1);
+  // 15h em Brasilia = 18h UTC, nao importa o fuso da maquina rodando o teste
+  assert.equal(new Date(matches[0].start).toISOString(), "2026-09-10T18:00:00.000Z");
+});
+
+test("lembrete criado com horario sem offset explicito guarda o horario certo, nao adiantado", async (t) => {
+  const TZ2 = "551100090061";
+  seed(TZ2);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "tomar remedio", due_at: "2026-09-10T20:00:00" }]);
+  await handleIncomingMessage(evolutionMessage(TZ2, "me lembra de tomar remedio as 20h"));
+
+  const reminders = listReminders(TZ2);
+  assert.equal(reminders.length, 1);
+  assert.equal(new Date(reminders[0].due_at).toISOString(), "2026-09-10T23:00:00.000Z");
+});

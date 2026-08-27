@@ -21,7 +21,7 @@ import { isNumberAllowed } from "./access/allowlist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
-import { spDateString } from "./timeSP";
+import { spDateString, ensureBrazilOffset } from "./timeSP";
 import {
   ensureUserSeeded,
   findCategoryByName,
@@ -602,15 +602,20 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "event": {
+      // a IA devolve o horario em hora local de Brasilia mas nem sempre com o
+      // offset explicito -03:00; sem isso, o resto do sistema pode tratar como
+      // UTC e adiantar o evento em 3h (ver ensureBrazilOffset em timeSP.ts)
+      const start = ensureBrazilOffset(interpretation.start);
+      const end = interpretation.end ? ensureBrazilOffset(interpretation.end) : undefined;
       const created = createEvent({
         fromNumber: from,
         title: interpretation.title,
-        start: interpretation.start,
-        end: interpretation.end,
+        start,
+        end,
         location: interpretation.location,
       });
       setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: interpretation.title });
-      logActivity(from, "event", `${interpretation.title} — ${interpretation.start}`);
+      logActivity(from, "event", `${interpretation.title} — ${start}`);
       await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${created.reminder_minutes} min antes)`);
       break;
     }
@@ -635,9 +640,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "reminder": {
-      const reminderId = createReminder(from, interpretation.message, interpretation.due_at);
+      const dueAt = ensureBrazilOffset(interpretation.due_at);
+      const reminderId = createReminder(from, interpretation.message, dueAt);
       setPendingUndo(from, { kind: "delete_reminder", reminderId, description: interpretation.message });
-      logActivity(from, "reminder", `${interpretation.message} — ${interpretation.due_at}`);
+      logActivity(from, "reminder", `${interpretation.message} — ${dueAt}`);
       await sendText(from, `⏰ Lembrete criado: "${interpretation.message}"`);
       break;
     }

@@ -22,3 +22,16 @@ export function isLastDayOfMonthSP(d: Date = new Date()): boolean {
   const nextDay = new Date(Date.UTC(y, m - 1, day + 1));
   return nextDay.getUTCMonth() !== m - 1;
 }
+
+// A IA devolve horario de evento/lembrete em ISO local de Brasilia (instruida no
+// system prompt), mas as vezes sem o offset explicito (ex: "2026-08-27T15:00:00"
+// em vez de "...T15:00:00-03:00"). Sem o offset, new Date(str) e o datetime() do
+// SQLite tratam a string como se ja fosse UTC -- funciona por acaso num dev local
+// configurado em America/Sao_Paulo, mas em producao (container roda em UTC) isso
+// adianta todo evento/lembrete em 3h (ex: "15h" vira "12h" na tela). Garante o
+// offset -03:00 quando a IA nao mandar um explicito, pra funcionar igual em
+// qualquer timezone de servidor.
+export function ensureBrazilOffset(iso: string): string {
+  if (/(Z|[+-]\d{2}:\d{2})$/.test(iso)) return iso;
+  return `${iso}-03:00`;
+}

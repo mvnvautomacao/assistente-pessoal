@@ -132,9 +132,21 @@ const ACTION_SCHEMA = {
       type: "string",
       description: "Data ISO 8601 do gasto (type=expense), ou o dia especifico a listar (type=list_expenses, so a data).",
     },
-    title: { type: "string", description: "Titulo do evento (so para type=event)" },
-    start: { type: "string", description: "Data/hora ISO 8601 de inicio (so para type=event)" },
-    end: { type: "string", description: "Data/hora ISO 8601 de fim, opcional (so para type=event)" },
+    title: {
+      type: "string",
+      description:
+        "Titulo do evento (so para type=event). Use as palavras do proprio usuario da forma mais literal possivel (ex: 'atender Carol', 'manicure', 'dentista') -- NAO invente nem reescreva numa outra forma/grafia, e NUNCA mude a ortografia de uma palavra que ja existe em portugues (ex: a palavra 'manicure' continua exatamente 'manicure', nunca virar 'manicuri' ou qualquer variacao parecida). So capitalize a primeira letra se fizer sentido, sem alterar mais nada.",
+    },
+    start: {
+      type: "string",
+      description:
+        "Data/hora ISO 8601 de inicio (so para type=event), no horario local de Brasilia (nao UTC). Inclua o offset explicito '-03:00' no final (ex: '2026-08-27T15:00:00-03:00'), nunca deixe sem offset.",
+    },
+    end: {
+      type: "string",
+      description:
+        "Data/hora ISO 8601 de fim, opcional (so para type=event), no horario local de Brasilia (nao UTC). Inclua o offset explicito '-03:00' no final, igual 'start'.",
+    },
     location: { type: "string", description: "Local do evento, opcional (so para type=event)" },
     query: {
       type: "string",
@@ -157,7 +169,11 @@ const ACTION_SCHEMA = {
         "Novo valor do campo (so para type=edit_expense): numero pro amount (ex: '45.90'), data ISO 8601 (so a data) pro date, texto pra description, ou nome da forma de pagamento pro payment_method (prefira uma das ja existentes informadas no system prompt).",
     },
     message: { type: "string", description: "Texto do lembrete (so para type=reminder)" },
-    due_at: { type: "string", description: "Data/hora ISO 8601 em que o lembrete deve ser enviado (so para type=reminder)" },
+    due_at: {
+      type: "string",
+      description:
+        "Data/hora ISO 8601 em que o lembrete deve ser enviado (so para type=reminder), no horario local de Brasilia (nao UTC). Inclua o offset explicito '-03:00' no final (ex: '2026-08-27T20:00:00-03:00'), nunca deixe sem offset.",
+    },
     days: {
       type: "number",
       description:
@@ -216,8 +232,8 @@ function buildSystemPrompt(fromNumber: string) {
   const paymentMethodNames = listPaymentMethods(fromNumber)
     .map((p) => p.name)
     .join(", ");
-  return `Voce interpreta mensagens de WhatsApp de um assistente pessoal. Data/hora atual: ${now}, horario de Brasilia (America/Sao_Paulo, UTC-3 o ano todo, sem horario de verao).
-Sempre chame a ferramenta record_actions com o resultado. Datas relativas ("hoje", "amanha", "sexta que vem") devem ser convertidas para ISO 8601 com base NESSA data/hora de Brasilia, nao em UTC — preste atencao especial perto da meia-noite, onde a data em UTC ja pode ter virado o dia seguinte.
+  return `Voce interpreta mensagens de WhatsApp de um assistente pessoal. Data/hora atual: ${now}-03:00, horario de Brasilia (America/Sao_Paulo, UTC-3 o ano todo, sem horario de verao).
+Sempre chame a ferramenta record_actions com o resultado. Datas relativas ("hoje", "amanha", "sexta que vem") devem ser convertidas para ISO 8601 com base NESSA data/hora de Brasilia, nao em UTC — preste atencao especial perto da meia-noite, onde a data em UTC ja pode ter virado o dia seguinte. Campos de data/hora com horario (start, end, due_at) SEMPRE devem terminar com o offset explicito "-03:00" (ex: "2026-08-27T15:00:00-03:00"), nunca sem offset — isso e essencial pra hora nao vir adiantada/atrasada quando o sistema processar.
 Se a mensagem tiver mais de um pedido (ex: dois eventos, ou um gasto e um lembrete), retorne uma acao para cada um dentro de "actions".
 
 Categorias de gasto ja existentes: ${categoryNames}.

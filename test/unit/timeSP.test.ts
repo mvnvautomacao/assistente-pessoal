@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spDateString, spDayOfWeek, isLastDayOfMonthSP } from "../../src/timeSP";
+import { spDateString, spDayOfWeek, isLastDayOfMonthSP, ensureBrazilOffset } from "../../src/timeSP";
 
 test("spDateString formata no fuso de Sao Paulo, nao no fuso do processo", () => {
   // meio-dia UTC e sempre 09:00 em SP (UTC-3, sem horario de verao) -> mesmo dia calendario
@@ -33,4 +33,29 @@ test("isLastDayOfMonthSP: 30/01 nao e o ultimo dia", () => {
 test("isLastDayOfMonthSP: fevereiro em ano bissexto (2028) termina dia 29", () => {
   assert.equal(isLastDayOfMonthSP(new Date("2028-02-29T15:00:00Z")), true);
   assert.equal(isLastDayOfMonthSP(new Date("2028-02-28T15:00:00Z")), false);
+});
+
+// Regressao: a IA as vezes devolve o horario do evento/lembrete sem o offset
+// -03:00 explicito. Sem isso, new Date(str) e o datetime() do SQLite tratam a
+// string como se ja fosse UTC -- funciona por acaso num dev configurado em
+// America/Sao_Paulo, mas em producao (container roda em UTC) isso ADIANTA o
+// evento em 3h (ex: "15h" vira "12h" na tela, foi reportado em producao).
+test("ensureBrazilOffset acrescenta -03:00 quando a string nao tem offset explicito", () => {
+  const withOffset = ensureBrazilOffset("2026-08-27T15:00:00");
+  assert.equal(withOffset, "2026-08-27T15:00:00-03:00");
+  // 15h em Brasilia (UTC-3) tem que virar 18h UTC, nao importa o fuso do processo
+  // que roda esse teste -- toISOString() sempre normaliza pra UTC.
+  assert.equal(new Date(withOffset).toISOString(), "2026-08-27T18:00:00.000Z");
+});
+
+test("ensureBrazilOffset funciona tambem sem os segundos", () => {
+  const withOffset = ensureBrazilOffset("2026-08-27T15:00");
+  assert.equal(withOffset, "2026-08-27T15:00-03:00");
+  assert.equal(new Date(withOffset).toISOString(), "2026-08-27T18:00:00.000Z");
+});
+
+test("ensureBrazilOffset nao mexe se a string ja tiver offset ou for UTC (Z)", () => {
+  assert.equal(ensureBrazilOffset("2026-08-27T15:00:00-03:00"), "2026-08-27T15:00:00-03:00");
+  assert.equal(ensureBrazilOffset("2026-08-27T18:00:00Z"), "2026-08-27T18:00:00Z");
+  assert.equal(ensureBrazilOffset("2026-08-27T15:00:00+00:00"), "2026-08-27T15:00:00+00:00");
 });
