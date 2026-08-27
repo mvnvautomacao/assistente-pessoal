@@ -6,6 +6,7 @@ import { dashboardRouter } from "./dashboard";
 import { startReminderScheduler } from "./reminders/scheduler";
 import { startExpenseReportScheduler } from "./expenses/reportScheduler";
 import { startEventReminderScheduler } from "./events/reminderScheduler";
+import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import "./db";
 
 const app = express();
@@ -22,4 +23,5 @@ app.listen(config.port, () => {
   startReminderScheduler();
   startExpenseReportScheduler();
   startEventReminderScheduler();
+  startRecurringExpenseScheduler();
 });

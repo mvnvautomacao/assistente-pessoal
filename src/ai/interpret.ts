@@ -19,9 +19,22 @@ export type Interpretation =
   | { type: "list_budgets"; category?: string }
   | { type: "list_categories" }
   | { type: "undo" }
+  | { type: "set_recurring_expense"; description: string; amount: number; category: string; day_of_month: number; payment_method?: string }
+  | { type: "list_recurring_expenses" }
+  | { type: "remove_recurring_expense"; query: string }
   | {
       type: "help";
-      topic?: "expense" | "event" | "reminder" | "budget" | "expense_report" | "edit_expense" | "category" | "payment_method" | "welcome";
+      topic?:
+        | "expense"
+        | "event"
+        | "reminder"
+        | "budget"
+        | "expense_report"
+        | "edit_expense"
+        | "category"
+        | "payment_method"
+        | "welcome"
+        | "recurring_expense";
     }
   | { type: "list_expenses"; date?: string; days?: number }
   | {
@@ -55,27 +68,35 @@ const ACTION_SCHEMA = {
         "list_expenses",
         "edit_expense",
         "undo",
+        "set_recurring_expense",
+        "list_recurring_expenses",
+        "remove_recurring_expense",
         "help",
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo (total/por categoria), opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar so a CATEGORIA de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). list_expenses = quer ver os GASTOS INDIVIDUAIS (nao o resumo por categoria) de um dia ou periodo, normalmente pra depois editar um deles (ex: 'quais gastos eu tive hoje', 'lista as compras de ontem', 'editar gastos do dia 20', 'me mostra os gastos dos ultimos 3 dias'). Isso inclui pedidos VAGOS sem nenhum dia mencionado, tipo so 'editar compras', 'editar gastos' ou 'quero editar uma compra' — NAO classifique esses como unknown, classifique como list_expenses mesmo sem 'date'/'days' (o sistema avisa o usuario que vai assumir hoje e pede pra especificar se quiser outro dia). Preencha 'date' (ISO 8601, so a data) se um dia especifico foi mencionado, ou 'days' pra 'ultimos X dias'; sem nenhum dos dois, assume hoje. help = quer saber o que o assistente faz, como usar, ou tem uma DUVIDA especifica sobre como fazer algo (ex: 'o que voce faz', 'como funciona', 'como adiciono um gasto', 'como marco um compromisso', 'como faço pra editar um gasto que ja registrei'). Se a duvida for sobre um assunto especifico que o sistema faz, preencha 'topic' com ele (expense/event/reminder/budget/expense_report/edit_expense/category/payment_method) pra explicar so aquilo, com exemplo — nao o catalogo inteiro. Se o usuario pedir EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas'), preencha topic='welcome'. Se for uma pergunta bem generica tipo 'o que voce faz' ou 'me ajuda', sem tema especifico, deixe 'topic' em branco. edit_expense = quer ALTERAR um gasto ja registrado (valor, data, descricao ou forma de pagamento — pra mudar categoria use correct_category). Se ele se referir a um item por numero de uma lista mostrada antes (ex: 'edita o 2', 'muda o 3 pro valor 45'), preencha 'list_ref' com esse numero e NAO preencha 'query'. Se ele descrever o gasto por texto (ex: 'a farmacia foi no pix', 'o gasto do mercado era 45 no total'), preencha 'query' com esse texto e NAO preencha 'list_ref'. Sempre preencha 'field' (amount/date/description/payment_method) e 'value' com o novo valor. undo = quer desfazer/cancelar a ULTIMA acao que ele mesmo pediu ao assistente (ex: 'desfaz isso', 'desfaz a ultima acao', 'cancela isso que eu mandei', 'volta atras', 'tira esse gasto que acabei de colocar'). Diferente de delete_event, que e especificamente sobre cancelar um COMPROMISSO DA AGENDA por nome/busca. unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
+        "expense = o usuario relatou um gasto/compra JA ACONTECIDO, com valor (ex: '50 no mercado', 'gastei 30 reais de uber'). event = quer marcar algo na agenda com data/hora. reminder = quer ser lembrado de algo depois. delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes) nos proximos dias. expense_report = quer saber quanto gastou/resumo de gastos num periodo (total/por categoria), opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar so a CATEGORIA de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). list_expenses = quer ver os GASTOS INDIVIDUAIS (nao o resumo por categoria) de um dia ou periodo, normalmente pra depois editar um deles (ex: 'quais gastos eu tive hoje', 'lista as compras de ontem', 'editar gastos do dia 20', 'me mostra os gastos dos ultimos 3 dias'). Isso inclui pedidos VAGOS sem nenhum dia mencionado, tipo so 'editar compras', 'editar gastos' ou 'quero editar uma compra' — NAO classifique esses como unknown, classifique como list_expenses mesmo sem 'date'/'days' (o sistema avisa o usuario que vai assumir hoje e pede pra especificar se quiser outro dia). Preencha 'date' (ISO 8601, so a data) se um dia especifico foi mencionado, ou 'days' pra 'ultimos X dias'; sem nenhum dos dois, assume hoje. help = quer saber o que o assistente faz, como usar, ou tem uma DUVIDA especifica sobre como fazer algo (ex: 'o que voce faz', 'como funciona', 'como adiciono um gasto', 'como marco um compromisso', 'como faço pra editar um gasto que ja registrei'). Se a duvida for sobre um assunto especifico que o sistema faz, preencha 'topic' com ele (expense/event/reminder/budget/expense_report/edit_expense/category/payment_method) pra explicar so aquilo, com exemplo — nao o catalogo inteiro. Se o usuario pedir EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas'), preencha topic='welcome'. Se for uma pergunta bem generica tipo 'o que voce faz' ou 'me ajuda', sem tema especifico, deixe 'topic' em branco. edit_expense = quer ALTERAR um gasto ja registrado (valor, data, descricao ou forma de pagamento — pra mudar categoria use correct_category). Se ele se referir a um item por numero de uma lista mostrada antes (ex: 'edita o 2', 'muda o 3 pro valor 45'), preencha 'list_ref' com esse numero e NAO preencha 'query'. Se ele descrever o gasto por texto (ex: 'a farmacia foi no pix', 'o gasto do mercado era 45 no total'), preencha 'query' com esse texto e NAO preencha 'list_ref'. Sempre preencha 'field' (amount/date/description/payment_method) e 'value' com o novo valor. undo = quer desfazer/cancelar a ULTIMA acao que ele mesmo pediu ao assistente (ex: 'desfaz isso', 'desfaz a ultima acao', 'cancela isso que eu mandei', 'volta atras', 'tira esse gasto que acabei de colocar'). Diferente de delete_event, que e especificamente sobre cancelar um COMPROMISSO DA AGENDA por nome/busca. set_recurring_expense = quer cadastrar um GASTO FIXO/RECORRENTE, que se repete todo mes no mesmo dia, pra ser lancado automaticamente sem precisar mandar mensagem de novo (ex: 'todo dia 10 pago 50 de internet', 'cadastra um gasto fixo de 89,90 de academia todo dia 5', 'toda vez dia 15 pago 200 de aluguel'). Preencha 'description', 'amount', 'category' e 'day_of_month' (o dia do mes, numero de 1 a 31). Diferente de 'expense', que e um gasto AVULSO ja acontecido uma unica vez. list_recurring_expenses = quer ver quais gastos fixos ja tem cadastrados (ex: 'quais gastos fixos eu tenho', 'lista minhas contas fixas'). remove_recurring_expense = quer parar de lancar automaticamente um gasto fixo (ex: 'cancela o gasto fixo da academia', 'para de lançar a internet todo mes') — preencha 'query' com uma palavra-chave pra identificar qual. unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder), pra pedir os detalhes que faltam.",
     },
     amount: {
       type: "number",
-      description: "Valor do gasto em reais (type=expense) ou o valor do orcamento mensal em reais (type=set_budget).",
+      description:
+        "Valor do gasto em reais (type=expense ou type=set_recurring_expense) ou o valor do orcamento mensal em reais (type=set_budget).",
     },
     category: {
       type: "string",
       description:
-        "Categoria do gasto (type=expense), a nova categoria desejada (type=correct_category), o filtro de categoria (type=expense_report ou type=list_budgets, opcional), ou a categoria do orcamento (type=set_budget, type=remove_budget). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
+        "Categoria do gasto (type=expense ou type=set_recurring_expense), a nova categoria desejada (type=correct_category), o filtro de categoria (type=expense_report ou type=list_budgets, opcional), ou a categoria do orcamento (type=set_budget, type=remove_budget). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido.",
     },
     payment_method: {
       type: "string",
       description:
-        "Forma de pagamento mencionada (type=expense, so se o usuario mencionou explicitamente) ou a forma de pagamento a definir como padrao (type=set_default_payment). Prefira uma das formas de pagamento existentes informadas no system prompt quando fizer sentido, ex: Pix, Dinheiro, ou o nome de um cartao especifico.",
+        "Forma de pagamento mencionada (type=expense ou type=set_recurring_expense, so se o usuario mencionou explicitamente) ou a forma de pagamento a definir como padrao (type=set_default_payment). Prefira uma das formas de pagamento existentes informadas no system prompt quando fizer sentido, ex: Pix, Dinheiro, ou o nome de um cartao especifico.",
     },
-    description: { type: "string", description: "Descricao curta (expense) ou motivo (unknown)" },
+    description: { type: "string", description: "Descricao curta (type=expense, type=set_recurring_expense) ou motivo (unknown)" },
+    day_of_month: {
+      type: "number",
+      description: "Dia do mes (1 a 31) em que o gasto fixo deve ser lancado automaticamente (so para type=set_recurring_expense).",
+    },
     likely_intent: {
       type: "string",
       enum: ["expense", "event", "reminder"],
@@ -84,7 +105,18 @@ const ACTION_SCHEMA = {
     },
     topic: {
       type: "string",
-      enum: ["expense", "event", "reminder", "budget", "expense_report", "edit_expense", "category", "payment_method", "welcome"],
+      enum: [
+        "expense",
+        "event",
+        "reminder",
+        "budget",
+        "expense_report",
+        "edit_expense",
+        "category",
+        "payment_method",
+        "welcome",
+        "recurring_expense",
+      ],
       description:
         "So para type=help: sobre qual assunto especifico e a duvida do usuario, pra responder com um exemplo direcionado em vez do catalogo inteiro. 'welcome' e so quando o usuario pede EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas', 'quero ver a mensagem de novo usuario') — diferente de uma pergunta generica tipo 'o que voce faz', que deve deixar 'topic' em branco.",
     },
@@ -99,7 +131,7 @@ const ACTION_SCHEMA = {
     query: {
       type: "string",
       description:
-        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event) ou a descricao do gasto (type=correct_category ou type=edit_expense, opcional — se omitido em correct_category, aplica no gasto mais recente. Em edit_expense, so preencha se NAO usar list_ref).",
+        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event), a descricao do gasto (type=correct_category ou type=edit_expense, opcional — se omitido em correct_category, aplica no gasto mais recente. Em edit_expense, so preencha se NAO usar list_ref), ou a descricao do gasto fixo a remover (type=remove_recurring_expense).",
     },
     list_ref: {
       type: "number",

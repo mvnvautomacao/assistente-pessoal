@@ -9,6 +9,7 @@ import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
 import { listReminders } from "../../src/reminders/service";
+import { listRecurringExpenses } from "../../src/expenses/recurring";
 
 function evolutionMessage(from: string, text: string) {
   return {
@@ -367,4 +368,61 @@ test("undo: desfaz o lembrete acabado de criar (delete_reminder)", async (t) => 
   queueReply([{ type: "undo" }]);
   await handleIncomingMessage(evolutionMessage(U7, "desfaz isso"));
   assert.equal(listReminders(U7).length, 0);
+});
+
+test("set_recurring_expense: cadastra o gasto fixo e confirma com o dia do mes", async (t) => {
+  const R1 = "551100090030";
+  ensureUserSeeded(R1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "internet", amount: 99.9, category: "Contas", day_of_month: 10 }]);
+  await handleIncomingMessage(evolutionMessage(R1, "todo dia 10 pago 99,90 de internet"));
+
+  assert.match(sent[0].text, /🔁/);
+  assert.match(sent[0].text, /dia 10/);
+  const recurring = listRecurringExpenses(R1);
+  assert.equal(recurring.length, 1);
+  assert.equal(recurring[0].description, "internet");
+  assert.equal(recurring[0].day_of_month, 10);
+});
+
+test("set_recurring_expense: dia do mes invalido nao cadastra nada", async (t) => {
+  const R2 = "551100090031";
+  ensureUserSeeded(R2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "algo estranho", amount: 10, category: "Contas", day_of_month: 40 }]);
+  await handleIncomingMessage(evolutionMessage(R2, "todo dia 40 pago 10 de algo estranho"));
+
+  assert.match(sent[0].text, /entre 1 e 31/);
+  assert.equal(listRecurringExpenses(R2).length, 0);
+});
+
+test("list_recurring_expenses: lista os gastos fixos cadastrados, isolado por numero", async (t) => {
+  const R3 = "551100090032";
+  const R4 = "551100090033";
+  [R3, R4].forEach(ensureUserSeeded);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "set_recurring_expense", description: "academia", amount: 89.9, category: "Saude", day_of_month: 5 }]);
+  await handleIncomingMessage(evolutionMessage(R3, "todo dia 5 pago 89,90 de academia"));
+
+  queueReply([{ type: "list_recurring_expenses" }]);
+  await handleIncomingMessage(evolutionMessage(R4, "quais gastos fixos eu tenho"));
+  assert.match(sent[1].text, /ainda não tem nenhum gasto fixo/i);
+
+  queueReply([{ type: "list_recurring_expenses" }]);
+  await handleIncomingMessage(evolutionMessage(R3, "quais gastos fixos eu tenho"));
+  assert.match(sent[2].text, /academia/);
+});
+
+test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", async (t) => {
+  const R5 = "551100090034";
+  ensureUserSeeded(R5);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "streaming filmes", amount: 39.9, category: "Lazer", day_of_month: 20 }]);
+  await handleIncomingMessage(evolutionMessage(R5, "todo dia 20 pago 39,90 de streaming filmes"));
+
+  queueReply([{ type: "remove_recurring_expense", query: "streaming" }]);
+  await handleIncomingMessage(evolutionMessage(R5, "cancela o gasto fixo do streaming"));
+  assert.match(sent[1].text, /removido/);
+  assert.equal(listRecurringExpenses(R5).length, 0);
 });

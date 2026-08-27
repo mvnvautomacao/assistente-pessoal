@@ -7,6 +7,12 @@ import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, bu
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
 import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
+import {
+  createRecurringExpense,
+  listRecurringExpenses,
+  findActiveRecurringExpenseByDescription,
+  deactivateRecurringExpense,
+} from "./expenses/recurring";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { logActivity } from "./activity/service";
@@ -69,11 +75,33 @@ function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): strin
 // clara e um exemplo pronto pra copiar — pensado pra quem tem menos familiaridade
 // com tecnologia, entao frases curtas e nada de termos tecnicos
 function helpTopicMessage(
-  topic?: "expense" | "event" | "reminder" | "budget" | "expense_report" | "edit_expense" | "category" | "payment_method" | "welcome"
+  topic?:
+    | "expense"
+    | "event"
+    | "reminder"
+    | "budget"
+    | "expense_report"
+    | "edit_expense"
+    | "category"
+    | "payment_method"
+    | "welcome"
+    | "recurring_expense"
 ): string | null {
   switch (topic) {
     case "welcome":
       return WELCOME_MESSAGE;
+    case "recurring_expense":
+      return `🔁 Como cadastrar um gasto fixo (que se repete todo mês):
+
+Diga o valor, do que é e o dia do mês em que costuma pagar.
+
+Exemplo: "todo dia 10 pago 50 reais de internet"
+
+A partir daí, todo mês eu lanço esse gasto sozinho, no dia certo, sem você precisar mandar mensagem de novo.
+
+Pra ver quais você já tem: "quais gastos fixos eu tenho"
+
+Pra parar de lançar um: "cancela o gasto fixo da internet"`;
     case "expense":
       return `💰 Como registrar um gasto:
 
@@ -794,6 +822,58 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(from, `✏️ Gasto "${expense.description}" atualizado: ${changeText}`);
       break;
     }
+    case "set_recurring_expense": {
+      if (interpretation.day_of_month < 1 || interpretation.day_of_month > 31) {
+        await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.day_of_month}" não é um dia válido.`);
+        break;
+      }
+      const category = getOrCreateCategory(from, interpretation.category);
+      const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
+      createRecurringExpense({
+        fromNumber: from,
+        description: interpretation.description,
+        amount: interpretation.amount,
+        categoryId: category.id,
+        paymentMethodId: paymentMethod?.id ?? null,
+        dayOfMonth: interpretation.day_of_month,
+      });
+      logActivity(
+        from,
+        "set_recurring_expense",
+        `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}, todo dia ${interpretation.day_of_month}`
+      );
+      await sendText(
+        from,
+        `🔁 Gasto fixo cadastrado: R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}, todo dia ${interpretation.day_of_month}. Vou lançar esse valor automaticamente todo mês, sem você precisar mandar mensagem.`
+      );
+      break;
+    }
+    case "list_recurring_expenses": {
+      const recurring = listRecurringExpenses(from);
+      logActivity(from, "list_recurring_expenses", `${recurring.length} gasto(s) fixo(s)`);
+      if (!recurring.length) {
+        await sendText(
+          from,
+          "Você ainda não tem nenhum gasto fixo cadastrado. Pode dizer algo como \"todo dia 10 pago 50 reais de internet\"."
+        );
+        break;
+      }
+      const lines = recurring.map((r) => `• ${r.description} — R$${r.amount.toFixed(2)}, todo dia ${r.day_of_month}`).join("\n");
+      await sendText(from, `🔁 Seus gastos fixos:\n\n${lines}\n\nPra parar de lançar um, é só dizer, ex: "cancela o gasto fixo da internet".`);
+      break;
+    }
+    case "remove_recurring_expense": {
+      const recurring = findActiveRecurringExpenseByDescription(from, interpretation.query);
+      if (!recurring) {
+        logActivity(from, "remove_recurring_expense", `nenhum gasto fixo encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não achei nenhum gasto fixo parecido com "${interpretation.query}".`);
+        break;
+      }
+      deactivateRecurringExpense(from, recurring.id);
+      logActivity(from, "remove_recurring_expense", `${recurring.description} — R$${recurring.amount.toFixed(2)}/mes removido`);
+      await sendText(from, `✅ Gasto fixo "${recurring.description}" removido. Não vou mais lançar ele automaticamente.`);
+      break;
+    }
     case "undo": {
       const undo = getPendingUndo(from);
       if (!undo) {
@@ -850,6 +930,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
 
 💰 *Gastos*
 Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e pergunto se não souber). Diga "editar compras de ontem" pra corrigir algo, ou "quanto gastei esse mês" pra um resumo.
+
+🔁 *Gastos fixos*
+"Todo dia 10 pago 50 reais de internet" — eu cadastro e lanço esse valor sozinho todo mês, sem você precisar mandar mensagem de novo.
 
 📅 *Agenda e lembretes*
 "Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento.

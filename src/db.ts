@@ -96,6 +96,22 @@ db.exec(`
     UNIQUE(from_number, category_id)
   );
 
+  -- gastos fixos/recorrentes: lancados automaticamente todo mes no dia
+  -- configurado, sem o usuario precisar mandar mensagem (ver recurringScheduler.ts).
+  -- last_run_month ("YYYY-MM") evita lancar 2x no mesmo mes.
+  CREATE TABLE IF NOT EXISTS recurring_expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    description TEXT NOT NULL,
+    amount REAL NOT NULL,
+    category_id INTEGER REFERENCES categories(id),
+    payment_method_id INTEGER REFERENCES payment_methods(id),
+    day_of_month INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_run_month TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- fila por numero: enquanto houver pendencia mais antiga, a proxima mensagem
   -- de texto/audio desse numero e tratada como resposta da categoria, nao pedido novo
   CREATE TABLE IF NOT EXISTS pending_categorizations (

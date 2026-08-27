@@ -30,6 +30,10 @@ const TYPE_LABEL: Record<string, string> = {
   edit_expense: "✏️ Gasto editado",
   reminder: "⏰ Lembrete",
   undo: "↩️ Desfeito",
+  set_recurring_expense: "🔁 Gasto fixo cadastrado",
+  list_recurring_expenses: "🔁 Lista de gastos fixos",
+  remove_recurring_expense: "🔁 Gasto fixo removido",
+  recurring_expense: "🔁 Gasto fixo lançado",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
 };
