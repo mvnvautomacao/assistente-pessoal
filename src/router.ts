@@ -7,6 +7,7 @@ import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, bu
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
 import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
+import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { logActivity } from "./activity/service";
 import { spDateString } from "./timeSP";
 import {
@@ -221,6 +222,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       await resolveListChoice(from, pendingChoice.days, text);
       return;
     }
+
+    const pendingDeletion = getPendingEventDeletion(from);
+    if (pendingDeletion) {
+      await resolveEventDeletionConfirmation(from, pendingDeletion, text);
+      return;
+    }
   }
 
   let interpretations: Interpretation[];
@@ -372,6 +379,30 @@ async function resolveListChoice(from: string, days: number, answerText: string)
   await sendText(from, buildGroupedExpenseListText(items, range.label));
 }
 
+// resposta a "confirma que quer cancelar o evento X?" -- so exclui de verdade
+// com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
+async function resolveEventDeletionConfirmation(from: string, pending: { eventId: number; title: string }, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — quer mesmo cancelar o evento "${pending.title}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingEventDeletion(from);
+  if (no) {
+    logActivity(from, "delete_event", `cancelamento de "${pending.title}" nao confirmado`);
+    await sendText(from, `Beleza, não mexi em nada — "${pending.title}" continua na agenda.`);
+    return;
+  }
+
+  deleteEvent(from, pending.eventId);
+  logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
+  await sendText(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -458,9 +489,12 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, `Não encontrei nenhum evento parecido com "${interpretation.query}" nos próximos 60 dias.`);
       } else if (matches.length === 1) {
         const event = matches[0];
-        deleteEvent(from, event.id);
-        logActivity(from, "delete_event", `removido: ${event.title}`);
-        await sendText(from, `🗑️ Evento "${event.title}" removido da agenda`);
+        setPendingEventDeletion(from, event.id, event.title);
+        logActivity(from, "delete_event", `pediu confirmacao pra cancelar "${event.title}"`);
+        await sendText(
+          from,
+          `Encontrei "${event.title}" em ${formatDateTime(event.start)}. Confirma que quer cancelar? Responde "sim" ou "não".`
+        );
       } else {
         const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
         logActivity(from, "delete_event", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);

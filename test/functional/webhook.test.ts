@@ -7,6 +7,7 @@ import { Interpretation } from "../../src/ai/interpret";
 import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded } from "../../src/expenses/service";
 import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
+import { createEvent, getEventById } from "../../src/events/service";
 
 function evolutionMessage(from: string, text: string) {
   return {
@@ -207,4 +208,51 @@ test("numero novo recebe mensagem de boas-vindas antes da resposta normal; numer
   await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "30 no mercado"));
   assert.equal(sent.length, 3); // nao mandou boas-vindas de novo, so a confirmacao
   assert.match(sent[2].text, /✅/);
+});
+
+const nearFuture = () => new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+
+test("delete_event: pede confirmacao antes de excluir, so cancela de verdade com 'sim'", async (t) => {
+  const event = createEvent({ fromNumber: A, title: "Reuniao a cancelar", start: nearFuture() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_event", query: "reuniao a cancelar" }]);
+  await handleIncomingMessage(evolutionMessage(A, "cancela a reuniao a cancelar"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.ok(getEventById(A, event.id)); // ainda nao foi excluido, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(A, "sim"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /removido/);
+  assert.equal(getEventById(A, event.id), undefined);
+});
+
+test("delete_event: responder 'nao' mantem o evento", async (t) => {
+  const event = createEvent({ fromNumber: A, title: "Reuniao a manter", start: nearFuture() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_event", query: "reuniao a manter" }]);
+  await handleIncomingMessage(evolutionMessage(A, "cancela a reuniao a manter"));
+
+  await handleIncomingMessage(evolutionMessage(A, "não, deixa"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /não mexi/i);
+  assert.ok(getEventById(A, event.id)); // continua existindo
+});
+
+test("delete_event: resposta ambigua pergunta de novo, sem excluir nem manter resolvido", async (t) => {
+  const event = createEvent({ fromNumber: A, title: "Reuniao ambigua", start: nearFuture() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_event", query: "reuniao ambigua" }]);
+  await handleIncomingMessage(evolutionMessage(A, "cancela a reuniao ambigua"));
+
+  await handleIncomingMessage(evolutionMessage(A, "sei la"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /[Nn][ãa]o entendi/);
+  assert.ok(getEventById(A, event.id)); // segue pendente, nao decidiu nada ainda
+
+  // agora confirma de verdade, ainda funcionando (estado nao foi perdido)
+  await handleIncomingMessage(evolutionMessage(A, "sim"));
+  assert.equal(getEventById(A, event.id), undefined);
 });
