@@ -1,20 +1,66 @@
 import { Router } from "express";
 import {
   listUpcomingEvents,
+  getEventsForMonth,
   createEvent,
   getEventById,
   updateEvent,
   deleteEvent,
   getEventReminderMinutes,
   setEventReminderMinutes,
+  EventRow,
 } from "../events/service";
 import { renderPage, renderPhoneGate } from "./layout";
-import { normalizeBrazilPhone, escapeHtml, toSPDateTimeLocal, fromSPDateTimeLocal } from "./utils";
+import {
+  normalizeBrazilPhone,
+  escapeHtml,
+  toSPDateTimeLocal,
+  fromSPDateTimeLocal,
+  todaySP,
+  monthLabel,
+  shiftMonth,
+  calendarCells,
+} from "./utils";
 
 export const eventsRouter = Router();
 
 function getPhone(req: { query: Record<string, unknown> }): string {
   return typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
+}
+
+const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+
+function renderCalendar(phone: string, month: string, today: string, eventsByDay: Map<string, EventRow[]>): string {
+  const qs = `phone=${encodeURIComponent(phone)}`;
+  const cells = calendarCells(month)
+    .map((date) => {
+      if (!date) return `<div class="calendar-cell empty"></div>`;
+      const dayEvents = eventsByDay.get(date) ?? [];
+      const dayNum = Number(date.slice(8, 10));
+      const shown = dayEvents.slice(0, 2);
+      const extra = dayEvents.length - shown.length;
+      return `
+      <div class="calendar-cell${date === today ? " today" : ""}${dayEvents.length ? " has-events" : ""}">
+        <div class="day-num">
+          <span>${dayNum}</span>
+          <a class="day-add" href="/dashboard/events/new?${qs}&date=${date}" title="Novo evento em ${date.split("-").reverse().join("/")}">+</a>
+        </div>
+        ${shown.map((e) => `<a class="ev" href="/dashboard/events/${e.id}/edit?${qs}" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}</a>`).join("")}
+        ${extra > 0 ? `<span class="ev-more">+${extra}</span>` : ""}
+      </div>`;
+    })
+    .join("");
+
+  return `
+  <div class="month-nav">
+    <a class="arrow" href="/dashboard/events?${qs}&month=${shiftMonth(month, -1)}">‹</a>
+    <strong>${escapeHtml(monthLabel(month))}</strong>
+    <a class="arrow" href="/dashboard/events?${qs}&month=${shiftMonth(month, 1)}">›</a>
+  </div>
+  <div class="calendar">
+    ${WEEKDAY_LABELS.map((l) => `<div class="calendar-weekday">${l}</div>`).join("")}
+    ${cells}
+  </div>`;
 }
 
 eventsRouter.get("/dashboard/events", (req, res) => {
@@ -24,6 +70,43 @@ eventsRouter.get("/dashboard/events", (req, res) => {
   const qs = `phone=${encodeURIComponent(phone)}`;
   const days = req.query.days === "60" || req.query.days === "90" ? Number(req.query.days) : 30;
   const events = listUpcomingEvents(phone, days);
+
+  const today = todaySP();
+  const month = typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : today.slice(0, 7);
+
+  // eventos de hoje sao buscados separado do mes navegado no calendario, pra
+  // o destaque continuar certo mesmo se o usuario estiver vendo outro mes
+  const todaysEvents = getEventsForMonth(phone, today.slice(0, 7))
+    .filter((e) => e.start.slice(0, 10) === today)
+    .sort((a, b) => a.start.localeCompare(b.start));
+
+  const monthEvents = getEventsForMonth(phone, month);
+  const eventsByDay = new Map<string, EventRow[]>();
+  for (const e of monthEvents) {
+    const day = e.start.slice(0, 10);
+    if (!eventsByDay.has(day)) eventsByDay.set(day, []);
+    eventsByDay.get(day)!.push(e);
+  }
+
+  const spotlight = `
+  <div class="spotlight">
+    <h2>Hoje</h2>
+    ${
+      todaysEvents.length
+        ? todaysEvents
+            .map(
+              (e) => `
+      <div class="spotlight-event">
+        <a href="/dashboard/events/${e.id}/edit?${qs}" style="display:flex;gap:10px;align-items:baseline;flex:1">
+          <span class="time">${toSPDateTimeLocal(e.start).slice(11, 16)}</span>
+          <span class="title">${escapeHtml(e.title)}${e.location ? ` — ${escapeHtml(e.location)}` : ""}</span>
+        </a>
+      </div>`
+            )
+            .join("")
+        : `<p style="color:var(--muted);font-size:0.88rem;margin:0">Nenhum evento hoje.</p>`
+    }
+  </div>`;
 
   const rows = events.length
     ? events
@@ -57,6 +140,12 @@ eventsRouter.get("/dashboard/events", (req, res) => {
   <p class="hint" style="color:var(--muted);font-size:0.82rem;margin:-8px 0 20px">
     Agenda própria, guardada no banco de dados e isolada por número — ainda não sincroniza com o Google Calendar.
   </p>
+
+  ${spotlight}
+
+  ${renderCalendar(phone, month, today, eventsByDay)}
+
+  <h2 style="font-size:0.95rem;margin:0 0 12px">Próximos eventos</h2>
   <div class="chip-row">${dayChip(30, "30 dias")}${dayChip(60, "60 dias")}${dayChip(90, "90 dias")}</div>
 
   <div class="table-wrap"><table>
@@ -123,10 +212,14 @@ function eventForm(opts: {
 eventsRouter.get("/dashboard/events/new", (req, res) => {
   const phone = getPhone(req);
   if (!phone) return res.send(renderPhoneGate());
+  // vindo do "+" de um dia especifico no calendario: pre-preenche a data (horario
+  // padrao 09:00, o usuario ajusta se quiser)
+  const dateParam = typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
   const body = eventForm({
     phone,
     action: `/dashboard/events/new?phone=${encodeURIComponent(phone)}`,
     submitLabel: "Adicionar",
+    start: dateParam ? `${dateParam}T09:00` : undefined,
     reminderMinutes: getEventReminderMinutes(phone),
   });
   res.send(renderPage({ title: "Novo evento", phone, active: "events", body }));

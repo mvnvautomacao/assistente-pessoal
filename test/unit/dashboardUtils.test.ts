@@ -10,6 +10,7 @@ import {
   shiftMonth,
   toSPDateTimeLocal,
   fromSPDateTimeLocal,
+  calendarCells,
 } from "../../src/dashboard/utils";
 
 test("normalizeBrazilPhone remove o 9 extra do numero digitado no formato padrao", () => {
@@ -63,4 +64,28 @@ test("toSPDateTimeLocal / fromSPDateTimeLocal fazem o caminho de ida e volta", (
   const iso = "2026-08-25T14:32:00-03:00";
   assert.equal(toSPDateTimeLocal(iso), "2026-08-25T14:32");
   assert.equal(fromSPDateTimeLocal("2026-08-25T14:32"), "2026-08-25T14:32:00-03:00");
+});
+
+test("calendarCells: agosto de 2026 comeca no sabado (6 vazios antes do dia 1)", () => {
+  const cells = calendarCells("2026-08");
+  assert.equal(cells.length % 7, 0);
+  assert.equal(cells.slice(0, 6).every((c) => c === null), true);
+  assert.equal(cells[6], "2026-08-01");
+  assert.equal(cells[36], "2026-08-31"); // ultimo dia do mes
+  assert.equal(cells.length, 42); // 6 semanas completas pra caber os 31 dias + folga
+});
+
+test("calendarCells: fevereiro em ano bissexto (2028) tem 29 dias", () => {
+  const cells = calendarCells("2028-02");
+  const days = cells.filter((c): c is string => c !== null);
+  assert.equal(days.length, 29);
+  assert.equal(days[days.length - 1], "2028-02-29");
+});
+
+test("calendarCells: cada mes tem exatamente o numero certo de dias, sem duplicar nem pular", () => {
+  const cells = calendarCells("2026-04"); // abril tem 30 dias
+  const days = cells.filter((c): c is string => c !== null);
+  assert.equal(days.length, 30);
+  assert.deepEqual(days[0], "2026-04-01");
+  assert.deepEqual(days[29], "2026-04-30");
 });

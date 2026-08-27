@@ -11,6 +11,7 @@ import {
   findUpcomingEvents,
   getDueEventReminders,
   markEventReminderSent,
+  getEventsForMonth,
 } from "../../src/events/service";
 
 const A = "551100040001";
@@ -98,4 +99,23 @@ test("getDueEventReminders so traz o que passou do horario de aviso e ainda nao 
   const titles = due.map((e) => e.title);
   assert.ok(titles.includes("Aviso ja deveria ter saido"));
   assert.ok(!titles.includes("Aviso ainda nao chegou"));
+});
+
+test("getEventsForMonth so traz eventos daquele mes, isolado por numero", () => {
+  createEvent({ fromNumber: A, title: "Dentro do mes", start: "2031-06-15T10:00:00-03:00" });
+  createEvent({ fromNumber: A, title: "Mes anterior", start: "2031-05-31T23:00:00-03:00" });
+  createEvent({ fromNumber: A, title: "Mes seguinte", start: "2031-07-01T00:00:00-03:00" });
+  createEvent({ fromNumber: B, title: "De outro numero", start: "2031-06-10T10:00:00-03:00" });
+
+  const titles = getEventsForMonth(A, "2031-06").map((e) => e.title);
+  assert.deepEqual(titles, ["Dentro do mes"]);
+});
+
+test("getEventsForMonth pega eventos exatamente no primeiro e no ultimo instante do mes", () => {
+  createEvent({ fromNumber: A, title: "Bem no inicio do mes", start: "2032-03-01T00:00:00-03:00" });
+  createEvent({ fromNumber: A, title: "Quase no fim do mes", start: "2032-03-31T23:59:00-03:00" });
+
+  const titles = getEventsForMonth(A, "2032-03").map((e) => e.title);
+  assert.ok(titles.includes("Bem no inicio do mes"));
+  assert.ok(titles.includes("Quase no fim do mes"));
 });

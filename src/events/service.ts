@@ -82,6 +82,19 @@ export function listUpcomingEvents(fromNumber: string, days: number): EventRow[]
     .all(fromNumber, days) as unknown as EventRow[];
 }
 
+// todos os eventos de um mes (pro calendario do dashboard), yearMonth = "YYYY-MM".
+// Comparacao por string, sem strftime: como "start" sempre tem offset -03:00
+// explicito, comparar direto com os limites do mes (tambem em -03:00 implicito)
+// evita normalizacao pra UTC virar o dia/mes errado perto da virada.
+export function getEventsForMonth(fromNumber: string, yearMonth: string): EventRow[] {
+  const [year, month] = yearMonth.split("-").map(Number);
+  const start = `${yearMonth}-01`;
+  const nextMonthStart = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  return db
+    .prepare(`SELECT * FROM events WHERE from_number = ? AND start >= ? AND start < ? ORDER BY start ASC`)
+    .all(fromNumber, start, nextMonthStart) as unknown as EventRow[];
+}
+
 // busca textual simples pra resolver "cancela a reuniao com o cliente" — so nos
 // proximos 60 dias, igual o comportamento antigo baseado no Google Calendar.
 export function findUpcomingEvents(fromNumber: string, query: string): EventRow[] {

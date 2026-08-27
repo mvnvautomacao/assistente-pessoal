@@ -47,6 +47,19 @@ export function monthLabel(yearMonth: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+// celulas do grid do calendario do mes: um array (multiplo de 7) de "YYYY-MM-DD"
+// ou null (dias vazios antes do dia 1 ou depois do ultimo dia, pra fechar a semana)
+export function calendarCells(yearMonth: string): (string | null)[] {
+  const [year, month] = yearMonth.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay(); // 0=domingo
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const cells: (string | null)[] = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(`${yearMonth}-${String(d).padStart(2, "0")}`);
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
 export function shiftMonth(yearMonth: string, delta: number): string {
   const [year, month] = yearMonth.split("-").map(Number);
   const d = new Date(year, month - 1 + delta, 1);
