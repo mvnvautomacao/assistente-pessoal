@@ -861,3 +861,121 @@ test("reminder: mensagem de criacao mostra o horario que vai avisar", async (t) 
   await handleIncomingMessage(evolutionMessage(REM1, "me lembra de tomar remedio as 20h"));
   assert.match(sent[0].text, /20:00/);
 });
+
+// Pedido do usuario: alem de gasto/categoria, editar DATA de evento e lembrete
+// tambem precisa da mesma confirmacao "de X pra Y" antes de aplicar.
+test("edit_event: pede confirmacao antes de remarcar, preserva a duracao do evento, e 'nao' cancela", async (t) => {
+  const EV1 = "551100090101";
+  seed(EV1);
+  const original = nearFuture();
+  const event = createEvent({ fromNumber: EV1, title: "Reuniao a remarcar", start: original, location: "Sala 1" });
+  const originalDurationMs = new Date(event.end).getTime() - new Date(event.start).getTime();
+
+  const novoHorario = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "reuniao a remarcar", new_start: novoHorario }]);
+  await handleIncomingMessage(evolutionMessage(EV1, "remarca a reuniao a remarcar"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(getEventById(EV1, event.id)?.start, original); // ainda nao mudou, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(EV1, "sim"));
+  const updated = getEventById(EV1, event.id)!;
+  assert.equal(updated.start, novoHorario);
+  assert.equal(updated.location, "Sala 1"); // resto do evento nao mudou
+  const newDurationMs = new Date(updated.end).getTime() - new Date(updated.start).getTime();
+  assert.equal(newDurationMs, originalDurationMs); // duracao original preservada
+});
+
+test("edit_event: responder 'nao' nao muda a data", async (t) => {
+  const EV2 = "551100090102";
+  seed(EV2);
+  const original = nearFuture();
+  const event = createEvent({ fromNumber: EV2, title: "Reuniao fixa", start: original });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "reuniao fixa", new_start: new Date(Date.now() + 20 * 24 * 60 * 60 * 1000).toISOString() }]);
+  await handleIncomingMessage(evolutionMessage(EV2, "remarca a reuniao fixa"));
+  await handleIncomingMessage(evolutionMessage(EV2, "não, deixa"));
+  assert.match(sent[1].text, /não mexi/i);
+  assert.equal(getEventById(EV2, event.id)?.start, original);
+});
+
+test("edit_event: sem evento encontrado avisa, e mais de um pede pra especificar", async (t) => {
+  const EV3 = "551100090103";
+  seed(EV3);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "edit_event", query: "nao existe", new_start: nearFuture() }]);
+  await handleIncomingMessage(evolutionMessage(EV3, "remarca a reuniao que nao existe"));
+  assert.match(sent[0].text, /[Nn]ão encontrei/);
+
+  createEvent({ fromNumber: EV3, title: "Duplicado A", start: nearFuture() });
+  createEvent({ fromNumber: EV3, title: "Duplicado B", start: nearFuture() });
+  queueReply([{ type: "edit_event", query: "duplicado", new_start: nearFuture() }]);
+  await handleIncomingMessage(evolutionMessage(EV3, "remarca o duplicado"));
+  assert.match(sent[1].text, /mais de um evento/i);
+});
+
+test("edit_event: ajuste em frase livre reinterpreta a data via IA (mockada) antes de confirmar", async (t) => {
+  const EV4 = "551100090104";
+  seed(EV4);
+  const event = createEvent({ fromNumber: EV4, title: "Consulta ajuste", start: nearFuture() });
+  const ajustado = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { sent, queueReply } = withMocks(t);
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ajustado);
+  queueReply([{ type: "edit_event", query: "consulta ajuste", new_start: nearFuture() }]);
+  await handleIncomingMessage(evolutionMessage(EV4, "remarca a consulta ajuste"));
+
+  await handleIncomingMessage(evolutionMessage(EV4, "na verdade prefiro outro dia")); // nem sim nem nao
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.equal(getEventById(EV4, event.id)?.start, event.start); // ainda nao aplicado
+
+  await handleIncomingMessage(evolutionMessage(EV4, "sim"));
+  assert.equal(getEventById(EV4, event.id)?.start, ajustado);
+});
+
+test("edit_event: undo volta o evento pro horario de antes", async (t) => {
+  const EV5 = "551100090105";
+  seed(EV5);
+  const original = nearFuture();
+  const event = createEvent({ fromNumber: EV5, title: "Reuniao undo", start: original });
+  const novoHorario = new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "reuniao undo", new_start: novoHorario }]);
+  await handleIncomingMessage(evolutionMessage(EV5, "remarca a reuniao undo"));
+  await handleIncomingMessage(evolutionMessage(EV5, "sim"));
+  assert.equal(getEventById(EV5, event.id)?.start, novoHorario);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(EV5, "desfaz isso"));
+  assert.equal(getEventById(EV5, event.id)?.start, original);
+});
+
+test("edit_reminder: pede confirmacao antes de remarcar, 'nao' cancela, e undo volta pro horario de antes", async (t) => {
+  const ER1 = "551100090106";
+  seed(ER1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "pagar internet", due_at: "2026-09-05T09:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(ER1, "me lembra de pagar internet dia 5 as 9h"));
+  const reminderId = listReminders(ER1)[0].id;
+
+  queueReply([{ type: "edit_reminder", query: "pagar internet", new_due_at: "2026-09-06T10:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(ER1, "muda o lembrete de pagar internet pro dia 6 as 10h"));
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.equal(listReminders(ER1).find((r) => r.id === reminderId)?.due_at, "2026-09-05T09:00:00-03:00");
+
+  await handleIncomingMessage(evolutionMessage(ER1, "não"));
+  assert.match(sent[2].text, /não mexi/i);
+  assert.equal(listReminders(ER1).find((r) => r.id === reminderId)?.due_at, "2026-09-05T09:00:00-03:00");
+
+  queueReply([{ type: "edit_reminder", query: "pagar internet", new_due_at: "2026-09-06T10:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(ER1, "muda o lembrete de pagar internet pro dia 6 as 10h"));
+  await handleIncomingMessage(evolutionMessage(ER1, "sim"));
+  assert.equal(listReminders(ER1).find((r) => r.id === reminderId)?.due_at, "2026-09-06T10:00:00-03:00");
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(ER1, "desfaz isso"));
+  assert.equal(listReminders(ER1).find((r) => r.id === reminderId)?.due_at, "2026-09-05T09:00:00-03:00");
+});

@@ -34,7 +34,14 @@ export type UndoAction =
       expenseIds: number[];
       sourceCategoryName: string;
       description: string;
-    };
+    }
+  | {
+      kind: "restore_event_time";
+      eventId: number;
+      previous: { title: string; start: string; end: string; location: string | null; reminderMinutes: number };
+      description: string;
+    }
+  | { kind: "restore_reminder_time"; reminderId: number; previousDueAt: string; description: string };
 
 interface PendingUndo {
   action: UndoAction;

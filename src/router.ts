@@ -1,8 +1,15 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
-import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, Interpretation } from "./ai/interpret";
-import { createEvent, findUpcomingEvents, deleteEvent, listUpcomingEvents, getEventById } from "./events/service";
-import { createReminder, getRemindersWithinDays, deleteReminder } from "./reminders/service";
+import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, extractDateTimeFromAnswer, Interpretation } from "./ai/interpret";
+import { createEvent, findUpcomingEvents, deleteEvent, updateEvent, listUpcomingEvents, getEventById } from "./events/service";
+import { createReminder, getRemindersWithinDays, deleteReminder, updateReminder, findPendingRemindersByText } from "./reminders/service";
+import { setPendingEditEvent, getPendingEditEvent, clearPendingEditEvent, PendingEditEvent } from "./events/pendingEditEvent";
+import {
+  setPendingEditReminder,
+  getPendingEditReminder,
+  clearPendingEditReminder,
+  PendingEditReminder,
+} from "./reminders/pendingEditReminder";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
@@ -175,7 +182,7 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar, pra não esquecer. Pra cancelar, é só dizer, tipo "cancela a consulta do dia 15".`;
+Eu aviso você um tempo antes do horário chegar, pra não esquecer. Pra cancelar, é só dizer, tipo "cancela a consulta do dia 15". Pra mudar só o dia/horário sem cancelar: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar.`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -183,7 +190,7 @@ Diga o que você quer lembrar e quando.
 
 Exemplo: "me lembra de tomar remédio às 20h"
 
-Na hora certa eu mando uma mensagem avisando.`;
+Na hora certa eu mando uma mensagem avisando. Pra mudar o horário de um lembrete já criado: "muda o lembrete do remédio pra amanhã às 21h" — eu confirmo antes de aplicar.`;
     case "budget":
       return `🎯 Como definir um limite de gastos (orçamento):
 
@@ -393,6 +400,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingCorrectCategory = getPendingCorrectCategory(from);
     if (pendingCorrectCategory) {
       await resolveCorrectCategoryConfirmation(from, pendingCorrectCategory, text);
+      return;
+    }
+
+    const pendingEditEvent = getPendingEditEvent(from);
+    if (pendingEditEvent) {
+      await resolveEditEventConfirmation(from, pendingEditEvent, text);
+      return;
+    }
+
+    const pendingEditReminder = getPendingEditReminder(from);
+    if (pendingEditReminder) {
+      await resolveEditReminderConfirmation(from, pendingEditReminder, text);
       return;
     }
   }
@@ -760,6 +779,91 @@ async function resolveCorrectCategoryConfirmation(from: string, pending: Pending
   await sendText(from, `Ok, vou mudar a categoria de "${pending.description}" pra "${newCategory.name}" então. Confirma? Responde "sim" ou "não".`);
 }
 
+// resposta a "vou remarcar o evento X pra data/hora Y, confirma?" -- ajuste (nem
+// sim nem nao) tenta reinterpretar a resposta como uma NOVA data/hora via IA
+// (extractDateTimeFromAnswer), pra funcionar mesmo com frase livre tipo "na
+// verdade e sexta as 16h", nao so um ISO exato
+async function resolveEditEventConfirmation(from: string, pending: PendingEditEvent, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (yes) {
+    clearPendingEditEvent(from);
+    updateEvent(from, pending.eventId, {
+      title: pending.previous.title,
+      start: pending.proposedStart,
+      end: pending.proposedEnd,
+      location: pending.previous.location ?? undefined,
+      reminderMinutes: pending.previous.reminderMinutes,
+    });
+    setPendingUndo(from, {
+      kind: "restore_event_time",
+      eventId: pending.eventId,
+      previous: pending.previous,
+      description: pending.title,
+    });
+    logActivity(from, "edit_event", `confirmado: "${pending.title}": ${pending.changeText}`);
+    await sendText(from, `✏️ Evento "${pending.title}" remarcado: ${pending.changeText}`);
+    return;
+  }
+  if (no) {
+    clearPendingEditEvent(from);
+    logActivity(from, "edit_event", `remarcacao de "${pending.title}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  const extracted = await extractDateTimeFromAnswer(answerText);
+  if (!extracted) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
+    return;
+  }
+  const newStart = ensureBrazilOffset(extracted);
+  const durationMs = new Date(pending.previous.end).getTime() - new Date(pending.previous.start).getTime();
+  const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
+  const changeText = `de ${formatDateTime(pending.previous.start)} pra ${formatDateTime(newStart)}`;
+  setPendingEditEvent(from, { ...pending, proposedStart: newStart, proposedEnd: newEnd, changeText });
+  await sendText(from, `Ok, vou remarcar "${pending.title}": ${changeText}. Confirma? Responde "sim" ou "não".`);
+}
+
+// mesma ideia de resolveEditEventConfirmation, pra lembrete
+async function resolveEditReminderConfirmation(from: string, pending: PendingEditReminder, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (yes) {
+    clearPendingEditReminder(from);
+    updateReminder(from, pending.reminderId, { message: pending.message, dueAt: pending.proposedDueAt });
+    setPendingUndo(from, {
+      kind: "restore_reminder_time",
+      reminderId: pending.reminderId,
+      previousDueAt: pending.previousDueAt,
+      description: pending.message,
+    });
+    logActivity(from, "edit_reminder", `confirmado: "${pending.message}": ${pending.changeText}`);
+    await sendText(from, `✏️ Lembrete "${pending.message}" remarcado: ${pending.changeText}`);
+    return;
+  }
+  if (no) {
+    clearPendingEditReminder(from);
+    logActivity(from, "edit_reminder", `remarcacao de "${pending.message}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  const extracted = await extractDateTimeFromAnswer(answerText);
+  if (!extracted) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
+    return;
+  }
+  const newDueAt = ensureBrazilOffset(extracted);
+  const changeText = `de ${formatDateTime(pending.previousDueAt)} pra ${formatDateTime(newDueAt)}`;
+  setPendingEditReminder(from, { ...pending, proposedDueAt: newDueAt, changeText });
+  await sendText(from, `Ok, vou remarcar o lembrete "${pending.message}": ${changeText}. Confirma? Responde "sim" ou "não".`);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -890,12 +994,85 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
       break;
     }
+    case "edit_event": {
+      const matches = findUpcomingEvents(from, interpretation.query);
+      if (matches.length === 0) {
+        logActivity(from, "edit_event", `nenhum evento encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não encontrei nenhum evento parecido com "${interpretation.query}" nos próximos 60 dias.`);
+        break;
+      }
+      if (matches.length > 1) {
+        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
+        logActivity(from, "edit_event", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
+        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remarcar.`);
+        break;
+      }
+
+      const event = matches[0];
+      const newStart = ensureBrazilOffset(interpretation.new_start);
+      const durationMs = new Date(event.end).getTime() - new Date(event.start).getTime();
+      const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
+      const changeText = `de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`;
+
+      setPendingEditEvent(from, {
+        eventId: event.id,
+        title: event.title,
+        previous: {
+          title: event.title,
+          start: event.start,
+          end: event.end,
+          location: event.location,
+          reminderMinutes: event.reminder_minutes,
+        },
+        proposedStart: newStart,
+        proposedEnd: newEnd,
+        changeText,
+      });
+      logActivity(from, "edit_event", `pediu confirmacao: "${event.title}" ${changeText}`);
+      await sendText(
+        from,
+        `Vou remarcar "${event.title}": ${changeText}. Confirma? Responde "sim"/"não", ou me diga a data/hora certa se eu errei.`
+      );
+      break;
+    }
     case "reminder": {
       const dueAt = ensureBrazilOffset(interpretation.due_at);
       const reminderId = createReminder(from, interpretation.message, dueAt);
       setPendingUndo(from, { kind: "delete_reminder", reminderId, description: interpretation.message });
       logActivity(from, "reminder", `${interpretation.message} — ${dueAt}`);
       await sendText(from, `⏰ Lembrete criado: "${interpretation.message}" — vou avisar em ${formatDateTime(dueAt)}`);
+      break;
+    }
+    case "edit_reminder": {
+      const matches = findPendingRemindersByText(from, interpretation.query);
+      if (matches.length === 0) {
+        logActivity(from, "edit_reminder", `nenhum lembrete encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não encontrei nenhum lembrete parecido com "${interpretation.query}".`);
+        break;
+      }
+      if (matches.length > 1) {
+        const list = matches.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n");
+        logActivity(from, "edit_reminder", `${matches.length} lembretes parecidos com "${interpretation.query}", pedi pra especificar`);
+        await sendText(from, `Achei mais de um lembrete parecido com "${interpretation.query}":\n${list}\n\nMe diga o texto mais específico de qual quer remarcar.`);
+        break;
+      }
+
+      const reminder = matches[0];
+      const newDueAt = ensureBrazilOffset(interpretation.new_due_at);
+      const changeText = `de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`;
+
+      setPendingEditReminder(from, {
+        reminderId: reminder.id,
+        message: reminder.message,
+        previousDueAt: reminder.due_at,
+        proposedDueAt: newDueAt,
+        changeText,
+      });
+      logActivity(from, "edit_reminder", `pediu confirmacao: "${reminder.message}" ${changeText}`);
+      await sendText(
+        from,
+        `Vou remarcar o lembrete "${reminder.message}": ${changeText}. Confirma? Responde "sim"/"não", ou me diga a data/hora certa se eu errei.`
+      );
       break;
     }
     case "report": {
@@ -1396,6 +1573,22 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           await sendText(from, `↩️ Prontinho, recriei "${undo.sourceCategoryName}" e devolvi ${undo.expenseIds.length} gasto(s) pra ela.`);
           break;
         }
+        case "restore_event_time":
+          updateEvent(from, undo.eventId, {
+            title: undo.previous.title,
+            start: undo.previous.start,
+            end: undo.previous.end,
+            location: undo.previous.location ?? undefined,
+            reminderMinutes: undo.previous.reminderMinutes,
+          });
+          logActivity(from, "undo", `remarcacao de evento desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, "${undo.description}" voltou pro horário de antes.`);
+          break;
+        case "restore_reminder_time":
+          updateReminder(from, undo.reminderId, { message: undo.description, dueAt: undo.previousDueAt });
+          logActivity(from, "undo", `remarcacao de lembrete desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou pro horário de antes.`);
+          break;
       }
       break;
     }

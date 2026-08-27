@@ -58,3 +58,16 @@ export function updateReminder(toNumber: string, id: number, params: { message: 
 export function deleteReminder(toNumber: string, id: number) {
   db.prepare(`DELETE FROM reminders WHERE to_number = ? AND id = ?`).run(toNumber, id);
 }
+
+// busca textual simples pra resolver "muda o lembrete do remedio pra amanha" --
+// so lembretes ainda nao enviados, igual findUpcomingEvents faz pra eventos.
+export function findPendingRemindersByText(toNumber: string, query: string): Reminder[] {
+  return db
+    .prepare(
+      `SELECT id, to_number, message, due_at, sent FROM reminders
+       WHERE to_number = ? AND sent = 0 AND message LIKE ?
+       ORDER BY due_at ASC
+       LIMIT 10`
+    )
+    .all(toNumber, `%${query}%`) as unknown as Reminder[];
+}
