@@ -96,6 +96,26 @@ db.exec(`
     UNIQUE(from_number, category_id)
   );
 
+  -- lista de numeros autorizados a receber resposta do assistente. Sem entrada
+  -- aqui, o webhook ignora a mensagem em silencio (nao manda nada de volta) --
+  -- protege contra loop de bot conversando com bot de outra empresa.
+  CREATE TABLE IF NOT EXISTS allowed_numbers (
+    from_number TEXT PRIMARY KEY,
+    note TEXT,
+    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- entradas de dinheiro (salario, freela, reembolso...), o outro lado da conta
+  -- alem dos gastos. Isolado por numero, igual expenses.
+  CREATE TABLE IF NOT EXISTS incomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    amount REAL NOT NULL,
+    description TEXT NOT NULL,
+    date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- gastos fixos/recorrentes: lancados automaticamente todo mes no dia
   -- configurado, sem o usuario precisar mandar mensagem (ver recurringScheduler.ts).
   -- last_run_month ("YYYY-MM") evita lancar 2x no mesmo mes.
@@ -164,6 +184,12 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "r
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
 }
+
+// numero do dono sempre autorizado, senao ele mesmo ficaria bloqueado assim que
+// a lista de autorizados existir. Outros numeros precisam ser liberados no /admin.
+db.prepare(`INSERT OR IGNORE INTO allowed_numbers (from_number, note, added_at) VALUES (?, 'dono', datetime('now'))`).run(
+  config.myWhatsappNumber
+);
 
 // event_reminders foi uma tabela de transicao (ponte pra agenda do Google) que durou
 // um commit so: a agenda virou local (tabela "events" acima), entao ela nao serve mais.

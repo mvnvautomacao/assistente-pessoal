@@ -13,9 +13,11 @@ import {
   findActiveRecurringExpenseByDescription,
   deactivateRecurringExpense,
 } from "./expenses/recurring";
+import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { logActivity } from "./activity/service";
+import { isNumberAllowed } from "./access/allowlist";
 import { spDateString } from "./timeSP";
 import {
   ensureUserSeeded,
@@ -86,10 +88,21 @@ function helpTopicMessage(
     | "payment_method"
     | "welcome"
     | "recurring_expense"
+    | "income"
 ): string | null {
   switch (topic) {
     case "welcome":
       return WELCOME_MESSAGE;
+    case "income":
+      return `💵 Como registrar uma entrada de dinheiro (salário, freela, reembolso...):
+
+É parecido com registrar um gasto, só que pro lado que entra dinheiro.
+
+Exemplo: "recebi 3000 reais de salário"
+
+Pra saber quanto entrou: "quanto recebi esse mês"
+
+Pra ver o que sobrou (entradas menos gastos): "qual meu saldo esse mês"`;
     case "recurring_expense":
       return `🔁 Como cadastrar um gasto fixo (que se repete todo mês):
 
@@ -193,6 +206,18 @@ interface EvolutionMessage {
   base64?: string;
 }
 
+// preview curto do que o numero bloqueado mandou, so pra dar contexto no /admin
+// na hora de decidir se libera ou nao — nunca baixa midia (imagem/audio) so pra isso.
+function blockedMessagePreview(data: EvolutionMessage): string {
+  if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
+    const text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
+    return text.slice(0, 150) || "(vazio)";
+  }
+  if (data.messageType === "audioMessage") return "[áudio]";
+  if (data.messageType === "imageMessage") return "[imagem]";
+  return `[${data.messageType}]`;
+}
+
 async function resolveMediaBase64(data: EvolutionMessage): Promise<string | undefined> {
   const inline = data.message?.base64 ?? data.base64;
   if (inline) return inline;
@@ -221,6 +246,14 @@ Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gast
 
 export async function handleIncomingMessage(data: EvolutionMessage) {
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
+
+  // Numero nao autorizado: ignora em silencio, sem mandar nada de volta. Evita
+  // loop de bot conversando com bot de outra empresa (ja aconteceu em producao).
+  // Liberar numeros novos no /admin.
+  if (!isNumberAllowed(from)) {
+    logActivity(from, "blocked", `mensagem bloqueada (numero nao autorizado): ${blockedMessagePreview(data)}`);
+    return;
+  }
 
   // Cada numero tem categorias/formas de pagamento proprias, isoladas dos demais;
   // na primeira mensagem desse numero, cria as categorias/formas padrao pra ele.
@@ -874,6 +907,50 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(from, `✅ Gasto fixo "${recurring.description}" removido. Não vou mais lançar ele automaticamente.`);
       break;
     }
+    case "income": {
+      const date = interpretation.date || spDateString();
+      const created = insertIncome({ fromNumber: from, amount: interpretation.amount, description: interpretation.description, date });
+      setPendingUndo(from, {
+        kind: "delete_income",
+        incomeId: created.id,
+        description: `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`,
+      });
+      logActivity(from, "income", `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
+      await sendText(from, `💵 Entrada registrada: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
+      break;
+    }
+    case "income_report": {
+      const range = interpretation.days
+        ? lastNDaysRange(interpretation.days)
+        : interpretation.period === "week"
+          ? currentWeekRange()
+          : currentMonthRange();
+      const summary = getIncomeSummaryBetween(range.start, range.end, from);
+      logActivity(from, "income_report", `${range.label}: R$${summary.total.toFixed(2)} em ${summary.count} entrada(s)`);
+      if (!summary.count) {
+        await sendText(from, `💵 Entradas — ${range.label}\n\nNenhuma entrada registrada nesse período.`);
+        break;
+      }
+      await sendText(from, `💵 Entradas — ${range.label}\n\nTotal: R$${summary.total.toFixed(2)} em ${summary.count} entrada(s)`);
+      break;
+    }
+    case "balance": {
+      const range = interpretation.days
+        ? lastNDaysRange(interpretation.days)
+        : interpretation.period === "week"
+          ? currentWeekRange()
+          : currentMonthRange();
+      const income = getIncomeSummaryBetween(range.start, range.end, from);
+      const expense = getExpenseSummaryBetween(range.start, range.end, from);
+      const balance = income.total - expense.total;
+      const balanceEmoji = balance >= 0 ? "✅" : "🔻";
+      logActivity(from, "balance", `${range.label}: entradas R$${income.total.toFixed(2)}, gastos R$${expense.total.toFixed(2)}, saldo R$${balance.toFixed(2)}`);
+      await sendText(
+        from,
+        `📊 Saldo — ${range.label}\n\n💵 Entradas: R$${income.total.toFixed(2)}\n💰 Gastos: R$${expense.total.toFixed(2)}\n${balanceEmoji} Saldo: R$${balance.toFixed(2)}`
+      );
+      break;
+    }
     case "undo": {
       const undo = getPendingUndo(from);
       if (!undo) {
@@ -913,6 +990,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           logActivity(from, "undo", `lembrete removido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: lembrete "${undo.description}" removido.`);
           break;
+        case "delete_income":
+          deleteIncome(from, undo.incomeId);
+          logActivity(from, "undo", `entrada removida: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: entrada de ${undo.description} removida.`);
+          break;
       }
       break;
     }
@@ -933,6 +1015,9 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 
 🔁 *Gastos fixos*
 "Todo dia 10 pago 50 reais de internet" — eu cadastro e lanço esse valor sozinho todo mês, sem você precisar mandar mensagem de novo.
+
+💵 *Entradas e saldo*
+"Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).
 
 📅 *Agenda e lembretes*
 "Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento.

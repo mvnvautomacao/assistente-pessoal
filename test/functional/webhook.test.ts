@@ -5,6 +5,8 @@ import * as aiInterpret from "../../src/ai/interpret";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
 import { getOrCreateCategory, findRecentExpense, insertExpense, ensureUserSeeded, getExpenseById } from "../../src/expenses/service";
+import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
+import { getRecentBlockedAttempts } from "../../src/activity/service";
 import { setBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
@@ -36,11 +38,19 @@ function withMocks(t: TestContext) {
 
 const today = () => spDateString();
 
+// pre-seeda categorias/formas padrao (pra nenhum teste receber a mensagem de
+// boas-vindas misturada com a resposta que o teste espera) e autoriza o numero
+// na allowlist (senao toda mensagem seria ignorada em silencio, ver access/allowlist.ts)
+function seed(...numbers: string[]) {
+  numbers.forEach((n) => {
+    ensureUserSeeded(n);
+    allowNumber(n);
+  });
+}
+
 const A = "551100090001";
 const B = "551100090002";
-// pre-seeda pra nenhum teste receber a mensagem de boas-vindas (so dispara na
-// primeira mensagem de um numero) misturada com a resposta que o teste espera
-[A, B].forEach(ensureUserSeeded);
+seed(A, B);
 
 test("mensagem de gasto com categoria existente: registra direto e confirma", async (t) => {
   const { sent, queueReply } = withMocks(t);
@@ -75,7 +85,7 @@ test("fila de categorizacao pendente e isolada por numero (outro numero nao inte
   // deste teste, entao nao pode reusar A/B (usados por outros testes depois)
   const P = "551100090005";
   const Q = "551100090006";
-  [P, Q].forEach(ensureUserSeeded);
+  seed(P, Q);
 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "expense", amount: 15, category: "CategoriaSoParaFila", description: "gasto na fila", date: "2026-01-12" }]);
@@ -94,7 +104,7 @@ test("correct_category: corrige a categoria do gasto mais recente e aprende a pa
   // proposito uma pendencia sem resolver pro numero A, que interceptaria essa
   // mensagem como resposta da pendencia em vez de passar pela IA
   const C = "551100090004";
-  ensureUserSeeded(C);
+  seed(C);
   const cat = getOrCreateCategory(C, "Lazer-correct");
   insertExpense({ fromNumber: C, amount: 22, description: "cabeleireiro corrigir", categoryId: null, paymentMethodId: null, date: "2026-01-13" });
 
@@ -197,6 +207,7 @@ test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consult
 
 test("numero novo recebe mensagem de boas-vindas antes da resposta normal; numero ja conhecido nao recebe de novo", async (t) => {
   const NEW_NUMBER = "551100090099";
+  allowNumber(NEW_NUMBER); // autorizado, mas sem ensureUserSeeded -- o ponto do teste e que ele e novo
   const { sent, queueReply } = withMocks(t);
 
   queueReply([{ type: "expense", amount: 20, category: "Mercado", description: "primeira compra", date: "2026-01-14" }]);
@@ -265,7 +276,7 @@ test("delete_event: resposta ambigua pergunta de novo, sem excluir nem manter re
 
 test("undo: desfaz o gasto acabado de registrar (delete_expense)", async (t) => {
   const U1 = "551100090020";
-  ensureUserSeeded(U1);
+  seed(U1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "expense", amount: 40, category: "Mercado", description: "gasto pra desfazer", date: today() }]);
   await handleIncomingMessage(evolutionMessage(U1, "40 no mercado"));
@@ -281,7 +292,7 @@ test("undo: desfaz o gasto acabado de registrar (delete_expense)", async (t) => 
 
 test("undo: sem nada pendente, avisa que nao tem o que desfazer", async (t) => {
   const U2 = "551100090021";
-  ensureUserSeeded(U2);
+  seed(U2);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "undo" }]);
   await handleIncomingMessage(evolutionMessage(U2, "desfaz isso"));
@@ -291,7 +302,7 @@ test("undo: sem nada pendente, avisa que nao tem o que desfazer", async (t) => {
 
 test("undo: reverte a ultima edicao de um gasto (restore_expense)", async (t) => {
   const U3 = "551100090022";
-  ensureUserSeeded(U3);
+  seed(U3);
   const cat = getOrCreateCategory(U3, "Undo-edit");
   insertExpense({ fromNumber: U3, amount: 10, description: "gasto a editar undo", categoryId: cat.id, paymentMethodId: null, date: today() });
 
@@ -309,7 +320,7 @@ test("undo: reverte a ultima edicao de um gasto (restore_expense)", async (t) =>
 
 test("undo: reverte a ultima correcao de categoria (restore_category)", async (t) => {
   const U4 = "551100090023";
-  ensureUserSeeded(U4);
+  seed(U4);
   const original = getOrCreateCategory(U4, "Undo-original");
   const changed = getOrCreateCategory(U4, "Undo-mudada");
   insertExpense({ fromNumber: U4, amount: 15, description: "gasto categoria undo", categoryId: original.id, paymentMethodId: null, date: today() });
@@ -328,7 +339,7 @@ test("undo: reverte a ultima correcao de categoria (restore_category)", async (t
 
 test("undo: desfaz o evento acabado de criar (delete_event)", async (t) => {
   const U5 = "551100090024";
-  ensureUserSeeded(U5);
+  seed(U5);
   const { queueReply } = withMocks(t);
   queueReply([{ type: "event", title: "Evento pra desfazer", start: nearFuture() }]);
   await handleIncomingMessage(evolutionMessage(U5, "marca evento pra desfazer amanha"));
@@ -341,7 +352,7 @@ test("undo: desfaz o evento acabado de criar (delete_event)", async (t) => {
 
 test("undo: recria o evento que acabou de ser cancelado (recreate_event)", async (t) => {
   const U6 = "551100090025";
-  ensureUserSeeded(U6);
+  seed(U6);
   const event = createEvent({ fromNumber: U6, title: "Evento pra recriar", start: nearFuture(), location: "Sala 2" });
 
   const { queueReply } = withMocks(t);
@@ -359,7 +370,7 @@ test("undo: recria o evento que acabou de ser cancelado (recreate_event)", async
 
 test("undo: desfaz o lembrete acabado de criar (delete_reminder)", async (t) => {
   const U7 = "551100090026";
-  ensureUserSeeded(U7);
+  seed(U7);
   const { queueReply } = withMocks(t);
   queueReply([{ type: "reminder", message: "lembrete pra desfazer", due_at: nearFuture() }]);
   await handleIncomingMessage(evolutionMessage(U7, "me lembra de algo amanha"));
@@ -372,7 +383,7 @@ test("undo: desfaz o lembrete acabado de criar (delete_reminder)", async (t) => 
 
 test("set_recurring_expense: cadastra o gasto fixo e confirma com o dia do mes", async (t) => {
   const R1 = "551100090030";
-  ensureUserSeeded(R1);
+  seed(R1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "internet", amount: 99.9, category: "Contas", day_of_month: 10 }]);
   await handleIncomingMessage(evolutionMessage(R1, "todo dia 10 pago 99,90 de internet"));
@@ -387,7 +398,7 @@ test("set_recurring_expense: cadastra o gasto fixo e confirma com o dia do mes",
 
 test("set_recurring_expense: dia do mes invalido nao cadastra nada", async (t) => {
   const R2 = "551100090031";
-  ensureUserSeeded(R2);
+  seed(R2);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "algo estranho", amount: 10, category: "Contas", day_of_month: 40 }]);
   await handleIncomingMessage(evolutionMessage(R2, "todo dia 40 pago 10 de algo estranho"));
@@ -399,7 +410,7 @@ test("set_recurring_expense: dia do mes invalido nao cadastra nada", async (t) =
 test("list_recurring_expenses: lista os gastos fixos cadastrados, isolado por numero", async (t) => {
   const R3 = "551100090032";
   const R4 = "551100090033";
-  [R3, R4].forEach(ensureUserSeeded);
+  seed(R3, R4);
   const { sent, queueReply } = withMocks(t);
 
   queueReply([{ type: "set_recurring_expense", description: "academia", amount: 89.9, category: "Saude", day_of_month: 5 }]);
@@ -416,7 +427,7 @@ test("list_recurring_expenses: lista os gastos fixos cadastrados, isolado por nu
 
 test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", async (t) => {
   const R5 = "551100090034";
-  ensureUserSeeded(R5);
+  seed(R5);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "streaming filmes", amount: 39.9, category: "Lazer", day_of_month: 20 }]);
   await handleIncomingMessage(evolutionMessage(R5, "todo dia 20 pago 39,90 de streaming filmes"));
@@ -425,4 +436,36 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
   await handleIncomingMessage(evolutionMessage(R5, "cancela o gasto fixo do streaming"));
   assert.match(sent[1].text, /removido/);
   assert.equal(listRecurringExpenses(R5).length, 0);
+});
+
+test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita loop de bot com bot)", async (t) => {
+  const BLOCKED = "551100090040";
+  assert.equal(isNumberAllowed(BLOCKED), false);
+
+  const { sent, queueReply } = withMocks(t);
+  // nao enfileira nenhuma resposta de IA: se o codigo chamasse interpretText aqui
+  // (bug), receberia [] silenciosamente em vez de travar o teste — a asserção
+  // real de que a IA nao foi chamada e a ausencia de qualquer envio abaixo
+  queueReply([{ type: "expense", amount: 999, category: "Nao Deveria Processar", description: "nao deveria registrar", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(BLOCKED, "oi, aqui e a empresa XPTO"));
+
+  assert.equal(sent.length, 0); // nenhuma mensagem enviada de volta, nem erro nem confirmacao
+  assert.equal(findRecentExpense(BLOCKED), null); // e nao processou a acao (nao criou o gasto)
+  const blocked = getRecentBlockedAttempts(50);
+  assert.ok(blocked.some((b) => b.from_number === BLOCKED && b.summary.includes("oi, aqui e a empresa XPTO")));
+});
+
+test("numero autorizado depois de bloqueado passa a receber resposta normalmente", async (t) => {
+  const LATE = "551100090041";
+  assert.equal(isNumberAllowed(LATE), false);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage(evolutionMessage(LATE, "o que voce faz"));
+  assert.equal(sent.length, 0); // ainda bloqueado
+
+  allowNumber(LATE, "aprovado pelo /admin");
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage(evolutionMessage(LATE, "o que voce faz"));
+  assert.equal(sent.length, 2); // a primeira mensagem (boas-vindas, numero novo) + a resposta da ajuda
 });

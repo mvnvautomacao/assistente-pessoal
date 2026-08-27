@@ -260,7 +260,7 @@ export function renderPhoneGate(): string {
 export function renderPage(opts: {
   title: string;
   phone: string;
-  active: "expenses" | "categories" | "payments" | "events" | "reminders";
+  active: "expenses" | "incomes" | "categories" | "payments" | "events" | "reminders";
   body: string;
 }): string {
   const phoneQS = `phone=${encodeURIComponent(opts.phone)}`;
@@ -282,6 +282,7 @@ export function renderPage(opts: {
 <div class="wrap">
   <nav class="tabs">
     ${tab("/dashboard", "expenses", "Gastos")}
+    ${tab("/dashboard/incomes", "incomes", "Entradas")}
     ${tab("/dashboard/categories", "categories", "Categorias")}
     ${tab("/dashboard/payment-methods", "payments", "Formas de pagamento")}
     ${tab("/dashboard/events", "events", "Agenda")}

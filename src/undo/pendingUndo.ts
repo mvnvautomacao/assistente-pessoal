@@ -19,7 +19,8 @@ export type UndoAction =
       params: { fromNumber: string; title: string; start: string; end?: string; location?: string; reminderMinutes?: number };
       description: string;
     }
-  | { kind: "delete_reminder"; reminderId: number; description: string };
+  | { kind: "delete_reminder"; reminderId: number; description: string }
+  | { kind: "delete_income"; incomeId: number; description: string };
 
 interface PendingUndo {
   action: UndoAction;

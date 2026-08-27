@@ -28,6 +28,12 @@ export interface PendingReminder {
   due_at: string;
 }
 
+// mensagens de numeros nao autorizados (ver src/access/allowlist.ts), pra decidir
+// no /admin se vale a pena liberar quem mandou.
+export function getRecentBlockedAttempts(limit = 50): ActivityEntry[] {
+  return db.prepare(`SELECT * FROM activity_log WHERE type = 'blocked' ORDER BY id DESC LIMIT ?`).all(limit) as unknown as ActivityEntry[];
+}
+
 export function getPendingReminders(limit = 50): PendingReminder[] {
   return db
     .prepare(`SELECT id, to_number, message, due_at FROM reminders WHERE sent = 0 ORDER BY due_at ASC LIMIT ?`)
