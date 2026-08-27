@@ -62,6 +62,87 @@ function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): strin
   }
 }
 
+// resposta pra uma duvida especifica ("como adiciono um gasto?"), com explicacao
+// clara e um exemplo pronto pra copiar — pensado pra quem tem menos familiaridade
+// com tecnologia, entao frases curtas e nada de termos tecnicos
+function helpTopicMessage(
+  topic?: "expense" | "event" | "reminder" | "budget" | "expense_report" | "edit_expense" | "category" | "payment_method"
+): string | null {
+  switch (topic) {
+    case "expense":
+      return `💰 Como registrar um gasto:
+
+É bem simples — só mandar uma mensagem contando o que você comprou e quanto pagou.
+
+Exemplo: escreva ou fale "gastei 50 reais no mercado"
+
+Você também pode:
+• Mandar um áudio falando a mesma coisa
+• Mandar uma foto do comprovante ou nota fiscal
+
+Eu registro sozinho e já escolho a categoria (tipo "Mercado", "Saúde"...). Se eu não souber qual categoria usar, eu pergunto pra você.`;
+    case "event":
+      return `📅 Como marcar um compromisso na agenda:
+
+Diga o que é, o dia e a hora, tudo numa mensagem só.
+
+Exemplo: "marca consulta no médico dia 15 às 14h"
+
+Eu aviso você um tempo antes do horário chegar, pra não esquecer. Pra cancelar, é só dizer, tipo "cancela a consulta do dia 15".`;
+    case "reminder":
+      return `⏰ Como criar um lembrete:
+
+Diga o que você quer lembrar e quando.
+
+Exemplo: "me lembra de tomar remédio às 20h"
+
+Na hora certa eu mando uma mensagem avisando.`;
+    case "budget":
+      return `🎯 Como definir um limite de gastos (orçamento):
+
+Diga o valor e a categoria que você quer controlar.
+
+Exemplo: "me avisa se eu passar de 300 reais em mercado"
+
+Quando você chegar perto ou passar desse valor no mês, eu aviso automaticamente.`;
+    case "expense_report":
+      return `📊 Como ver quanto você já gastou:
+
+É só perguntar, do jeito que quiser.
+
+Exemplos:
+• "quanto gastei esse mês"
+• "quanto gastei essa semana"
+• "últimos 15 dias quanto gastei em mercado"
+
+Eu também mando um resumo automático toda semana e todo mês, sem você precisar pedir.`;
+    case "edit_expense":
+      return `✏️ Como corrigir um gasto que você já registrou:
+
+Primeiro, peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje".
+
+Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número, tipo "muda o valor do 2 pra 45".
+
+Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro".`;
+    case "category":
+      return `🏷️ Como funcionam as categorias:
+
+São os grupos que organizam seus gastos, tipo "Mercado", "Saúde", "Lazer". Eu já crio algumas prontas e vou aprendendo com o tempo.
+
+Pra ver quais você tem: "quais categorias eu tenho"
+
+Pra corrigir a categoria de um gasto: "muda a categoria do mercado pra lazer"`;
+    case "payment_method":
+      return `💳 Como definir a forma de pagamento:
+
+Você pode dizer qual usou na hora de registrar o gasto, tipo "50 no mercado no pix".
+
+Se não disser nada, eu uso a sua forma padrão. Pra definir ou mudar qual é a padrão: "meu pagamento padrão é pix"`;
+    default:
+      return null;
+  }
+}
+
 // Formato do evento "messages.upsert" da Evolution API. O campo com o audio/imagem
 // em base64 pode vir em lugares diferentes dependendo da versao/config da API — e em
 // algumas versoes nao vem de jeito nenhum no payload do webhook (so uma referencia
@@ -614,6 +695,12 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "help": {
+      const topicMessage = helpTopicMessage(interpretation.topic);
+      if (topicMessage) {
+        logActivity(from, "help", `explicou o topico "${interpretation.topic}"`);
+        await sendText(from, topicMessage);
+        break;
+      }
       logActivity(from, "help", "explicou funcionalidades");
       await sendText(
         from,
