@@ -17,7 +17,7 @@ import { resetRateLimitForTests } from "../../src/access/rateLimit";
 import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
 import { getRecentBlockedAttempts } from "../../src/activity/service";
 import { config } from "../../src/config";
-import { setBudget } from "../../src/expenses/budgets";
+import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
 import { listReminders } from "../../src/reminders/service";
@@ -456,7 +456,11 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
 
   queueReply([{ type: "remove_recurring_expense", query: "streaming" }]);
   await handleIncomingMessage(evolutionMessage(R5, "cancela o gasto fixo do streaming"));
-  assert.match(sent[1].text, /removido/);
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.equal(listRecurringExpenses(R5).length, 1); // ainda nao removido, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(R5, "sim"));
+  assert.match(sent[2].text, /removido/);
   assert.equal(listRecurringExpenses(R5).length, 0);
 });
 
@@ -978,4 +982,66 @@ test("edit_reminder: pede confirmacao antes de remarcar, 'nao' cancela, e undo v
   queueReply([{ type: "undo" }]);
   await handleIncomingMessage(evolutionMessage(ER1, "desfaz isso"));
   assert.equal(listReminders(ER1).find((r) => r.id === reminderId)?.due_at, "2026-09-05T09:00:00-03:00");
+});
+
+// Pedido do usuario: nao so editar, tambem EXCLUIR (orcamento, gasto fixo) deve
+// pedir confirmacao antes de aplicar de verdade -- delete_event ja fazia isso.
+test("remove_budget: pede confirmacao antes de remover, 'nao' mantem, 'sim' remove, e undo restaura", async (t) => {
+  const RB1 = "551100090110";
+  seed(RB1);
+  const cat = getOrCreateCategory(RB1, "Orcamento-confirm");
+  setBudget(RB1, cat.id, 300);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "remove_budget", category: "Orcamento-confirm" }]);
+  await handleIncomingMessage(evolutionMessage(RB1, "tira o orcamento de orcamento-confirm"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(getBudget(RB1, cat.id), 300); // ainda nao removeu, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(RB1, "não"));
+  assert.match(sent[1].text, /não mexi/i);
+  assert.equal(getBudget(RB1, cat.id), 300);
+
+  queueReply([{ type: "remove_budget", category: "Orcamento-confirm" }]);
+  await handleIncomingMessage(evolutionMessage(RB1, "tira o orcamento de orcamento-confirm"));
+  await handleIncomingMessage(evolutionMessage(RB1, "sim"));
+  assert.equal(getBudget(RB1, cat.id), null);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(RB1, "desfaz isso"));
+  assert.equal(getBudget(RB1, cat.id), 300);
+});
+
+test("remove_recurring_expense: responder 'nao' mantem o gasto fixo ativo", async (t) => {
+  const RR1 = "551100090111";
+  seed(RR1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "academia nao", amount: 89.9, category: "Saude", day_of_month: 5 }]);
+  await handleIncomingMessage(evolutionMessage(RR1, "todo dia 5 pago 89,90 de academia nao"));
+
+  queueReply([{ type: "remove_recurring_expense", query: "academia nao" }]);
+  await handleIncomingMessage(evolutionMessage(RR1, "cancela o gasto fixo da academia nao"));
+  await handleIncomingMessage(evolutionMessage(RR1, "não, deixa"));
+  assert.match(sent[2].text, /não mexi/i);
+  assert.equal(listRecurringExpenses(RR1).length, 1);
+});
+
+test("remove_recurring_expense: undo recria o gasto fixo removido", async (t) => {
+  const RR2 = "551100090112";
+  seed(RR2);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "netflix undo", amount: 39.9, category: "Lazer", day_of_month: 15 }]);
+  await handleIncomingMessage(evolutionMessage(RR2, "todo dia 15 pago 39,90 de netflix undo"));
+
+  queueReply([{ type: "remove_recurring_expense", query: "netflix undo" }]);
+  await handleIncomingMessage(evolutionMessage(RR2, "cancela o gasto fixo do netflix undo"));
+  await handleIncomingMessage(evolutionMessage(RR2, "sim"));
+  assert.equal(listRecurringExpenses(RR2).length, 0);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(RR2, "desfaz isso"));
+  const restored = listRecurringExpenses(RR2);
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].description, "netflix undo");
+  assert.equal(restored[0].day_of_month, 15);
 });

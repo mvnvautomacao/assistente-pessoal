@@ -10,6 +10,13 @@ import {
   clearPendingEditReminder,
   PendingEditReminder,
 } from "./reminders/pendingEditReminder";
+import { setPendingRemoveBudget, getPendingRemoveBudget, clearPendingRemoveBudget, PendingRemoveBudget } from "./expenses/pendingRemoveBudget";
+import {
+  setPendingRemoveRecurring,
+  getPendingRemoveRecurring,
+  clearPendingRemoveRecurring,
+  PendingRemoveRecurring,
+} from "./expenses/pendingRemoveRecurring";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
 import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
@@ -412,6 +419,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingEditReminder = getPendingEditReminder(from);
     if (pendingEditReminder) {
       await resolveEditReminderConfirmation(from, pendingEditReminder, text);
+      return;
+    }
+
+    const pendingRemoveBudget = getPendingRemoveBudget(from);
+    if (pendingRemoveBudget) {
+      await resolveRemoveBudgetConfirmation(from, pendingRemoveBudget, text);
+      return;
+    }
+
+    const pendingRemoveRecurring = getPendingRemoveRecurring(from);
+    if (pendingRemoveRecurring) {
+      await resolveRemoveRecurringConfirmation(from, pendingRemoveRecurring, text);
       return;
     }
   }
@@ -864,6 +883,71 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
   await sendText(from, `Ok, vou remarcar o lembrete "${pending.message}": ${changeText}. Confirma? Responde "sim" ou "não".`);
 }
 
+// resposta a "confirma que quer remover o orcamento de X?" -- so remove de
+// verdade com um "sim" claro, igual as outras confirmacoes de exclusao
+async function resolveRemoveBudgetConfirmation(from: string, pending: PendingRemoveBudget, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer remover o orçamento de "${pending.categoryName}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingRemoveBudget(from);
+  if (no) {
+    logActivity(from, "remove_budget", `remocao do orcamento de ${pending.categoryName} nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  removeBudget(from, pending.categoryId);
+  setPendingUndo(from, {
+    kind: "restore_budget",
+    categoryId: pending.categoryId,
+    monthlyLimit: pending.monthlyLimit,
+    description: pending.categoryName,
+  });
+  logActivity(from, "remove_budget", `confirmado: orcamento de ${pending.categoryName} removido`);
+  await sendText(from, `✅ Orçamento de "${pending.categoryName}" removido.`);
+}
+
+// mesma ideia de resolveRemoveBudgetConfirmation, pra gasto fixo
+async function resolveRemoveRecurringConfirmation(from: string, pending: PendingRemoveRecurring, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer parar de lançar o gasto fixo "${pending.description}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingRemoveRecurring(from);
+  if (no) {
+    logActivity(from, "remove_recurring_expense", `remocao de "${pending.description}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  deactivateRecurringExpense(from, pending.recurringId);
+  setPendingUndo(from, {
+    kind: "restore_recurring_expense",
+    params: {
+      fromNumber: from,
+      description: pending.description,
+      amount: pending.amount,
+      categoryId: pending.categoryId,
+      paymentMethodId: pending.paymentMethodId,
+      dayOfMonth: pending.dayOfMonth,
+    },
+    description: pending.description,
+  });
+  logActivity(from, "remove_recurring_expense", `confirmado: "${pending.description}" removido`);
+  await sendText(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -1139,13 +1223,17 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "remove_budget": {
       const category = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
-      const removed = category ? removeBudget(from, category.id) : false;
-      logActivity(from, "remove_budget", removed ? `orcamento de ${category!.name} removido` : `nenhum orcamento encontrado para "${interpretation.category}"`);
+      const limit = category ? getBudget(from, category.id) : null;
+      if (!category || limit == null) {
+        logActivity(from, "remove_budget", `nenhum orcamento encontrado para "${interpretation.category}"`);
+        await sendText(from, `Não achei orçamento definido pra "${interpretation.category}".`);
+        break;
+      }
+      setPendingRemoveBudget(from, { categoryId: category.id, categoryName: category.name, monthlyLimit: limit });
+      logActivity(from, "remove_budget", `pediu confirmacao pra remover orcamento de ${category.name}`);
       await sendText(
         from,
-        removed
-          ? `✅ Orçamento de "${category!.name}" removido.`
-          : `Não achei orçamento definido pra "${interpretation.category}".`
+        `Vou remover o orçamento de "${category.name}" (R$${limit.toFixed(2)}/mês). Confirma? Responde "sim" ou "não".`
       );
       break;
     }
@@ -1466,9 +1554,19 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, `Não achei nenhum gasto fixo parecido com "${interpretation.query}".`);
         break;
       }
-      deactivateRecurringExpense(from, recurring.id);
-      logActivity(from, "remove_recurring_expense", `${recurring.description} — R$${recurring.amount.toFixed(2)}/mes removido`);
-      await sendText(from, `✅ Gasto fixo "${recurring.description}" removido. Não vou mais lançar ele automaticamente.`);
+      setPendingRemoveRecurring(from, {
+        recurringId: recurring.id,
+        description: recurring.description,
+        amount: recurring.amount,
+        dayOfMonth: recurring.day_of_month,
+        categoryId: recurring.category_id,
+        paymentMethodId: recurring.payment_method_id,
+      });
+      logActivity(from, "remove_recurring_expense", `pediu confirmacao pra remover "${recurring.description}"`);
+      await sendText(
+        from,
+        `Vou parar de lançar o gasto fixo "${recurring.description}" (R$${recurring.amount.toFixed(2)}, todo dia ${recurring.day_of_month}). Confirma? Responde "sim" ou "não".`
+      );
       break;
     }
     case "income": {
@@ -1588,6 +1686,16 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           updateReminder(from, undo.reminderId, { message: undo.description, dueAt: undo.previousDueAt });
           logActivity(from, "undo", `remarcacao de lembrete desfeita: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou pro horário de antes.`);
+          break;
+        case "restore_budget":
+          setBudget(from, undo.categoryId, undo.monthlyLimit);
+          logActivity(from, "undo", `orcamento restaurado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o orçamento de "${undo.description}" voltou (R$${undo.monthlyLimit.toFixed(2)}/mês).`);
+          break;
+        case "restore_recurring_expense":
+          createRecurringExpense(undo.params);
+          logActivity(from, "undo", `gasto fixo recriado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o gasto fixo "${undo.description}" voltou a ser lançado automaticamente.`);
           break;
       }
       break;

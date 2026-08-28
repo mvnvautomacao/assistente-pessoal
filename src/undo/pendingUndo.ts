@@ -41,7 +41,23 @@ export type UndoAction =
       previous: { title: string; start: string; end: string; location: string | null; reminderMinutes: number };
       description: string;
     }
-  | { kind: "restore_reminder_time"; reminderId: number; previousDueAt: string; description: string };
+  | { kind: "restore_reminder_time"; reminderId: number; previousDueAt: string; description: string }
+  | { kind: "restore_budget"; categoryId: number; monthlyLimit: number; description: string }
+  | {
+      // desativar um gasto fixo nao apaga o registro (so muda active=0), mas
+      // recriar do zero (em vez de reativar por id) mantem o mesmo padrao dos
+      // outros undos desse arquivo, que nao dependem de saber implementacao interna
+      kind: "restore_recurring_expense";
+      params: {
+        fromNumber: string;
+        description: string;
+        amount: number;
+        categoryId: number | null;
+        paymentMethodId: number | null;
+        dayOfMonth: number;
+      };
+      description: string;
+    };
 
 interface PendingUndo {
   action: UndoAction;
