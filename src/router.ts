@@ -517,7 +517,10 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado manualmente)`
     );
     const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
-    await sendText(from, `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)}${paymentSuffix} registrado.${budgetAlert}`);
+    await sendText(
+      from,
+      `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)} — ${pending.description}${paymentSuffix} registrado.${budgetAlert}`
+    );
 
     // se tinha mais gastos esperando categoria, pergunta o proximo da fila
     const next = getNextPendingCategorization(from);
@@ -981,7 +984,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         });
         logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${description}`);
         const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
-        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix}${budgetAlert}`);
+        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name} — ${description}${paymentSuffix}${budgetAlert}`);
       } else {
         // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
         // sai quando chega a vez dele (ver resolvePendingCategorization)

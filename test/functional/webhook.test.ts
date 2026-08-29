@@ -78,6 +78,7 @@ test("mensagem de gasto com categoria existente: registra direto e confirma", as
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /✅/);
   assert.match(sent[0].text, /45/);
+  assert.match(sent[0].text, /compras da semana/); // nome do produto/descricao na confirmacao
 });
 
 test("mensagem de gasto com categoria desconhecida: fica pendente e pergunta, depois resolve com a resposta em texto puro (sem chamar a IA de novo)", async (t) => {
@@ -94,6 +95,7 @@ test("mensagem de gasto com categoria desconhecida: fica pendente e pergunta, de
   assert.equal(expense?.amount, 30);
   assert.equal(sent.length, 2);
   assert.match(sent[1].text, /Pets/);
+  assert.match(sent[1].text, /algo estranho/); // nome do produto/descricao na confirmacao
 });
 
 test("fila de categorizacao pendente e isolada por numero (outro numero nao interfere)", async (t) => {
