@@ -9,6 +9,7 @@ import {
   getReminderById,
   updateReminder,
   deleteReminder,
+  getRemindersForMonth,
 } from "../../src/reminders/service";
 
 const A = "551100030001";
@@ -39,14 +40,16 @@ test("markReminderSent tira o lembrete da lista de pendentes", () => {
   assert.ok(!dueAgain.some((r) => r.id === target.id));
 });
 
-test("getRemindersWithinDays respeita o limite de dias e ignora ja enviados", () => {
+test("getRemindersWithinDays respeita o limite de dias, ignora ja enviados, e e isolado por numero", () => {
   const soon = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
   const far = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   createReminder(A, "dentro da janela", soon);
   createReminder(A, "fora da janela", far);
-  const within = getRemindersWithinDays(5).filter((r) => r.to_number === A);
+  createReminder(B, "dentro da janela de B", soon); // SEGURANCA: nao pode aparecer pra A
+  const within = getRemindersWithinDays(A, 5);
   assert.ok(within.some((r) => r.message === "dentro da janela"));
   assert.ok(!within.some((r) => r.message === "fora da janela"));
+  assert.ok(!within.some((r) => r.message === "dentro da janela de B"));
 });
 
 test("getReminderById/updateReminder/deleteExpense respeitam o dono (nao mexe em lembrete de outro numero)", () => {
@@ -78,4 +81,18 @@ test("updateReminder reseta sent=0 (edita um ja enviado -> volta a avisar)", () 
 
   updateReminder(A, target.id, { message: "editar apos enviado", dueAt: "2099-01-01T00:00:00Z" });
   assert.equal(getReminderById(A, target.id)!.sent, 0);
+});
+
+test("getRemindersForMonth: so traz lembretes nao enviados daquele mes, isolado por numero", () => {
+  createReminder(A, "lembrete de novembro", "2026-11-15T10:00:00-03:00");
+  createReminder(A, "lembrete de dezembro", "2026-12-01T10:00:00-03:00");
+  createReminder(B, "lembrete de novembro de B", "2026-11-20T10:00:00-03:00"); // SEGURANCA: nao pode aparecer pra A
+
+  const novembroA = getRemindersForMonth(A, "2026-11");
+  assert.equal(novembroA.length, 1);
+  assert.equal(novembroA[0].message, "lembrete de novembro");
+
+  const created = createReminder(A, "ja enviado em novembro", "2026-11-05T10:00:00-03:00");
+  markReminderSent(created);
+  assert.ok(!getRemindersForMonth(A, "2026-11").some((r) => r.message === "ja enviado em novembro"));
 });

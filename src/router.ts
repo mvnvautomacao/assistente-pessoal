@@ -1,8 +1,23 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
 import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, extractDateTimeFromAnswer, Interpretation } from "./ai/interpret";
-import { createEvent, findUpcomingEvents, deleteEvent, updateEvent, listUpcomingEvents, getEventById } from "./events/service";
-import { createReminder, getRemindersWithinDays, deleteReminder, updateReminder, findPendingRemindersByText } from "./reminders/service";
+import {
+  createEvent,
+  findUpcomingEvents,
+  deleteEvent,
+  updateEvent,
+  listUpcomingEvents,
+  getEventById,
+  getEventsForMonth,
+} from "./events/service";
+import {
+  createReminder,
+  getRemindersWithinDays,
+  getRemindersForMonth,
+  deleteReminder,
+  updateReminder,
+  findPendingRemindersByText,
+} from "./reminders/service";
 import { setPendingEditEvent, getPendingEditEvent, clearPendingEditEvent, PendingEditEvent } from "./events/pendingEditEvent";
 import {
   setPendingEditReminder,
@@ -111,6 +126,13 @@ function formatDateOnly(value: string): string {
 function addOneDayToDateString(dateStr: string): string {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+
+// "2026-11" -> "novembro de 2026", pro relatorio de agenda de um mes especifico.
+// Date.UTC + timeZone:"UTC" evita reprojecao de fuso (o mes/ano nao dependem de hora).
+function monthLabelPt(yearMonth: string): string {
+  const [year, month] = yearMonth.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
@@ -1166,9 +1188,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "report": {
-      const days = interpretation.days ?? 7;
-      const events = listUpcomingEvents(from, days);
-      const reminders = getRemindersWithinDays(days);
+      const events = interpretation.month ? getEventsForMonth(from, interpretation.month) : listUpcomingEvents(from, interpretation.days ?? 7);
+      const reminders = interpretation.month
+        ? getRemindersForMonth(from, interpretation.month)
+        : getRemindersWithinDays(from, interpretation.days ?? 7);
 
       const eventsText = events.length
         ? events.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n")
@@ -1177,8 +1200,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n")
         : "Nenhum lembrete agendado.";
 
-      logActivity(from, "report", `proximos ${days} dias: ${events.length} eventos, ${reminders.length} lembretes`);
-      await sendText(from, `📊 Próximos ${days} dias\n\n📅 Agenda:\n${eventsText}\n\n⏰ Lembretes:\n${remindersText}`);
+      const label = interpretation.month ? monthLabelPt(interpretation.month) : `próximos ${interpretation.days ?? 7} dias`;
+      logActivity(from, "report", `${label}: ${events.length} eventos, ${reminders.length} lembretes`);
+      await sendText(from, `📊 Agenda — ${label}\n\n📅 Eventos:\n${eventsText}\n\n⏰ Lembretes:\n${remindersText}`);
       break;
     }
     case "expense_report": {

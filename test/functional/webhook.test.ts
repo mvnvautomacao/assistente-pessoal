@@ -20,7 +20,7 @@ import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
-import { listReminders } from "../../src/reminders/service";
+import { listReminders, createReminder } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
 
 function evolutionMessage(from: string, text: string) {
@@ -1077,4 +1077,47 @@ test("remove_recurring_expense: undo recria o gasto fixo removido", async (t) =>
   assert.equal(restored.length, 1);
   assert.equal(restored[0].description, "netflix undo");
   assert.equal(restored[0].day_of_month, 15);
+});
+
+// Pedido do usuario: "exibir minha agenda de novembro" nao era entendido, porque
+// type=report so tinha "proximos X dias" (sem jeito de pedir um mes especifico).
+// De quebra corrigiu um vazamento real: getRemindersWithinDays nao filtrava por
+// numero, entao o relatorio de "proximos dias" mostrava lembrete de QUALQUER
+// numero do sistema, nao so do numero que perguntou.
+test("report: agenda de um mes especifico (evento e lembrete), isolado por numero", async (t) => {
+  const REP1 = "551100090120";
+  const REP2 = "551100090121";
+  seed(REP1, REP2);
+
+  createEvent({ fromNumber: REP1, title: "consulta em novembro", start: "2026-11-10T14:00:00-03:00" });
+  createEvent({ fromNumber: REP1, title: "consulta em dezembro", start: "2026-12-05T14:00:00-03:00" });
+  createReminder(REP1, "lembrete em novembro", "2026-11-20T09:00:00-03:00");
+  createEvent({ fromNumber: REP2, title: "evento de novembro do REP2", start: "2026-11-15T10:00:00-03:00" }); // nao pode vazar pra REP1
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "report", month: "2026-11" }]);
+  await handleIncomingMessage(evolutionMessage(REP1, "exibir minha agenda de novembro"));
+
+  assert.match(sent[0].text, /novembro/i);
+  assert.match(sent[0].text, /consulta em novembro/);
+  assert.match(sent[0].text, /lembrete em novembro/);
+  assert.doesNotMatch(sent[0].text, /consulta em dezembro/);
+  assert.doesNotMatch(sent[0].text, /REP2/);
+});
+
+test("report: 'proximos X dias' continua funcionando e so mostra lembrete do proprio numero", async (t) => {
+  const REP3 = "551100090122";
+  const REP4 = "551100090123";
+  seed(REP3, REP4);
+
+  const soon = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+  createReminder(REP3, "lembrete proximo de REP3", soon);
+  createReminder(REP4, "lembrete proximo de REP4", soon); // SEGURANCA: nao pode vazar pra REP3
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "report", days: 7 }]);
+  await handleIncomingMessage(evolutionMessage(REP3, "o que eu tenho agendado nos proximos 7 dias"));
+
+  assert.match(sent[0].text, /lembrete proximo de REP3/);
+  assert.doesNotMatch(sent[0].text, /lembrete proximo de REP4/);
 });
