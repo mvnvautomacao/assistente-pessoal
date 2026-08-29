@@ -135,6 +135,18 @@ function monthLabelPt(yearMonth: string): string {
   return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
+// Combina uma nova data e/ou hora com uma string ISO existente, mantendo a
+// parte que NAO foi informada (ex: "muda so o dia" nao pode apagar a hora
+// original). existingIso sempre tem o offset -03:00 explicito (ver
+// ensureBrazilOffset), entao os primeiros 10/5 caracteres JA SAO a data/hora
+// em horario de Brasilia -- string-slice direto, sem passar por Date (evita
+// qualquer risco de reprojecao de fuso).
+function mergeDateTime(existingIso: string, newDate?: string, newTime?: string): string {
+  const date = newDate ?? existingIso.slice(0, 10);
+  const time = newTime ?? existingIso.slice(11, 16);
+  return ensureBrazilOffset(`${date}T${time}:00`);
+}
+
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
 // informacao pra completar; pede o que falta em vez de um "nao entendi" generico
 function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): string {
@@ -863,7 +875,9 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
     await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
     return;
   }
-  const newStart = ensureBrazilOffset(extracted);
+  // mescla com o valor JA PROPOSTO (nao o original do evento) -- se o ajuste so
+  // mencionar o dia, mantem a hora que ja tinha sido proposta antes, nao a antiga
+  const newStart = mergeDateTime(pending.proposedStart, extracted.newDate, extracted.newTime);
   const durationMs = new Date(pending.previous.end).getTime() - new Date(pending.previous.start).getTime();
   const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
   const changeText = `de ${formatDateTime(pending.previous.start)} pra ${formatDateTime(newStart)}`;
@@ -902,7 +916,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
     await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
     return;
   }
-  const newDueAt = ensureBrazilOffset(extracted);
+  const newDueAt = mergeDateTime(pending.proposedDueAt, extracted.newDate, extracted.newTime);
   const changeText = `de ${formatDateTime(pending.previousDueAt)} pra ${formatDateTime(newDueAt)}`;
   setPendingEditReminder(from, { ...pending, proposedDueAt: newDueAt, changeText });
   await sendText(from, `Ok, vou remarcar o lembrete "${pending.message}": ${changeText}. Confirma? Responde "sim" ou "não".`);
@@ -1090,7 +1104,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const matches = findUpcomingEvents(from, interpretation.query);
       if (matches.length === 0) {
         logActivity(from, "delete_event", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento parecido com "${interpretation.query}" nos próximos 60 dias.`);
+        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
       } else if (matches.length === 1) {
         const event = matches[0];
         setPendingEventDeletion(from, event.id, event.title);
@@ -1110,7 +1124,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const matches = findUpcomingEvents(from, interpretation.query);
       if (matches.length === 0) {
         logActivity(from, "edit_event", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento parecido com "${interpretation.query}" nos próximos 60 dias.`);
+        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
         break;
       }
       if (matches.length > 1) {
@@ -1119,9 +1133,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remarcar.`);
         break;
       }
+      if (!interpretation.new_date && !interpretation.new_time) {
+        await sendText(from, "Não entendi pra quando remarcar. Me diga o novo dia e/ou horário.");
+        break;
+      }
 
       const event = matches[0];
-      const newStart = ensureBrazilOffset(interpretation.new_start);
+      // preenche so o que foi pedido -- "muda so o dia" mantem o horario
+      // original, "muda so o horario" mantem a data original (ver mergeDateTime)
+      const newStart = mergeDateTime(event.start, interpretation.new_date, interpretation.new_time);
       const durationMs = new Date(event.end).getTime() - new Date(event.start).getTime();
       const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
       const changeText = `de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`;
@@ -1169,8 +1189,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
+      if (!interpretation.new_date && !interpretation.new_time) {
+        await sendText(from, "Não entendi pra quando remarcar. Me diga o novo dia e/ou horário.");
+        break;
+      }
+
       const reminder = matches[0];
-      const newDueAt = ensureBrazilOffset(interpretation.new_due_at);
+      const newDueAt = mergeDateTime(reminder.due_at, interpretation.new_date, interpretation.new_time);
       const changeText = `de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`;
 
       setPendingEditReminder(from, {
