@@ -95,13 +95,17 @@ export function getEventsForMonth(fromNumber: string, yearMonth: string): EventR
     .all(fromNumber, start, nextMonthStart) as unknown as EventRow[];
 }
 
-// busca textual simples pra resolver "cancela a reuniao com o cliente" — so nos
-// proximos 60 dias, igual o comportamento antigo baseado no Google Calendar.
+// busca textual simples pra resolver "cancela a reuniao com o cliente" ou "muda
+// a consulta pra outro dia" -- qualquer evento futuro (passado nao faz sentido
+// cancelar/remarcar), sem limite de quantos dias a frente. Um teto artificial
+// aqui (existia um de 60 dias antes) trava justamente o caso que mais precisa
+// funcionar: corrigir um evento que a IA marcou pra uma data muito distante por
+// engano (ver ensureBrazilOffset / correcao do prompt em interpret.ts).
 export function findUpcomingEvents(fromNumber: string, query: string): EventRow[] {
   return db
     .prepare(
       `SELECT * FROM events
-       WHERE from_number = ? AND datetime(start) >= datetime('now') AND datetime(start) <= datetime('now', '+60 days')
+       WHERE from_number = ? AND datetime(start) >= datetime('now')
          AND title LIKE ?
        ORDER BY start ASC
        LIMIT 10`

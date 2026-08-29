@@ -83,13 +83,28 @@ test("listUpcomingEvents so traz eventos futuros, dentro da janela e do numero c
   assert.ok(!titles.includes("Evento do B"));
 });
 
-test("findUpcomingEvents busca por titulo, so no numero certo e nos proximos 60 dias", () => {
+test("findUpcomingEvents busca por titulo, so no numero certo, sem limite de dias a frente", () => {
   createEvent({ fromNumber: A, title: "Reuniao com cliente importante", start: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString() });
   createEvent({ fromNumber: B, title: "Reuniao com cliente importante", start: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString() });
 
   const matches = findUpcomingEvents(A, "cliente");
   assert.equal(matches.length, 1);
   assert.equal(matches[0].from_number, A);
+});
+
+// Regressao: um evento criado (por erro da IA ou de proposito) mais de 60 dias
+// no futuro tinha que continuar achavel pra cancelar/remarcar -- um teto
+// artificial aqui travava justamente o caso de corrigir esse tipo de erro
+// (relatado em producao: consulta marcada sem querer pra daqui 66 dias, e
+// "muda a consulta pra outro dia" respondia "nao encontrei nenhum evento").
+test("findUpcomingEvents acha evento bem no futuro (mais de 60 dias), mas nao acha evento passado", () => {
+  createEvent({ fromNumber: A, title: "Consulta daqui a 6 meses", start: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString() });
+  createEvent({ fromNumber: A, title: "Consulta que ja passou", start: "2000-01-01T00:00:00-03:00" });
+
+  const matches = findUpcomingEvents(A, "consulta");
+  const titles = matches.map((e) => e.title);
+  assert.ok(titles.includes("Consulta daqui a 6 meses"));
+  assert.ok(!titles.includes("Consulta que ja passou"));
 });
 
 test("getDueEventReminders so traz o que passou do horario de aviso e ainda nao foi avisado", () => {

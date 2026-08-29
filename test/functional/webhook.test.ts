@@ -1121,3 +1121,25 @@ test("report: 'proximos X dias' continua funcionando e so mostra lembrete do pro
   assert.match(sent[0].text, /lembrete proximo de REP3/);
   assert.doesNotMatch(sent[0].text, /lembrete proximo de REP4/);
 });
+
+// Reproducao exata do caso relatado em producao: evento marcado por engano a
+// mais de 60 dias no futuro (consulta medica pra 02/11, criada em 28/08 --
+// 66 dias) nao era encontrado pra editar ("nao encontrei nenhum evento
+// parecido... nos proximos sessenta dias"), travando justamente a correcao
+// do proprio erro que a IA cometeu.
+test("edit_event: encontra e remarca evento criado a mais de 60 dias no futuro", async (t) => {
+  const EE10 = "551100090130";
+  seed(EE10);
+  const farFuture = new Date(Date.now() + 66 * 24 * 60 * 60 * 1000).toISOString();
+  const event = createEvent({ fromNumber: EE10, title: "consulta médica", start: farFuture });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "consulta médica", new_start: "2026-09-20T10:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(EE10, "muda a consulta médica pro dia 20 de setembro as 10h"));
+  assert.doesNotMatch(sent[0].text, /[Nn]ão encontrei/);
+  assert.match(sent[0].text, /[Cc]onfirma/);
+
+  await handleIncomingMessage(evolutionMessage(EE10, "sim"));
+  const updated = getEventById(EE10, event.id);
+  assert.equal(new Date(updated!.start).toISOString(), "2026-09-20T13:00:00.000Z"); // 10h BRT = 13h UTC
+});
