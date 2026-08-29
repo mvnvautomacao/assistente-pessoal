@@ -868,6 +868,37 @@ test("reminder: mensagem de criacao mostra o horario que vai avisar", async (t) 
   assert.match(sent[0].text, /20:00/);
 });
 
+// Pedido do usuario: relatou que criou um evento (confirmacao chegou) mas ele
+// nao aparecia no calendario -- a mensagem de confirmacao nao mostrava a
+// data/hora marcada, dificultando notar se a IA guardou o dia errado.
+test("event: mensagem de criacao mostra a data/hora marcada", async (t) => {
+  const EV1 = "551100090101";
+  seed(EV1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "event", title: "consulta médica", start: "2026-09-15T14:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(EV1, "marca consulta médica dia 15 as 14h"));
+  assert.match(sent[0].text, /15\/09\/2026/);
+  assert.match(sent[0].text, /14:00/);
+});
+
+// Regressao do mesmo caso: se a IA nao achar nenhum horario na mensagem (so
+// "adicionar consulta medica", sem "quando") e devolver so a data, o evento
+// tem que continuar sendo criado corretamente (meia-noite como horario padrao),
+// nao travar nem sumir do calendario por causa de um ISO malformado.
+test("event: mensagem so com data (sem hora) ainda cria o evento corretamente", async (t) => {
+  const EV2 = "551100090102";
+  seed(EV2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "event", title: "consulta sem hora", start: "2026-09-20" }]);
+  await handleIncomingMessage(evolutionMessage(EV2, "adicionar consulta sem hora dia 20"));
+  assert.match(sent[0].text, /📅/);
+  assert.doesNotMatch(sent[0].text, /erro/i);
+
+  const matches = findUpcomingEvents(EV2, "consulta sem hora");
+  assert.equal(matches.length, 1);
+  assert.equal(new Date(matches[0].start).toISOString(), "2026-09-20T03:00:00.000Z"); // meia-noite BRT = 03:00 UTC
+});
+
 // Pedido do usuario: alem de gasto/categoria, editar DATA de evento e lembrete
 // tambem precisa da mesma confirmacao "de X pra Y" antes de aplicar.
 test("edit_event: pede confirmacao antes de remarcar, preserva a duracao do evento, e 'nao' cancela", async (t) => {

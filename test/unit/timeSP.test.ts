@@ -59,3 +59,13 @@ test("ensureBrazilOffset nao mexe se a string ja tiver offset ou for UTC (Z)", (
   assert.equal(ensureBrazilOffset("2026-08-27T18:00:00Z"), "2026-08-27T18:00:00Z");
   assert.equal(ensureBrazilOffset("2026-08-27T15:00:00+00:00"), "2026-08-27T15:00:00+00:00");
 });
+
+// Regressao: se a mensagem do usuario nao tiver hora nenhuma (so "adicionar
+// consulta medica", sem "quando"), a IA pode devolver so a data. Sem esse caso
+// especial, "2026-09-10-03:00" e um ISO invalido -- vira Invalid Date, quebra
+// o calculo do "end" do evento (new Date(invalido).toISOString() lanca excecao).
+test("ensureBrazilOffset assume meia-noite quando a string e so uma data, sem hora", () => {
+  const withOffset = ensureBrazilOffset("2026-09-10");
+  assert.equal(withOffset, "2026-09-10T00:00:00-03:00");
+  assert.doesNotThrow(() => new Date(withOffset).toISOString());
+});

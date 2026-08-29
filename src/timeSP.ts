@@ -33,5 +33,9 @@ export function isLastDayOfMonthSP(d: Date = new Date()): boolean {
 // qualquer timezone de servidor.
 export function ensureBrazilOffset(iso: string): string {
   if (/(Z|[+-]\d{2}:\d{2})$/.test(iso)) return iso;
+  // so data, sem hora nenhuma (ex: a IA nao achou horario na mensagem) -- soma
+  // "-03:00" direto na data quebraria o formato ISO (vira "2026-09-10-03:00",
+  // Invalid Date). Assume meia-noite nesse caso.
+  if (!iso.includes("T")) return `${iso}T00:00:00-03:00`;
   return `${iso}-03:00`;
 }

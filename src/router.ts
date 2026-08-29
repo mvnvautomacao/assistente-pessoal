@@ -1058,7 +1058,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       });
       setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: interpretation.title });
       logActivity(from, "event", `${interpretation.title} — ${start}`);
-      await sendText(from, `📅 Evento "${interpretation.title}" criado na agenda (aviso ${created.reminder_minutes} min antes)`);
+      await sendText(
+        from,
+        `📅 Evento "${interpretation.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`
+      );
       break;
     }
     case "delete_event": {
