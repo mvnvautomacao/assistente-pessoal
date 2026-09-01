@@ -20,7 +20,7 @@ import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
-import { listReminders, createReminder } from "../../src/reminders/service";
+import { listReminders, createReminder, findPendingRemindersByText } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
 
 function evolutionMessage(from: string, text: string) {
@@ -215,6 +215,127 @@ test("unknown com likely_intent: pede os detalhes especificos em vez da mensagem
   queueReply([{ type: "unknown", likely_intent: "expense" }]);
   await handleIncomingMessage(evolutionMessage(A, "gasto"));
   assert.match(sent[0].text, /valor/);
+});
+
+test("unknown (evento parcial): sabe o dia mas falta a hora -- pergunta so a hora, preservando titulo e data, e cria ao responder", async (t) => {
+  const EVU1 = "551100090201";
+  seed(EVU1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "event", title: "revisão do carro", date: "2026-09-10" }]);
+  await handleIncomingMessage(evolutionMessage(EVU1, "quarta feira agendar revisão do carro"));
+  assert.match(sent[0].text, /revis[ãa]o do carro/i);
+  assert.match(sent[0].text, /hora/i);
+
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newTime: "10:00" }));
+  await handleIncomingMessage(evolutionMessage(EVU1, "10h"));
+  const [event] = findUpcomingEvents(EVU1, "revis");
+  assert.ok(event);
+  assert.equal(event.start, "2026-09-10T10:00:00-03:00");
+  assert.match(sent[1].text, /criado/i);
+});
+
+test("unknown (evento parcial): so sabe o titulo -- pergunta dia E hora juntos, preservando o titulo, e cria ao responder os dois", async (t) => {
+  const EVU2 = "551100090207";
+  seed(EVU2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "event", title: "médico dr gustavo ted" }]);
+  await handleIncomingMessage(evolutionMessage(EVU2, "agendar o médico dr gustavo ted"));
+  assert.match(sent[0].text, /gustavo ted/i);
+  assert.match(sent[0].text, /dia/i);
+  assert.match(sent[0].text, /hor[áa]rio/i);
+
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: "2026-09-16", newTime: "14:00" }));
+  await handleIncomingMessage(evolutionMessage(EVU2, "quarta as 14h"));
+  const [event] = findUpcomingEvents(EVU2, "gustavo");
+  assert.ok(event);
+  assert.equal(event.start, "2026-09-16T14:00:00-03:00");
+});
+
+test("unknown (lembrete parcial): sabe o dia mas falta a hora -- pergunta so a hora, preservando a mensagem e a data", async (t) => {
+  const RMU1 = "551100090206";
+  seed(RMU1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "reminder", message: "pagar a internet", date: "2026-09-15" }]);
+  await handleIncomingMessage(evolutionMessage(RMU1, "sexta me lembra de pagar a internet"));
+  assert.match(sent[0].text, /pagar a internet/i);
+  assert.match(sent[0].text, /hora/i);
+
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newTime: "09:00" }));
+  await handleIncomingMessage(evolutionMessage(RMU1, "9h"));
+  const [reminder] = findPendingRemindersByText(RMU1, "internet");
+  assert.ok(reminder);
+  assert.equal(reminder.due_at, "2026-09-15T09:00:00-03:00");
+});
+
+test("unknown (gasto parcial): sabe o valor mas falta o que foi -- pergunta so a descricao, preservando o valor", async (t) => {
+  const EXU1 = "551100090202";
+  seed(EXU1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "expense", amount: 50, category: "Mercado" }]);
+  await handleIncomingMessage(evolutionMessage(EXU1, "gastei 50 reais"));
+  assert.match(sent[0].text, /50/);
+  assert.match(sent[0].text, /que foi/i);
+
+  t.mock.method(aiInterpret, "extractExpenseInfoFromAnswer", async () => ({ description: "compras da semana" }));
+  await handleIncomingMessage(evolutionMessage(EXU1, "foi no mercado"));
+  const expense = findRecentExpense(EXU1, "compras da semana");
+  assert.equal(expense?.amount, 50);
+  assert.match(sent[1].text, /✅/);
+});
+
+test("unknown (gasto parcial): sabe do que foi mas falta o valor -- pergunta so o valor, preservando a descricao", async (t) => {
+  const EXU2 = "551100090203";
+  seed(EXU2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "expense", description: "remedio na farmacia", category: "Saúde" }]);
+  await handleIncomingMessage(evolutionMessage(EXU2, "comprei remedio na farmacia"));
+  assert.match(sent[0].text, /remedio na farmacia/i);
+  assert.match(sent[0].text, /quanto/i);
+
+  t.mock.method(aiInterpret, "extractExpenseInfoFromAnswer", async () => ({ amount: 35.9 }));
+  await handleIncomingMessage(evolutionMessage(EXU2, "35,90"));
+  const expense = findRecentExpense(EXU2, "remedio na farmacia");
+  assert.equal(expense?.amount, 35.9);
+});
+
+test("unknown (fila de completude): duas mensagens incompletas na mesma vez -- pergunta uma de cada vez, na ordem", async (t) => {
+  const EVU3 = "551100090204";
+  seed(EVU3);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "unknown", likely_intent: "event", title: "revisão do carro", date: "2026-09-10" },
+    { type: "unknown", likely_intent: "event", title: "médico dr gustavo ted" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(EVU3, "quarta feira agendar revisão do carro, e agendar o médico dr gustavo ted"));
+  assert.equal(sent.length, 1); // so pergunta sobre o primeiro por enquanto
+  assert.match(sent[0].text, /revis[ãa]o do carro/i);
+
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newTime: "10:00" }));
+  await handleIncomingMessage(evolutionMessage(EVU3, "10h"));
+  assert.equal(sent.length, 3); // confirma o 1o E ja pergunta o 2o, na mesma resposta
+  assert.match(sent[1].text, /criado/i);
+  assert.match(sent[2].text, /gustavo ted/i);
+
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: "2026-09-11", newTime: "14:00" }));
+  await handleIncomingMessage(evolutionMessage(EVU3, "sexta as 14h"));
+  assert.equal(sent.length, 4);
+  assert.match(sent[3].text, /criado/i);
+
+  assert.equal(findUpcomingEvents(EVU3, "carro").length, 1);
+  assert.equal(findUpcomingEvents(EVU3, "gustavo").length, 1);
+});
+
+test("unknown (evento parcial): responder 'nao' cancela sem criar nada", async (t) => {
+  const EVU4 = "551100090205";
+  seed(EVU4);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "unknown", likely_intent: "event", title: "dentista", date: "2026-09-12" }]);
+  await handleIncomingMessage(evolutionMessage(EVU4, "quinta marcar dentista"));
+  assert.match(sent[0].text, /hora/i);
+
+  await handleIncomingMessage(evolutionMessage(EVU4, "não, deixa pra lá"));
+  assert.match(sent[1].text, /não criei nada/i);
+  assert.equal(findUpcomingEvents(EVU4, "dentista").length, 0);
 });
 
 test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consulta de B pelo webhook", async (t) => {

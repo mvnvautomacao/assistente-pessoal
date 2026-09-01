@@ -1,6 +1,13 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { transcribeAudio } from "./ai/transcribe";
-import { interpretText, interpretReceiptImage, extractCategoryFromAnswer, extractDateTimeFromAnswer, Interpretation } from "./ai/interpret";
+import {
+  interpretText,
+  interpretReceiptImage,
+  extractCategoryFromAnswer,
+  extractDateTimeFromAnswer,
+  extractExpenseInfoFromAnswer,
+  Interpretation,
+} from "./ai/interpret";
 import {
   createEvent,
   findUpcomingEvents,
@@ -70,6 +77,13 @@ import {
 import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
+import {
+  addPendingCompletion,
+  getNextPendingCompletion,
+  updatePendingCompletionHead,
+  clearHeadPendingCompletion,
+  PendingCompletion,
+} from "./completion/pendingCompletion";
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
@@ -408,6 +422,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingCompletion = getNextPendingCompletion(from);
+    if (pendingCompletion) {
+      await resolvePendingCompletion(from, pendingCompletion, text);
+      return;
+    }
+
     const pendingChoice = getPendingListChoice(from);
     if (pendingChoice) {
       await resolveListChoice(from, pendingChoice.days, text);
@@ -513,6 +533,260 @@ function askForCategory(from: string, amount: number, description: string) {
     from,
     `Qual categoria é esse gasto de R$${amount.toFixed(2)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`
   );
+}
+
+// Cria o gasto de verdade (ou entra na fila de categorizacao se nao souber a
+// categoria). Extraido do case "expense" pra ser reaproveitado tambem quando
+// um gasto parcial (faltando valor ou descricao) termina de ser completado.
+async function createExpenseAndNotify(
+  from: string,
+  params: { amount: number; description: string; date: string; category?: string; payment_method?: string }
+) {
+  const keywordHints = [params.category, params.description].filter((hint): hint is string => Boolean(hint));
+  const category = (params.category && findCategoryByName(from, params.category)) || findCategoryByKeyword(from, ...keywordHints);
+
+  if (category) {
+    const paymentMethod = resolvePaymentMethod(from, params.payment_method);
+    const created = insertExpense({
+      fromNumber: from,
+      amount: params.amount,
+      description: params.description,
+      categoryId: category.id,
+      paymentMethodId: paymentMethod?.id ?? null,
+      date: params.date,
+    });
+    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+    setPendingUndo(from, {
+      kind: "delete_expense",
+      expenseId: created.id,
+      description: `R$${params.amount.toFixed(2)} em ${category.name} — ${params.description}`,
+    });
+    logActivity(from, "expense", `R$${params.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${params.description}`);
+    const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
+    await sendText(
+      from,
+      `✅ Gasto registrado: R$${params.amount.toFixed(2)} em ${category.name} — ${params.description}${paymentSuffix}${budgetAlert}`
+    );
+  } else {
+    // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
+    // sai quando chega a vez dele (ver resolvePendingCategorization)
+    const alreadyWaiting = getNextPendingCategorization(from) !== null;
+    addPendingCategorization({
+      from_number: from,
+      amount: params.amount,
+      description: params.description,
+      date: params.date,
+      suggested_category: params.category ?? null,
+      suggested_payment_method: params.payment_method ?? null,
+    });
+    logActivity(from, "expense", `pendente de categoria: R$${params.amount.toFixed(2)} — ${params.description}`);
+    if (!alreadyWaiting) await askForCategory(from, params.amount, params.description);
+  }
+}
+
+// Cria o evento de verdade. Extraido do case "event" pra ser reaproveitado
+// tambem quando um evento parcial (faltando dia e/ou horario) termina de ser
+// completado (ver resolvePendingCompletion).
+async function createEventAndNotify(from: string, params: { title: string; start: string; end?: string; location?: string }) {
+  // a IA/o merge devolve o horario em hora local de Brasilia mas nem sempre
+  // com o offset explicito -03:00; sem isso, o resto do sistema pode tratar
+  // como UTC e adiantar o evento em 3h (ver ensureBrazilOffset em timeSP.ts)
+  const start = ensureBrazilOffset(params.start);
+  const end = params.end ? ensureBrazilOffset(params.end) : undefined;
+  const created = createEvent({ fromNumber: from, title: params.title, start, end, location: params.location });
+  setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: params.title });
+  logActivity(from, "event", `${params.title} — ${start}`);
+  await sendText(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`);
+}
+
+// Cria o lembrete de verdade. Extraido do case "reminder" pra ser reaproveitado
+// tambem quando um lembrete parcial termina de ser completado.
+async function createReminderAndNotify(from: string, params: { message: string; due_at: string }) {
+  const dueAt = ensureBrazilOffset(params.due_at);
+  const reminderId = createReminder(from, params.message, dueAt);
+  setPendingUndo(from, { kind: "delete_reminder", reminderId, description: params.message });
+  logActivity(from, "reminder", `${params.message} — ${dueAt}`);
+  await sendText(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}`);
+}
+
+function missingDateTimeParts(date?: string, time?: string): Array<"date" | "time"> {
+  const missing: Array<"date" | "time"> = [];
+  if (!date) missing.push("date");
+  if (!time) missing.push("time");
+  return missing;
+}
+
+function missingExpenseParts(amount?: number, description?: string): Array<"amount" | "description"> {
+  const missing: Array<"amount" | "description"> = [];
+  if (amount === undefined) missing.push("amount");
+  if (!description) missing.push("description");
+  return missing;
+}
+
+// Monta a pergunta (ou o "nao entendi, de novo") pro item da vez na fila de
+// completude -- pergunta so o que falta, citando o que ja ficou sabido, pra
+// nao obrigar o usuario a repetir a mensagem toda.
+function pendingCompletionQuestionText(pending: PendingCompletion, retry = false): string {
+  const prefix = retry ? "Não entendi — " : "Beleza, ";
+  if (pending.intent === "event" || pending.intent === "reminder") {
+    const label = pending.intent === "event" ? `"${pending.title}"` : `o lembrete "${pending.message}"`;
+    const missingDate = pending.missing.includes("date");
+    const missingTime = pending.missing.includes("time");
+    if (missingDate && missingTime) return `${prefix}${label}! Pra quando? Me diga o dia e o horário — ex: "sexta às 15h".`;
+    if (missingDate) return `${prefix}${label} às ${pending.time}! Pra que dia?`;
+    return `${prefix}${label} pra ${formatDateOnly(pending.date!)}! Que horas?`;
+  }
+  const missingAmount = pending.missing.includes("amount");
+  const missingDescription = pending.missing.includes("description");
+  if (missingAmount && missingDescription) return `${prefix}um gasto! Me diga o valor e do que foi.`;
+  if (missingAmount) return `${prefix}gasto de "${pending.description}"! Quanto foi?`;
+  return `${prefix}um gasto de R$${pending.amount!.toFixed(2)}! Do que foi?`;
+}
+
+async function askNextPendingCompletionIfAny(from: string) {
+  const next = getNextPendingCompletion(from);
+  if (next) await sendText(from, pendingCompletionQuestionText(next));
+}
+
+// Resposta a "pra quando?"/"quanto foi?" de um evento/lembrete/gasto que veio
+// incompleto na mensagem original (ver maybeStartPendingCompletion). Extrai so
+// o(s) campo(s) que a resposta trouxe e mescla com o que ja era conhecido --
+// se ainda faltar algo, pergunta de novo e mantem na fila; se completou, cria
+// de verdade e passa pro proximo item da fila, se houver.
+async function resolvePendingCompletion(from: string, pending: PendingCompletion, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const cancel = /^(n[aã]o|n|cancela|deixa|espera|para|esquece)\b/.test(normalized);
+  if (cancel) {
+    clearHeadPendingCompletion(from);
+    logActivity(from, "unknown", `${pending.intent} incompleto cancelado antes de completar`);
+    await sendText(from, "Beleza, não criei nada.");
+    await askNextPendingCompletionIfAny(from);
+    return;
+  }
+
+  if (pending.intent === "expense") {
+    const extracted = await extractExpenseInfoFromAnswer(answerText);
+    if (!extracted) {
+      await sendText(from, pendingCompletionQuestionText(pending, true));
+      return;
+    }
+    const amount = extracted.amount ?? pending.amount;
+    const description = extracted.description?.trim() || pending.description;
+    if (amount === undefined || !description) {
+      updatePendingCompletionHead(from, {
+        intent: "expense",
+        amount,
+        description,
+        category: pending.category,
+        missing: missingExpenseParts(amount, description),
+      });
+      await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+      return;
+    }
+    clearHeadPendingCompletion(from);
+    await createExpenseAndNotify(from, { amount, description, date: spDateString(), category: pending.category });
+    await askNextPendingCompletionIfAny(from);
+    return;
+  }
+
+  // event / reminder
+  const extracted = await extractDateTimeFromAnswer(answerText);
+  if (!extracted) {
+    await sendText(from, pendingCompletionQuestionText(pending, true));
+    return;
+  }
+  const date = extracted.newDate ?? pending.date;
+  const time = extracted.newTime ?? pending.time;
+  if (!date || !time) {
+    if (pending.intent === "event") {
+      updatePendingCompletionHead(from, { intent: "event", title: pending.title, date, time, missing: missingDateTimeParts(date, time) });
+    } else {
+      updatePendingCompletionHead(from, {
+        intent: "reminder",
+        message: pending.message,
+        date,
+        time,
+        missing: missingDateTimeParts(date, time),
+      });
+    }
+    await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    return;
+  }
+
+  clearHeadPendingCompletion(from);
+  const startAt = `${date}T${time}:00`;
+  if (pending.intent === "event") {
+    await createEventAndNotify(from, { title: pending.title!, start: startAt });
+  } else {
+    await createReminderAndNotify(from, { message: pending.message!, due_at: startAt });
+  }
+  await askNextPendingCompletionIfAny(from);
+}
+
+// Se a IA classificou como "unknown" mas com likely_intent e ao menos uma
+// informacao parcial ja reconhecida (titulo, dia, horario, valor ou
+// descricao), entra na fila de completude e pergunta so o que falta, em vez
+// da mensagem generica de "nao entendi". Retorna false se nao tinha
+// informacao parcial suficiente pra isso (aí o chamador usa a mensagem
+// generica de sempre).
+async function maybeStartPendingCompletion(from: string, interpretation: Extract<Interpretation, { type: "unknown" }>): Promise<boolean> {
+  if (interpretation.likely_intent === "event" && interpretation.title) {
+    const missing = missingDateTimeParts(interpretation.date, interpretation.time);
+    if (missing.length === 0) {
+      await createEventAndNotify(from, { title: interpretation.title, start: `${interpretation.date}T${interpretation.time}:00` });
+      return true;
+    }
+    const isHead = addPendingCompletion(from, {
+      intent: "event",
+      title: interpretation.title,
+      date: interpretation.date,
+      time: interpretation.time,
+      missing,
+    });
+    logActivity(from, "unknown", `evento parcial "${interpretation.title}" -- pedindo o que falta`);
+    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    return true;
+  }
+  if (interpretation.likely_intent === "reminder" && interpretation.message) {
+    const missing = missingDateTimeParts(interpretation.date, interpretation.time);
+    if (missing.length === 0) {
+      await createReminderAndNotify(from, { message: interpretation.message, due_at: `${interpretation.date}T${interpretation.time}:00` });
+      return true;
+    }
+    const isHead = addPendingCompletion(from, {
+      intent: "reminder",
+      message: interpretation.message,
+      date: interpretation.date,
+      time: interpretation.time,
+      missing,
+    });
+    logActivity(from, "unknown", `lembrete parcial "${interpretation.message}" -- pedindo o que falta`);
+    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    return true;
+  }
+  if (interpretation.likely_intent === "expense" && (interpretation.amount !== undefined || interpretation.description)) {
+    const missing = missingExpenseParts(interpretation.amount, interpretation.description);
+    if (missing.length === 0) {
+      await createExpenseAndNotify(from, {
+        amount: interpretation.amount!,
+        description: interpretation.description!,
+        date: spDateString(),
+        category: interpretation.category,
+      });
+      return true;
+    }
+    const isHead = addPendingCompletion(from, {
+      intent: "expense",
+      amount: interpretation.amount,
+      description: interpretation.description,
+      category: interpretation.category,
+      missing,
+    });
+    logActivity(from, "unknown", "gasto parcial -- pedindo o que falta");
+    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    return true;
+  }
+  return false;
 }
 
 async function resolvePendingCategorization(from: string, pending: PendingCategorization, answerText: string) {
@@ -998,44 +1272,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     case "expense": {
       // a IA nem sempre preenche descricao/data em mensagens bem curtas ("gastei 60 no mercado")
       const description = interpretation.description?.trim() || interpretation.category;
-      const date = interpretation.date || spDateString();
-      const category =
-        findCategoryByName(from, interpretation.category) ?? findCategoryByKeyword(from, interpretation.category, description);
-
-      if (category) {
-        const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
-        const created = insertExpense({
-          fromNumber: from,
-          amount: interpretation.amount,
-          description,
-          categoryId: category.id,
-          paymentMethodId: paymentMethod?.id ?? null,
-          date,
-        });
-        const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-        setPendingUndo(from, {
-          kind: "delete_expense",
-          expenseId: created.id,
-          description: `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${description}`,
-        });
-        logActivity(from, "expense", `R$${interpretation.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${description}`);
-        const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
-        await sendText(from, `✅ Gasto registrado: R$${interpretation.amount.toFixed(2)} em ${category.name} — ${description}${paymentSuffix}${budgetAlert}`);
-      } else {
-        // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
-        // sai quando chega a vez dele (ver resolvePendingCategorization)
-        const alreadyWaiting = getNextPendingCategorization(from) !== null;
-        addPendingCategorization({
-          from_number: from,
-          amount: interpretation.amount,
-          description,
-          date,
-          suggested_category: interpretation.category ?? null,
-          suggested_payment_method: interpretation.payment_method ?? null,
-        });
-        logActivity(from, "expense", `pendente de categoria: R$${interpretation.amount.toFixed(2)} — ${description}`);
-        if (!alreadyWaiting) await askForCategory(from, interpretation.amount, description);
-      }
+      await createExpenseAndNotify(from, {
+        amount: interpretation.amount,
+        description,
+        date: interpretation.date || spDateString(),
+        category: interpretation.category,
+        payment_method: interpretation.payment_method,
+      });
       break;
     }
     case "correct_category": {
@@ -1080,24 +1323,12 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "event": {
-      // a IA devolve o horario em hora local de Brasilia mas nem sempre com o
-      // offset explicito -03:00; sem isso, o resto do sistema pode tratar como
-      // UTC e adiantar o evento em 3h (ver ensureBrazilOffset em timeSP.ts)
-      const start = ensureBrazilOffset(interpretation.start);
-      const end = interpretation.end ? ensureBrazilOffset(interpretation.end) : undefined;
-      const created = createEvent({
-        fromNumber: from,
+      await createEventAndNotify(from, {
         title: interpretation.title,
-        start,
-        end,
+        start: interpretation.start,
+        end: interpretation.end,
         location: interpretation.location,
       });
-      setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: interpretation.title });
-      logActivity(from, "event", `${interpretation.title} — ${start}`);
-      await sendText(
-        from,
-        `📅 Evento "${interpretation.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`
-      );
       break;
     }
     case "delete_event": {
@@ -1168,11 +1399,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "reminder": {
-      const dueAt = ensureBrazilOffset(interpretation.due_at);
-      const reminderId = createReminder(from, interpretation.message, dueAt);
-      setPendingUndo(from, { kind: "delete_reminder", reminderId, description: interpretation.message });
-      logActivity(from, "reminder", `${interpretation.message} — ${dueAt}`);
-      await sendText(from, `⏰ Lembrete criado: "${interpretation.message}" — vou avisar em ${formatDateTime(dueAt)}`);
+      await createReminderAndNotify(from, { message: interpretation.message, due_at: interpretation.due_at });
       break;
     }
     case "edit_reminder": {
@@ -1791,7 +2018,8 @@ Manda uma dessas mensagens que eu entendo 🙂`
     }
     default: {
       logActivity(from, "unknown", interpretation.description ?? "nao classificado");
-      await sendText(from, unknownFollowUp(interpretation.likely_intent));
+      const started = await maybeStartPendingCompletion(from, interpretation);
+      if (!started) await sendText(from, unknownFollowUp(interpretation.likely_intent));
     }
   }
 }
