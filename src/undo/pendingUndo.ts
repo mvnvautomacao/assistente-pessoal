@@ -6,6 +6,7 @@ const TTL_MS = 10 * 60 * 1000;
 
 export type UndoAction =
   | { kind: "delete_expense"; expenseId: number; description: string }
+  | { kind: "delete_expenses_bulk"; expenseIds: number[]; description: string }
   | {
       kind: "restore_expense";
       expenseId: number;

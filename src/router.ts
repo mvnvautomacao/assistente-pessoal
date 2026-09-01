@@ -6,6 +6,7 @@ import {
   extractCategoryFromAnswer,
   extractDateTimeFromAnswer,
   extractExpenseInfoFromAnswer,
+  extractInstallmentInfoFromAnswer,
   Interpretation,
 } from "./ai/interpret";
 import {
@@ -140,6 +141,19 @@ function formatDateOnly(value: string): string {
 function addOneDayToDateString(dateStr: string): string {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+
+// Soma N meses a uma data-calendario pura (compra parcelada: cada parcela cai
+// no mesmo dia, N meses depois). Se o dia nao existir no mes de destino (ex:
+// dia 31 e o mes seguinte so tem 30), cai no ultimo dia daquele mes em vez de
+// estourar pro mes seguinte (Date.UTC normalizaria "31 de fevereiro" pra
+// marco, o que empurraria a parcela pro mes errado).
+function addMonthsToDateString(dateStr: string, months: number): string {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  const targetMonthIndex = m - 1 + months;
+  const lastDayOfTargetMonth = new Date(Date.UTC(y, targetMonthIndex + 1, 0)).getUTCDate();
+  const day = Math.min(d, lastDayOfTargetMonth);
+  return new Date(Date.UTC(y, targetMonthIndex, day)).toISOString().slice(0, 10);
 }
 
 // "2026-11" -> "novembro de 2026", pro relatorio de agenda de um mes especifico.
@@ -623,10 +637,115 @@ function missingExpenseParts(amount?: number, description?: string): Array<"amou
   return missing;
 }
 
+// "category" nao entra aqui de proposito -- so e descoberta faltando na hora
+// de finalizar (ver finalizeInstallmentExpense), depois que o resto ja foi
+// resolvido, igual acontece com um gasto avulso normal.
+function missingInstallmentParts(
+  totalAmount?: number,
+  installmentAmount?: number,
+  description?: string,
+  installments?: number
+): Array<"amount" | "description" | "installments"> {
+  const missing: Array<"amount" | "description" | "installments"> = [];
+  if (totalAmount === undefined && installmentAmount === undefined) missing.push("amount");
+  if (!description) missing.push("description");
+  if (installments === undefined || installments < 1) missing.push("installments");
+  return missing;
+}
+
+// Calcula o valor de cada parcela. Se o usuario deu o valor de cada parcela
+// direto, so repete (sem erro de arredondamento possivel). Se deu o valor
+// TOTAL, divide igualmente e ajusta a ULTIMA parcela pra absorver a sobra de
+// centavos (mesma logica que a fatura do cartao usa), pra soma bater exato
+// com o total informado.
+function computeInstallmentAmounts(totalAmount: number | undefined, installmentAmount: number | undefined, installments: number): number[] {
+  if (installmentAmount !== undefined) {
+    return Array.from({ length: installments }, () => Math.round(installmentAmount * 100) / 100);
+  }
+  const total = totalAmount ?? 0;
+  const base = Math.round((total / installments) * 100) / 100;
+  const amounts = Array.from({ length: installments }, () => base);
+  const roundedSum = Math.round(base * (installments - 1) * 100) / 100;
+  amounts[installments - 1] = Math.round((total - roundedSum) * 100) / 100;
+  return amounts;
+}
+
+// Cria as N parcelas de verdade (uma por mes, mesmo dia da compra, a partir de
+// 'date'). So cria se a categoria for conhecida -- devolve false sem criar
+// nada se nao for, pra quem chamou decidir se pergunta a categoria (mesma
+// ideia do resto do fluxo de completude). 'forceCategory' e usado quando o
+// nome veio de uma resposta EXPLICITA do usuario a essa pergunta (aí cria a
+// categoria se for nova, igual acontece numa categorizacao manual normal).
+async function finalizeInstallmentExpense(
+  from: string,
+  params: {
+    description: string;
+    category?: string;
+    payment_method?: string;
+    date: string;
+    totalAmount?: number;
+    installmentAmount?: number;
+    installments: number;
+  },
+  options?: { forceCategory?: boolean }
+): Promise<boolean> {
+  const keywordHints = [params.category, params.description].filter((hint): hint is string => Boolean(hint));
+  const category =
+    options?.forceCategory && params.category
+      ? getOrCreateCategory(from, params.category)
+      : (params.category && findCategoryByName(from, params.category)) || findCategoryByKeyword(from, ...keywordHints);
+  if (!category) return false;
+
+  const amounts = computeInstallmentAmounts(params.totalAmount, params.installmentAmount, params.installments);
+  const paymentMethod = resolvePaymentMethod(from, params.payment_method);
+  const expenseIds: number[] = [];
+  for (let i = 0; i < params.installments; i++) {
+    const created = insertExpense({
+      fromNumber: from,
+      amount: amounts[i],
+      description: `${params.description} (parcela ${i + 1}/${params.installments})`,
+      categoryId: category.id,
+      paymentMethodId: paymentMethod?.id ?? null,
+      date: addMonthsToDateString(params.date, i),
+    });
+    expenseIds.push(created.id);
+  }
+
+  const total = amounts.reduce((sum, a) => sum + a, 0);
+  const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+  const lastLabel = amounts[0] !== amounts[params.installments - 1] ? ` (última R$${amounts[params.installments - 1].toFixed(2)})` : "";
+  setPendingUndo(from, {
+    kind: "delete_expenses_bulk",
+    expenseIds,
+    description: `${params.description} parcelado em ${params.installments}x`,
+  });
+  logActivity(
+    from,
+    "installment_expense",
+    `${params.description} — R$${total.toFixed(2)} em ${params.installments}x (${category.name}${paymentSuffix})`
+  );
+  await sendText(
+    from,
+    `✅ Compra parcelada registrada: "${params.description}" — R$${total.toFixed(2)} em ${params.installments}x de R$${amounts[0].toFixed(2)}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
+  );
+  return true;
+}
+
+function installmentCategoryQuestionText(from: string, params: { description?: string; installments?: number; totalAmount?: number; installmentAmount?: number }): string {
+  const categoryNames = listCategories(from)
+    .map((c) => c.name)
+    .join(", ");
+  const total =
+    params.totalAmount ?? (params.installmentAmount !== undefined && params.installments ? params.installmentAmount * params.installments : undefined);
+  const amountLabel = total !== undefined ? `R$${total.toFixed(2)}` : "";
+  const installmentsLabel = params.installments ? ` em ${params.installments}x` : "";
+  return `Qual categoria é essa compra parcelada${amountLabel ? ` de ${amountLabel}` : ""}${installmentsLabel} (${params.description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`;
+}
+
 // Monta a pergunta (ou o "nao entendi, de novo") pro item da vez na fila de
 // completude -- pergunta so o que falta, citando o que ja ficou sabido, pra
 // nao obrigar o usuario a repetir a mensagem toda.
-function pendingCompletionQuestionText(pending: PendingCompletion, retry = false): string {
+function pendingCompletionQuestionText(from: string, pending: PendingCompletion, retry = false): string {
   const prefix = retry ? "Não entendi — " : "Beleza, ";
   if (pending.intent === "event" || pending.intent === "reminder") {
     const label = pending.intent === "event" ? `"${pending.title}"` : `o lembrete "${pending.message}"`;
@@ -635,6 +754,28 @@ function pendingCompletionQuestionText(pending: PendingCompletion, retry = false
     if (missingDate && missingTime) return `${prefix}${label}! Pra quando? Me diga o dia e o horário — ex: "sexta às 15h".`;
     if (missingDate) return `${prefix}${label} às ${pending.time}! Pra que dia?`;
     return `${prefix}${label} pra ${formatDateOnly(pending.date!)}! Que horas?`;
+  }
+  if (pending.intent === "installment_expense") {
+    if (pending.missing.includes("category")) {
+      return retry ? `Não entendi — ${installmentCategoryQuestionText(from, pending)}` : installmentCategoryQuestionText(from, pending);
+    }
+    const missingAmount = pending.missing.includes("amount");
+    const missingDescription = pending.missing.includes("description");
+    const missingInstallments = pending.missing.includes("installments");
+    const asks: string[] = [];
+    if (missingDescription) asks.push("do que foi");
+    if (missingAmount) asks.push("o valor total");
+    if (missingInstallments) asks.push("em quantas vezes");
+    const askText = asks.length > 1 ? `${asks.slice(0, -1).join(", ")} e ${asks[asks.length - 1]}` : asks[0];
+    const label = pending.description ? `"${pending.description}"` : "essa compra parcelada";
+    const amountLabel =
+      pending.totalAmount !== undefined
+        ? ` de R$${pending.totalAmount.toFixed(2)}`
+        : pending.installmentAmount !== undefined
+          ? ` de R$${pending.installmentAmount.toFixed(2)} cada parcela`
+          : "";
+    const installmentsLabel = pending.installments !== undefined ? ` em ${pending.installments}x` : "";
+    return `${prefix}${label}${amountLabel}${installmentsLabel}! Me diga ${askText}.`;
   }
   const missingAmount = pending.missing.includes("amount");
   const missingDescription = pending.missing.includes("description");
@@ -645,7 +786,7 @@ function pendingCompletionQuestionText(pending: PendingCompletion, retry = false
 
 async function askNextPendingCompletionIfAny(from: string) {
   const next = getNextPendingCompletion(from);
-  if (next) await sendText(from, pendingCompletionQuestionText(next));
+  if (next) await sendText(from, pendingCompletionQuestionText(from, next));
 }
 
 // Resposta a "pra quando?"/"quanto foi?" de um evento/lembrete/gasto que veio
@@ -667,7 +808,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
   if (pending.intent === "expense") {
     const extracted = await extractExpenseInfoFromAnswer(answerText);
     if (!extracted) {
-      await sendText(from, pendingCompletionQuestionText(pending, true));
+      await sendText(from, pendingCompletionQuestionText(from, pending, true));
       return;
     }
     const amount = extracted.amount ?? pending.amount;
@@ -680,7 +821,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
         category: pending.category,
         missing: missingExpenseParts(amount, description),
       });
-      await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+      await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
       return;
     }
     clearHeadPendingCompletion(from);
@@ -689,10 +830,96 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
     return;
   }
 
+  if (pending.intent === "installment_expense") {
+    if (pending.missing.includes("category")) {
+      // resposta EXPLICITA a "qual categoria e essa compra parcelada?" -- mesma
+      // heuristica de resolvePendingCategorization (resposta curta = nome direto)
+      const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
+      const categoryName =
+        findCategoryMentionedIn(from, answerText)?.name ?? (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
+      clearHeadPendingCompletion(from);
+      const created = await finalizeInstallmentExpense(
+        from,
+        {
+          description: pending.description!,
+          category: categoryName,
+          payment_method: pending.payment_method,
+          date: pending.date ?? spDateString(),
+          totalAmount: pending.totalAmount,
+          installmentAmount: pending.installmentAmount,
+          installments: pending.installments!,
+        },
+        { forceCategory: true }
+      );
+      if (!created) {
+        await sendText(from, "Deu erro tentando salvar a categoria. Tenta me responder de novo.");
+        return;
+      }
+      await askNextPendingCompletionIfAny(from);
+      return;
+    }
+
+    const extracted = await extractInstallmentInfoFromAnswer(answerText);
+    if (!extracted) {
+      await sendText(from, pendingCompletionQuestionText(from, pending, true));
+      return;
+    }
+    const description = extracted.description?.trim() || pending.description;
+    const installments = extracted.installments ?? pending.installments;
+    // o valor pedido no follow-up e sempre o TOTAL (so perguntamos quando nem
+    // total nem valor por parcela eram conhecidos ainda -- ver missingInstallmentParts)
+    const totalAmount = extracted.amount ?? pending.totalAmount;
+    const installmentAmount = pending.installmentAmount;
+    const missing = missingInstallmentParts(totalAmount, installmentAmount, description, installments);
+    if (missing.length > 0) {
+      updatePendingCompletionHead(from, {
+        intent: "installment_expense",
+        description,
+        category: pending.category,
+        payment_method: pending.payment_method,
+        date: pending.date,
+        totalAmount,
+        installmentAmount,
+        installments,
+        missing,
+      });
+      await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
+      return;
+    }
+
+    clearHeadPendingCompletion(from);
+    const created = await finalizeInstallmentExpense(from, {
+      description: description!,
+      category: pending.category,
+      payment_method: pending.payment_method,
+      date: pending.date ?? spDateString(),
+      totalAmount,
+      installmentAmount,
+      installments: installments!,
+    });
+    if (!created) {
+      const isHead = addPendingCompletion(from, {
+        intent: "installment_expense",
+        description,
+        category: pending.category,
+        payment_method: pending.payment_method,
+        date: pending.date,
+        totalAmount,
+        installmentAmount,
+        installments,
+        missing: ["category"],
+      });
+      if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
+      return;
+    }
+    await askNextPendingCompletionIfAny(from);
+    return;
+  }
+
   // event / reminder
   const extracted = await extractDateTimeFromAnswer(answerText);
   if (!extracted) {
-    await sendText(from, pendingCompletionQuestionText(pending, true));
+    await sendText(from, pendingCompletionQuestionText(from, pending, true));
     return;
   }
   const date = extracted.newDate ?? pending.date;
@@ -709,7 +936,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
         missing: missingDateTimeParts(date, time),
       });
     }
-    await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
     return;
   }
 
@@ -744,7 +971,7 @@ async function maybeStartPendingCompletion(from: string, interpretation: Extract
       missing,
     });
     logActivity(from, "unknown", `evento parcial "${interpretation.title}" -- pedindo o que falta`);
-    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
     return true;
   }
   if (interpretation.likely_intent === "reminder" && interpretation.message) {
@@ -761,7 +988,7 @@ async function maybeStartPendingCompletion(from: string, interpretation: Extract
       missing,
     });
     logActivity(from, "unknown", `lembrete parcial "${interpretation.message}" -- pedindo o que falta`);
-    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
     return true;
   }
   if (interpretation.likely_intent === "expense" && (interpretation.amount !== undefined || interpretation.description)) {
@@ -783,7 +1010,7 @@ async function maybeStartPendingCompletion(from: string, interpretation: Extract
       missing,
     });
     logActivity(from, "unknown", "gasto parcial -- pedindo o que falta");
-    if (isHead) await sendText(from, pendingCompletionQuestionText(getNextPendingCompletion(from)!));
+    if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
     return true;
   }
   return false;
@@ -1279,6 +1506,43 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         category: interpretation.category,
         payment_method: interpretation.payment_method,
       });
+      break;
+    }
+    case "installment_expense": {
+      const missing = missingInstallmentParts(
+        interpretation.total_amount,
+        interpretation.installment_amount,
+        interpretation.description,
+        interpretation.installments
+      );
+      const baseParams = {
+        description: interpretation.description,
+        category: interpretation.category,
+        payment_method: interpretation.payment_method,
+        date: interpretation.date || spDateString(),
+        totalAmount: interpretation.total_amount,
+        installmentAmount: interpretation.installment_amount,
+      };
+      if (missing.length === 0) {
+        const created = await finalizeInstallmentExpense(from, {
+          ...baseParams,
+          description: interpretation.description!,
+          installments: interpretation.installments!,
+        });
+        if (!created) {
+          const isHead = addPendingCompletion(from, {
+            intent: "installment_expense",
+            ...baseParams,
+            installments: interpretation.installments,
+            missing: ["category"],
+          });
+          if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
+        }
+        break;
+      }
+      const isHead = addPendingCompletion(from, { intent: "installment_expense", ...baseParams, installments: interpretation.installments, missing });
+      logActivity(from, "installment_expense", "compra parcelada incompleta -- pedindo o que falta");
+      if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
       break;
     }
     case "correct_category": {
@@ -1908,6 +2172,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           deleteExpense(from, undo.expenseId);
           logActivity(from, "undo", `gasto removido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: gasto de ${undo.description} removido.`);
+          break;
+        case "delete_expenses_bulk":
+          for (const expenseId of undo.expenseIds) deleteExpense(from, expenseId);
+          logActivity(from, "undo", `compra parcelada removida: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz: ${undo.description} removido(a) (${undo.expenseIds.length} parcela(s)).`);
           break;
         case "restore_expense":
           updateExpense(from, undo.expenseId, undo.previous);

@@ -9,7 +9,20 @@ const TTL_MS = 5 * 60 * 1000;
 export type PendingCompletionIntent =
   | { intent: "event"; title?: string; date?: string; time?: string; missing: Array<"date" | "time"> }
   | { intent: "reminder"; message?: string; date?: string; time?: string; missing: Array<"date" | "time"> }
-  | { intent: "expense"; amount?: number; description?: string; category?: string; missing: Array<"amount" | "description"> };
+  | { intent: "expense"; amount?: number; description?: string; category?: string; missing: Array<"amount" | "description"> }
+  | {
+      intent: "installment_expense";
+      description?: string;
+      category?: string;
+      payment_method?: string;
+      date?: string;
+      totalAmount?: number;
+      installmentAmount?: number;
+      installments?: number;
+      // "category" so aparece sozinho aqui, depois que os outros 3 ja foram
+      // resolvidos e a categoria nao deu pra adivinhar (ver finalizeInstallmentExpense)
+      missing: Array<"amount" | "description" | "installments" | "category">;
+    };
 
 export type PendingCompletion = PendingCompletionIntent & { createdAt: number };
 

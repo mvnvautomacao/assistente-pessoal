@@ -11,6 +11,7 @@ import {
   ensureUserSeeded,
   getExpenseById,
   findCategoryByName,
+  searchExpenses,
 } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
@@ -336,6 +337,84 @@ test("unknown (evento parcial): responder 'nao' cancela sem criar nada", async (
   await handleIncomingMessage(evolutionMessage(EVU4, "não, deixa pra lá"));
   assert.match(sent[1].text, /não criei nada/i);
   assert.equal(findUpcomingEvents(EVU4, "dentista").length, 0);
+});
+
+test("compra parcelada: com tudo informado, cria as N parcelas direto, uma por mes, com a soma batendo o total", async (t) => {
+  const IN1 = "551100090301";
+  seed(IN1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "installment_expense", description: "TV", category: "Compras", total_amount: 1000, installments: 3 }]);
+  await handleIncomingMessage(evolutionMessage(IN1, "comprei uma TV de 1000 parcelada em 3x"));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /✅/);
+  assert.match(sent[0].text, /3x/);
+
+  const items = searchExpenses(IN1, "TV");
+  assert.equal(items.length, 3);
+  const total = items.reduce((sum, i) => sum + i.amount, 0);
+  assert.equal(Math.round(total * 100) / 100, 1000);
+  const dates = items.map((i) => i.date.slice(0, 10)).sort();
+  assert.equal(dates[0], today());
+});
+
+test("compra parcelada: sabe o valor e a descricao mas falta quantas vezes -- pergunta e cria ao responder", async (t) => {
+  const IN2 = "551100090302";
+  seed(IN2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "installment_expense", description: "Geladeira", category: "Compras", total_amount: 1500 }]);
+  await handleIncomingMessage(evolutionMessage(IN2, "comprei uma geladeira de 1500 parcelada"));
+  assert.match(sent[0].text, /[Gg]eladeira/);
+  assert.match(sent[0].text, /quantas vezes/i);
+
+  t.mock.method(aiInterpret, "extractInstallmentInfoFromAnswer", async () => ({ installments: 3 }));
+  await handleIncomingMessage(evolutionMessage(IN2, "3 vezes"));
+  const items = searchExpenses(IN2, "Geladeira");
+  assert.equal(items.length, 3);
+  assert.match(sent[1].text, /✅/);
+});
+
+test("compra parcelada: categoria desconhecida pergunta antes de criar, so cria depois de responder", async (t) => {
+  const IN3 = "551100090303";
+  seed(IN3);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "installment_expense", description: "coisa bem estranha", category: "CategoriaBemInventadaXYZ", total_amount: 300, installments: 3 },
+  ]);
+  await handleIncomingMessage(evolutionMessage(IN3, "comprei uma coisa bem estranha de 300 parcelada em 3x"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /[Cc]ategoria/);
+  assert.equal(searchExpenses(IN3, "coisa bem estranha").length, 0);
+
+  await handleIncomingMessage(evolutionMessage(IN3, "Pets"));
+  const items = searchExpenses(IN3, "coisa bem estranha");
+  assert.equal(items.length, 3);
+  assert.match(sent[1].text, /✅/);
+});
+
+test("compra parcelada: valor de CADA parcela informado direto (nao o total) -- cada parcela sai exatamente com esse valor", async (t) => {
+  const IN4 = "551100090304";
+  seed(IN4);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "installment_expense", description: "Notebook", category: "Compras", installment_amount: 250, installments: 4 }]);
+  await handleIncomingMessage(evolutionMessage(IN4, "notebook em 4x de 250"));
+  const items = searchExpenses(IN4, "Notebook");
+  assert.equal(items.length, 4);
+  for (const item of items) assert.equal(item.amount, 250);
+});
+
+test("compra parcelada: undo remove todas as parcelas de uma vez", async (t) => {
+  const IN5 = "551100090305";
+  seed(IN5);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "installment_expense", description: "Sofa", category: "Compras", total_amount: 900, installments: 3 }]);
+  await handleIncomingMessage(evolutionMessage(IN5, "sofa parcelado em 3x de 900"));
+  assert.equal(searchExpenses(IN5, "Sofa").length, 3);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(IN5, "desfaz isso"));
+  assert.equal(searchExpenses(IN5, "Sofa").length, 0);
+  assert.match(sent[1].text, /desfiz/i);
 });
 
 test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consulta de B pelo webhook", async (t) => {
