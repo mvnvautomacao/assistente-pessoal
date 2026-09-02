@@ -376,17 +376,193 @@ export async function interpretText(fromNumber: string, text: string): Promise<I
   return classify(fromNumber, text);
 }
 
-export async function interpretReceiptImage(fromNumber: string, imageBase64: string, mediaType: string): Promise<Interpretation[]> {
-  return classify(fromNumber, [
-    {
-      type: "image",
-      source: { type: "base64", media_type: mediaType as "image/jpeg", data: imageBase64 },
+export type ReceiptReading =
+  | { isReceipt: false }
+  | {
+      isReceipt: true;
+      description: string;
+      date: string;
+      totalAmount?: number;
+      installmentAmount?: number;
+      installments?: number;
+      category?: string;
+      paymentMethod?: string;
+    };
+
+const READ_RECEIPT_TOOL: Anthropic.Tool = {
+  name: "read_receipt",
+  description: "Le uma foto de comprovante/nota fiscal de compra e extrai os dados do gasto.",
+  input_schema: {
+    type: "object",
+    properties: {
+      is_receipt: {
+        type: "boolean",
+        description: "false se a imagem NAO parecer um comprovante/nota fiscal de compra, ou estiver ilegivel a ponto de nao dar pra ler nem o valor.",
+      },
+      description: {
+        type: "string",
+        description: "Nome do estabelecimento ou do que foi a compra, da forma mais literal possivel (ex: 'Posto Ipiranga', 'Supermercado Extra', 'Restaurante do Zé').",
+      },
+      date: {
+        type: "string",
+        description: "Data da compra impressa no comprovante, formato YYYY-MM-DD. Omita se nao conseguir ler nenhuma data -- NAO invente, o sistema assume hoje sozinho nesse caso.",
+      },
+      total_amount: {
+        type: "number",
+        description: "Valor TOTAL da compra (rodape, rotulado 'TOTAL'/'VALOR PAGO'/'VALOR A PAGAR') -- NUNCA some itens manualmente nem pegue o subtotal de um produto especifico. Preencher SO se a compra nao for parcelada, OU se o valor total (nao o de cada parcela) estiver explicito no comprovante.",
+      },
+      installment_amount: {
+        type: "number",
+        description: "Valor de CADA parcela, SE a compra for parcelada e o comprovante mostrar o valor por parcela (comum em comprovante de cartao). Nao preencher junto com 'total_amount' -- se os dois vierem no cupom, prefira preencher so um (o que estiver mais destacado).",
+      },
+      installments: {
+        type: "number",
+        description: "Quantidade de parcelas, SE o comprovante indicar parcelamento (ex: '3X SEM JUROS', 'PARC 01/03' -> 3). Omita se a compra for a vista (nao parcelada) ou nao houver nenhuma indicacao de parcelamento.",
+      },
+      category: {
+        type: "string",
+        description:
+          "Categoria do gasto, inferida pelo tipo de estabelecimento (ex: posto de gasolina -> Veiculo, mercado/supermercado -> Mercado, restaurante/lanchonete -> Alimentacao, farmacia -> Saude). Prefira uma das categorias existentes do usuario quando fizer sentido; se nao tiver como identificar o tipo de estabelecimento com confianca, deixe vazio -- o sistema pergunta ao usuario.",
+      },
+      payment_method: {
+        type: "string",
+        description:
+          "Forma de pagamento, SO se estiver impressa e legivel no comprovante (ex: 'CARTAO DEBITO', 'PIX', 'DINHEIRO'). NUNCA suponha -- se nao vier impressa ou nao der pra ler com confianca, deixe vazio, o sistema pergunta ao usuario.",
+      },
     },
-    {
-      type: "text",
-      text: "Essa imagem e um comprovante/nota de um gasto. Extraia o valor total, categoria e descricao.",
+    required: ["is_receipt"],
+  },
+};
+
+// Le uma foto de comprovante/nota fiscal (tool/schema dedicado, mais focado e
+// mais barato que reaproveitar o classificador generico de 26 acoes). O
+// resultado NUNCA e aplicado direto -- o router sempre monta uma confirmacao
+// antes de registrar (foto erra mais que texto digitado), preenchendo so o
+// que faltar (categoria/forma de pagamento) antes de mostrar o resumo final.
+export async function interpretReceiptImage(fromNumber: string, imageBase64: string, mediaType: string): Promise<ReceiptReading> {
+  const categoryNames = listCategories(fromNumber)
+    .map((c) => c.name)
+    .join(", ");
+  const paymentMethodNames = listPaymentMethods(fromNumber)
+    .map((p) => p.name)
+    .join(", ");
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 500,
+    system: `Voce le fotos de comprovante/nota fiscal de compra pra um assistente financeiro pessoal. Categorias de gasto ja existentes desse usuario: ${categoryNames}. Formas de pagamento ja existentes: ${paymentMethodNames}. Sempre chame a ferramenta read_receipt com o resultado.`,
+    tools: [READ_RECEIPT_TOOL],
+    tool_choice: { type: "tool", name: "read_receipt" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType as "image/jpeg", data: imageBase64 } },
+          { type: "text", text: "Essa imagem e um comprovante/nota fiscal de compra. Extraia os dados do gasto." },
+        ],
+      },
+    ],
+  });
+
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse || toolUse.type !== "tool_use") return { isReceipt: false };
+
+  const input = toolUse.input as {
+    is_receipt?: boolean;
+    description?: string;
+    date?: string;
+    total_amount?: number;
+    installment_amount?: number;
+    installments?: number;
+    category?: string;
+    payment_method?: string;
+  };
+  if (!input.is_receipt || (input.total_amount === undefined && input.installment_amount === undefined)) {
+    return { isReceipt: false };
+  }
+
+  return {
+    isReceipt: true,
+    description: input.description?.trim() || "Compra",
+    date: input.date?.trim() || spDateStringForReceipt(),
+    totalAmount: typeof input.total_amount === "number" ? input.total_amount : undefined,
+    installmentAmount: typeof input.installment_amount === "number" ? input.installment_amount : undefined,
+    installments: typeof input.installments === "number" && input.installments > 1 ? input.installments : undefined,
+    category: input.category?.trim() || undefined,
+    paymentMethod: input.payment_method?.trim() || undefined,
+  };
+}
+
+// mesma formatacao de spDateString (src/timeSP.ts), reimplementada aqui pra
+// nao criar um ciclo de import entre timeSP.ts e interpret.ts so por isso
+function spDateStringForReceipt(): string {
+  return spNowFormatter.format(new Date()).slice(0, 10);
+}
+
+const EXTRACT_RECEIPT_CORRECTION_TOOL: Anthropic.Tool = {
+  name: "extract_receipt_correction",
+  description: "Extrai os campos que o usuario quis corrigir numa resposta livre ao resumo de um gasto lido de foto de comprovante.",
+  input_schema: {
+    type: "object",
+    properties: {
+      amount: { type: "number", description: "Novo valor TOTAL em reais, SO se a mensagem corrigiu o valor. Omita se nao mencionou valor." },
+      description: { type: "string", description: "Nova descricao/estabelecimento, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
+      category: { type: "string", description: "Nova categoria, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
+      payment_method: { type: "string", description: "Nova forma de pagamento, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
+      date: { type: "string", description: "Nova data (YYYY-MM-DD), SO se a mensagem corrigiu isso. Omita se nao mencionou." },
+      installments: { type: "number", description: "Nova quantidade de parcelas, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
     },
-  ]);
+    required: [],
+  },
+};
+
+// Usado quando o usuario responde ao resumo "li assim: ... confirma?" com uma
+// correcao em texto livre (ex: "nao, foi no debito") em vez de "sim"/"nao" --
+// mesma ideia de extractExpenseInfoFromAnswer, mas cobrindo todos os campos
+// possiveis de um gasto lido de imagem.
+export async function extractReceiptCorrectionFromAnswer(answerText: string): Promise<{
+  amount?: number;
+  description?: string;
+  category?: string;
+  paymentMethod?: string;
+  date?: string;
+  installments?: number;
+} | null> {
+  const now = spNowFormatter.format(new Date()).replace(" ", "T");
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 200,
+    system: `Data/hora atual: ${now}-03:00, horario de Brasilia. Extraia SO os campos que a mensagem do usuario corrigiu explicitamente sobre um gasto (valor, descricao, categoria, forma de pagamento, data, quantidade de parcelas). Deixe de fora qualquer campo que a mensagem nao mencionou.`,
+    tools: [EXTRACT_RECEIPT_CORRECTION_TOOL],
+    tool_choice: { type: "tool", name: "extract_receipt_correction" },
+    messages: [{ role: "user", content: answerText }],
+  });
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse || toolUse.type !== "tool_use") return null;
+  const input = toolUse.input as {
+    amount?: number;
+    description?: string;
+    category?: string;
+    payment_method?: string;
+    date?: string;
+    installments?: number;
+  };
+  const amount = typeof input.amount === "number" ? input.amount : undefined;
+  const description = input.description?.trim() || undefined;
+  const category = input.category?.trim() || undefined;
+  const paymentMethod = input.payment_method?.trim() || undefined;
+  const date = input.date?.trim() || undefined;
+  const installments = typeof input.installments === "number" ? input.installments : undefined;
+  if (
+    amount === undefined &&
+    description === undefined &&
+    category === undefined &&
+    paymentMethod === undefined &&
+    date === undefined &&
+    installments === undefined
+  ) {
+    return null;
+  }
+  return { amount, description, category, paymentMethod, date, installments };
 }
 
 const EXTRACT_CATEGORY_TOOL: Anthropic.Tool = {

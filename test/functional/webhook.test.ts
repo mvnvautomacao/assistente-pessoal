@@ -32,6 +32,17 @@ function evolutionMessage(from: string, text: string) {
   };
 }
 
+// base64 inline no payload (mesmo formato que resolveMediaBase64 aceita direto,
+// sem precisar buscar via getBase64FromMediaMessage) -- conteudo fake, ja que
+// quem "le" a imagem nos testes e sempre o mock de interpretReceiptImage.
+function evolutionImageMessage(from: string, mimetype = "image/jpeg") {
+  return {
+    key: { remoteJid: `${from}@s.whatsapp.net`, id: `test-${Math.random().toString(36).slice(2)}`, fromMe: false },
+    messageType: "imageMessage" as const,
+    message: { imageMessage: { mimetype }, base64: "ZmFrZS1pbWFnZS1kYXRh" },
+  };
+}
+
 // Mocka a IA (nunca chama a Anthropic de verdade nos testes) e o envio real de
 // WhatsApp (nunca manda mensagem de verdade). `queueReply` enfileira a proxima
 // resposta que a IA "daria"; cada chamada a interpretText consome uma da fila
@@ -415,6 +426,146 @@ test("compra parcelada: undo remove todas as parcelas de uma vez", async (t) => 
   await handleIncomingMessage(evolutionMessage(IN5, "desfaz isso"));
   assert.equal(searchExpenses(IN5, "Sofa").length, 0);
   assert.match(sent[1].text, /desfiz/i);
+});
+
+test("imagem de comprovante: leitura completa mostra resumo, confirma com 'sim' e registra", async (t) => {
+  const RC1 = "551100090401";
+  seed(RC1);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Posto Ipiranga",
+    date: "2026-09-01",
+    totalAmount: 150,
+    category: "Veículo",
+    paymentMethod: "Pix",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC1));
+  assert.match(sent[0].text, /Li assim/);
+  assert.match(sent[0].text, /150/);
+  assert.equal(searchExpenses(RC1, "Posto Ipiranga").length, 0);
+
+  await handleIncomingMessage(evolutionMessage(RC1, "sim"));
+  const items = searchExpenses(RC1, "Posto Ipiranga");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].amount, 150);
+  assert.match(sent[1].text, /✅/);
+});
+
+test("imagem de comprovante: categoria nao identificada pergunta antes de confirmar", async (t) => {
+  const RC2 = "551100090402";
+  seed(RC2);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Loja XPTO Bem Estranha",
+    date: "2026-09-01",
+    totalAmount: 80,
+    paymentMethod: "Débito",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC2));
+  assert.match(sent[0].text, /[Cc]ategoria/);
+
+  await handleIncomingMessage(evolutionMessage(RC2, "Compras"));
+  assert.match(sent[1].text, /Li assim/);
+
+  await handleIncomingMessage(evolutionMessage(RC2, "sim"));
+  assert.equal(searchExpenses(RC2, "Loja XPTO Bem Estranha").length, 1);
+});
+
+test("imagem de comprovante: forma de pagamento nao identificada pergunta antes de confirmar", async (t) => {
+  const RC3 = "551100090403";
+  seed(RC3);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Restaurante do Zé",
+    date: "2026-09-01",
+    totalAmount: 60,
+    category: "Mercado",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC3));
+  assert.match(sent[0].text, /forma de pagamento/i);
+
+  await handleIncomingMessage(evolutionMessage(RC3, "no débito"));
+  assert.match(sent[1].text, /Li assim/);
+  assert.match(sent[1].text, /débito/i);
+
+  await handleIncomingMessage(evolutionMessage(RC3, "sim"));
+  assert.equal(searchExpenses(RC3, "Restaurante do Zé").length, 1);
+});
+
+test("imagem de comprovante: responder 'nao' cancela sem registrar nada", async (t) => {
+  const RC4 = "551100090404";
+  seed(RC4);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Farmacia Central",
+    date: "2026-09-01",
+    totalAmount: 35.9,
+    category: "Saúde",
+    paymentMethod: "Dinheiro",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC4));
+  await handleIncomingMessage(evolutionMessage(RC4, "não"));
+  assert.match(sent[1].text, /não registrei nada/i);
+  assert.equal(searchExpenses(RC4, "Farmacia Central").length, 0);
+});
+
+test("imagem de comprovante: correcao em texto livre antes de confirmar ajusta o valor lido", async (t) => {
+  const RC5 = "551100090405";
+  seed(RC5);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Supermercado Extra",
+    date: "2026-09-01",
+    totalAmount: 100,
+    category: "Mercado",
+    paymentMethod: "Pix",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC5));
+
+  t.mock.method(aiInterpret, "extractReceiptCorrectionFromAnswer", async () => ({ amount: 120 }));
+  await handleIncomingMessage(evolutionMessage(RC5, "na verdade foi 120"));
+  assert.match(sent[1].text, /120/);
+
+  await handleIncomingMessage(evolutionMessage(RC5, "sim"));
+  const items = searchExpenses(RC5, "Supermercado Extra");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].amount, 120);
+});
+
+test("imagem de comprovante: parcelamento detectado no cupom cria as N parcelas ao confirmar", async (t) => {
+  const RC6 = "551100090406";
+  seed(RC6);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Loja de Eletronicos",
+    date: "2026-09-01",
+    installmentAmount: 200,
+    installments: 3,
+    category: "Compras",
+    paymentMethod: "Cartão de crédito",
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC6));
+  assert.match(sent[0].text, /3x/);
+
+  await handleIncomingMessage(evolutionMessage(RC6, "sim"));
+  const items = searchExpenses(RC6, "Loja de Eletronicos");
+  assert.equal(items.length, 3);
+  for (const item of items) assert.equal(item.amount, 200);
+});
+
+test("imagem de comprovante: imagem que nao parece nota fiscal nao registra nada", async (t) => {
+  const RC7 = "551100090407";
+  seed(RC7);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({ isReceipt: false }));
+  await handleIncomingMessage(evolutionImageMessage(RC7));
+  assert.match(sent[0].text, /[Nn]ão consegui ler/);
 });
 
 test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consulta de B pelo webhook", async (t) => {

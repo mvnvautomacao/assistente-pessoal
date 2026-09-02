@@ -7,7 +7,9 @@ import {
   extractDateTimeFromAnswer,
   extractExpenseInfoFromAnswer,
   extractInstallmentInfoFromAnswer,
+  extractReceiptCorrectionFromAnswer,
   Interpretation,
+  ReceiptReading,
 } from "./ai/interpret";
 import {
   createEvent,
@@ -85,6 +87,12 @@ import {
   clearHeadPendingCompletion,
   PendingCompletion,
 } from "./completion/pendingCompletion";
+import {
+  setPendingReceiptConfirmation,
+  getPendingReceiptConfirmation,
+  clearPendingReceiptConfirmation,
+  PendingReceiptConfirmation,
+} from "./completion/pendingReceiptConfirmation";
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
@@ -501,19 +509,28 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       await resolveRemoveRecurringConfirmation(from, pendingRemoveRecurring, text);
       return;
     }
+
+    const pendingReceipt = getPendingReceiptConfirmation(from);
+    if (pendingReceipt) {
+      await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
+      return;
+    }
   }
 
-  let interpretations: Interpretation[];
-  if (text !== undefined) {
-    interpretations = await interpretText(from, text);
-  } else if (data.messageType === "imageMessage") {
+  if (data.messageType === "imageMessage") {
     const imageBase64 = await resolveMediaBase64(data);
     if (!imageBase64) {
       await sendText(from, "Não consegui baixar essa imagem. Tenta mandar de novo?");
       return;
     }
     const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
-    interpretations = await interpretReceiptImage(from, imageBase64, mimeType);
+    await handleReceiptImage(from, imageBase64, mimeType);
+    return;
+  }
+
+  let interpretations: Interpretation[];
+  if (text !== undefined) {
+    interpretations = await interpretText(from, text);
   } else {
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;
@@ -740,6 +757,207 @@ function installmentCategoryQuestionText(from: string, params: { description?: s
   const amountLabel = total !== undefined ? `R$${total.toFixed(2)}` : "";
   const installmentsLabel = params.installments ? ` em ${params.installments}x` : "";
   return `Qual categoria é essa compra parcelada${amountLabel ? ` de ${amountLabel}` : ""}${installmentsLabel} (${params.description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`;
+}
+
+// Campos comuns a um gasto lido de foto de comprovante (sem o estado de
+// controle da pendencia -- 'awaiting'/'createdAt'). PendingReceiptConfirmation
+// satisfaz esse formato naturalmente (tipagem estrutural), entao as funcoes
+// abaixo aceitam tanto o pending inteiro quanto um objeto mais simples.
+type ReceiptFields = {
+  description: string;
+  date: string;
+  totalAmount?: number;
+  installmentAmount?: number;
+  installments?: number;
+  category?: string;
+  paymentMethod?: string;
+};
+
+function receiptAmountLabel(fields: ReceiptFields): string {
+  if (fields.installments && fields.installments > 1) {
+    if (fields.installmentAmount !== undefined) {
+      const total = fields.installmentAmount * fields.installments;
+      return `R$${total.toFixed(2)} em ${fields.installments}x de R$${fields.installmentAmount.toFixed(2)}`;
+    }
+    if (fields.totalAmount !== undefined) {
+      const perInstallment = fields.totalAmount / fields.installments;
+      return `R$${fields.totalAmount.toFixed(2)} em ${fields.installments}x de R$${perInstallment.toFixed(2)}`;
+    }
+  }
+  if (fields.totalAmount !== undefined) return `R$${fields.totalAmount.toFixed(2)}`;
+  if (fields.installmentAmount !== undefined) return `R$${fields.installmentAmount.toFixed(2)}`;
+  return "";
+}
+
+function receiptCategoryQuestionText(from: string, fields: ReceiptFields): string {
+  const categoryNames = listCategories(from)
+    .map((c) => c.name)
+    .join(", ");
+  const amountLabel = receiptAmountLabel(fields);
+  return `📷 Não identifiquei a categoria dessa compra${amountLabel ? ` de ${amountLabel}` : ""} (${fields.description}). Qual categoria é?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`;
+}
+
+function receiptPaymentMethodQuestionText(fields: ReceiptFields): string {
+  const amountLabel = receiptAmountLabel(fields);
+  return `📷 Não consegui ler a forma de pagamento no comprovante${amountLabel ? ` (${amountLabel}, ${fields.description})` : ""}. Foi no Pix, débito, crédito, dinheiro...?`;
+}
+
+function receiptConfirmationSummaryText(fields: ReceiptFields, retry = false): string {
+  const amountLabel = receiptAmountLabel(fields);
+  const paymentLabel = fields.paymentMethod ? `, no ${fields.paymentMethod}` : "";
+  const prefix = retry ? "Não entendi — confirma assim: " : "📷 Li assim: ";
+  return `${prefix}${amountLabel} em ${fields.description} (${fields.category}${paymentLabel}), dia ${formatDateOnly(fields.date)}. Confirma? Responde "sim"/"não", ou me diga o que corrigir.`;
+}
+
+// Registra de verdade um gasto lido de foto de comprovante, ja confirmado --
+// reaproveita createExpenseAndNotify/finalizeInstallmentExpense (undo, alerta
+// de orcamento e mensagem de confirmacao ja vem de graca dali).
+async function finalizeReceiptExpense(from: string, pending: PendingReceiptConfirmation) {
+  if (pending.installments && pending.installments > 1) {
+    await finalizeInstallmentExpense(from, {
+      description: pending.description,
+      category: pending.category,
+      payment_method: pending.paymentMethod,
+      date: pending.date,
+      totalAmount: pending.totalAmount,
+      installmentAmount: pending.installmentAmount,
+      installments: pending.installments,
+    });
+    return;
+  }
+  await createExpenseAndNotify(from, {
+    amount: (pending.totalAmount ?? pending.installmentAmount)!,
+    description: pending.description,
+    date: pending.date,
+    category: pending.category,
+    payment_method: pending.paymentMethod,
+  });
+}
+
+// Le a foto de comprovante e monta a pendencia de confirmacao -- SEMPRE passa
+// por confirmacao antes de registrar (foto erra mais que texto digitado),
+// perguntando antes disso categoria e/ou forma de pagamento se nao vieram
+// legiveis/identificaveis na imagem.
+async function handleReceiptImage(from: string, imageBase64: string, mimeType: string) {
+  const reading = await interpretReceiptImage(from, imageBase64, mimeType);
+  if (!reading.isReceipt) {
+    logActivity(from, "receipt", "imagem nao reconhecida como comprovante de compra");
+    await sendText(
+      from,
+      'Não consegui ler essa foto como nota fiscal/comprovante. Pode reenviar mais nítida, ou digitar o gasto (ex: "50 no mercado")?'
+    );
+    return;
+  }
+
+  const keywordHints = [reading.category, reading.description].filter((hint): hint is string => Boolean(hint));
+  const resolvedCategory = (reading.category && findCategoryByName(from, reading.category)) || findCategoryByKeyword(from, ...keywordHints);
+
+  const base: ReceiptFields = {
+    description: reading.description,
+    date: reading.date,
+    totalAmount: reading.totalAmount,
+    installmentAmount: reading.installmentAmount,
+    installments: reading.installments,
+    category: resolvedCategory?.name,
+    paymentMethod: reading.paymentMethod,
+  };
+
+  if (!base.category) {
+    setPendingReceiptConfirmation(from, { ...base, awaiting: "category" });
+    logActivity(from, "receipt", `lido da imagem, categoria desconhecida -- pedindo (${base.description})`);
+    await sendText(from, receiptCategoryQuestionText(from, base));
+    return;
+  }
+  if (!base.paymentMethod) {
+    setPendingReceiptConfirmation(from, { ...base, awaiting: "payment_method" });
+    logActivity(from, "receipt", `lido da imagem, forma de pagamento desconhecida -- pedindo (${base.description})`);
+    await sendText(from, receiptPaymentMethodQuestionText(base));
+    return;
+  }
+  setPendingReceiptConfirmation(from, { ...base, awaiting: "confirm" });
+  logActivity(from, "receipt", `lido da imagem, pedindo confirmacao (${base.description})`);
+  await sendText(from, receiptConfirmationSummaryText(base));
+}
+
+// Resposta a pergunta de categoria/forma de pagamento/confirmacao de um gasto
+// lido de foto de comprovante. Cada etapa resolvida avanca pra proxima ate
+// chegar em "confirm"; so registra de verdade com um "sim" claro no fim.
+async function resolvePendingReceiptConfirmation(from: string, pending: PendingReceiptConfirmation, answerText: string) {
+  if (pending.awaiting === "category") {
+    const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
+    const categoryName =
+      findCategoryMentionedIn(from, answerText)?.name ?? (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
+    const category = getOrCreateCategory(from, categoryName);
+    const updated: PendingReceiptConfirmation = { ...pending, category: category.name };
+    if (!updated.paymentMethod) {
+      updated.awaiting = "payment_method";
+      setPendingReceiptConfirmation(from, updated);
+      logActivity(from, "receipt", `categoria definida (${category.name}), forma de pagamento ainda desconhecida`);
+      await sendText(from, receiptPaymentMethodQuestionText(updated));
+      return;
+    }
+    updated.awaiting = "confirm";
+    setPendingReceiptConfirmation(from, updated);
+    logActivity(from, "receipt", `categoria definida (${category.name}), pedindo confirmacao`);
+    await sendText(from, receiptConfirmationSummaryText(updated));
+    return;
+  }
+
+  if (pending.awaiting === "payment_method") {
+    const normalized = answerText.trim().toLowerCase();
+    const skip = /^(n[aã]o sei|nao sei|sei l[aá]|deixa|pula|n[aã]o lembro)\b/.test(normalized);
+    const updated: PendingReceiptConfirmation = { ...pending, paymentMethod: skip ? undefined : answerText.trim(), awaiting: "confirm" };
+    setPendingReceiptConfirmation(from, updated);
+    logActivity(from, "receipt", "forma de pagamento resolvida, pedindo confirmacao");
+    await sendText(from, receiptConfirmationSummaryText(updated));
+    return;
+  }
+
+  // awaiting === "confirm"
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (yes) {
+    clearPendingReceiptConfirmation(from);
+    logActivity(from, "receipt", `confirmado (${pending.description})`);
+    await finalizeReceiptExpense(from, pending);
+    return;
+  }
+  if (no) {
+    clearPendingReceiptConfirmation(from);
+    logActivity(from, "receipt", "gasto lido da imagem nao confirmado");
+    await sendText(from, "Beleza, não registrei nada.");
+    return;
+  }
+
+  const correction = await extractReceiptCorrectionFromAnswer(answerText);
+  if (!correction) {
+    await sendText(from, receiptConfirmationSummaryText(pending, true));
+    return;
+  }
+  const updated: PendingReceiptConfirmation = {
+    ...pending,
+    description: correction.description ?? pending.description,
+    date: correction.date ?? pending.date,
+    installments: correction.installments ?? pending.installments,
+  };
+  if (correction.amount !== undefined) {
+    // corrige sempre como valor TOTAL (mesma convencao do resto do fluxo de
+    // parcelamento) -- se nao for mais parcelado, vira o valor avulso normal
+    updated.totalAmount = correction.amount;
+    updated.installmentAmount = undefined;
+  }
+  if (correction.category) {
+    const category = getOrCreateCategory(from, correction.category);
+    updated.category = category.name;
+  }
+  if (correction.paymentMethod) {
+    updated.paymentMethod = correction.paymentMethod;
+  }
+  setPendingReceiptConfirmation(from, updated);
+  logActivity(from, "receipt", "ajustado antes de confirmar");
+  await sendText(from, receiptConfirmationSummaryText(updated));
 }
 
 // Monta a pergunta (ou o "nao entendi, de novo") pro item da vez na fila de
