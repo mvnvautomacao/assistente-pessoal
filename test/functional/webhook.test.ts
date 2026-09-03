@@ -568,6 +568,24 @@ test("imagem de comprovante: imagem que nao parece nota fiscal nao registra nada
   assert.match(sent[0].text, /[Nn]ão consegui ler/);
 });
 
+// Regressao: relatado em producao -- foto enviada, numero liberado, mas SEM
+// resposta nenhuma e SEM linha no /admin. Causa: um erro dentro do
+// processamento de imagem (ex: falha na chamada da IA) nao tinha try/catch
+// proprio, entao era engolido em silencio pelo .catch() do webhook.ts (so
+// aparecia no console do servidor). Agora tem que sempre responder algo e
+// registrar em logActivity, mesmo quando a leitura da imagem falha.
+test("imagem de comprovante: erro na leitura da imagem responde algo pro usuario, nao fica em silencio", async (t) => {
+  const RC8 = "551100090408";
+  seed(RC8);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => {
+    throw new Error("falha simulada na chamada da IA");
+  });
+  await handleIncomingMessage(evolutionImageMessage(RC8));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /[Dd]eu erro/);
+});
+
 test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consulta de B pelo webhook", async (t) => {
   const cat = getOrCreateCategory(A, "SoDeA-webhook");
   insertExpense({ fromNumber: A, amount: 999, description: "nao pode vazar pra B", categoryId: cat.id, paymentMethodId: null, date: today() });

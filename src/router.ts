@@ -512,19 +512,36 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
     const pendingReceipt = getPendingReceiptConfirmation(from);
     if (pendingReceipt) {
-      await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
+      try {
+        await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
+      } catch (err) {
+        console.error("Erro ao resolver confirmacao de comprovante:", err);
+        logActivity(from, "error", err instanceof Error ? err.message : String(err));
+        await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+      }
       return;
     }
   }
 
   if (data.messageType === "imageMessage") {
-    const imageBase64 = await resolveMediaBase64(data);
-    if (!imageBase64) {
-      await sendText(from, "Não consegui baixar essa imagem. Tenta mandar de novo?");
-      return;
+    try {
+      const imageBase64 = await resolveMediaBase64(data);
+      if (!imageBase64) {
+        await sendText(from, "Não consegui baixar essa imagem. Tenta mandar de novo?");
+        return;
+      }
+      const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
+      await handleReceiptImage(from, imageBase64, mimeType);
+    } catch (err) {
+      // sem isso, um erro aqui (ex: falha na chamada da IA, imagem corrompida)
+      // era engolido em silencio pelo .catch() do webhook.ts -- nunca aparecia
+      // no /admin nem virava resposta pro usuario, so um log no console do
+      // servidor (inacessivel sem entrar no container). Ver relato em producao:
+      // foto enviada, numero liberado, mas SEM resposta e SEM linha no /admin.
+      console.error("Erro ao processar imagem de comprovante:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando ler essa imagem. Tenta de novo em instantes.");
     }
-    const mimeType = data.message?.imageMessage?.mimetype ?? "image/jpeg";
-    await handleReceiptImage(from, imageBase64, mimeType);
     return;
   }
 
