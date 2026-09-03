@@ -403,8 +403,14 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
   // Freio de emergencia: numero ja autorizado mandando mensagens rapido demais
   // (loop de outro tipo, script travado etc) tambem pausa, pra nunca gastar API
-  // sem limite. Ver rateLimit.ts.
-  if (isRateLimited(from)) return;
+  // sem limite. Ver rateLimit.ts. Enquanto o cooldown de 30 min estiver ativo,
+  // toda mensagem cai aqui e sai em silencio -- sem isso, um numero preso em
+  // cooldown parecia bug ("mandei e nao aconteceu nada") sem nenhum rastro no
+  // /admin pra saber o motivo.
+  if (isRateLimited(from)) {
+    logActivity(from, "rate_limited", "mensagem ignorada -- ainda dentro do cooldown de 30 min");
+    return;
+  }
   if (recordMessageAndCheckLimit(from)) {
     logActivity(from, "rate_limited", "mais de 20 mensagens em 5 min -- pausado por 30 min");
     await sendText(from, "Você mandou muitas mensagens muito rápido. Vou pausar por 30 min pra não sobrecarregar. Se não foi você, pode ignorar.").catch(
@@ -425,6 +431,16 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   if (isNewUser) {
     logActivity(from, "welcome", "primeira mensagem desse numero");
     await sendText(from, WELCOME_MESSAGE);
+  }
+
+  // Log so pra tipos que nao sao texto puro -- imagem, audio, ou qualquer tipo
+  // novo que a Evolution API venha a mandar. Mensagem de texto normal ja
+  // sempre gera um log significativo mais na frente (expense/event/unknown/
+  // error...); esses tipos aqui sao justamente os que podiam passar batido
+  // sem deixar NENHUM rastro no /admin se algo desse errado antes de chegar
+  // no proprio processamento (ex: imagem que nem cai em nenhum branch tratado).
+  if (data.messageType !== "conversation" && data.messageType !== "extendedTextMessage") {
+    logActivity(from, "received", `messageType=${data.messageType}`);
   }
 
   let text: string | undefined;
@@ -549,6 +565,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   if (text !== undefined) {
     interpretations = await interpretText(from, text);
   } else {
+    logActivity(from, "unsupported_type", `messageType=${data.messageType}`);
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
     return;
   }

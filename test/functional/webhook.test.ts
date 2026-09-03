@@ -16,7 +16,7 @@ import {
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
 import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
-import { getRecentBlockedAttempts } from "../../src/activity/service";
+import { getRecentBlockedAttempts, getRecentActivity } from "../../src/activity/service";
 import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
@@ -910,6 +910,14 @@ test("rate limit: mais de 20 mensagens em 5 min pausa o numero, avisa ele uma ve
   queueReply([{ type: "help" }]);
   await handleIncomingMessage(evolutionMessage(RL, "mensagem durante o cooldown"));
   assert.equal(sent.length, 2); // nao aumentou
+
+  // Regressao: relatado em producao -- numero preso em cooldown por engano
+  // parecia bug silencioso, sem NENHUM rastro no /admin de que a mensagem
+  // tinha sido recebida e ignorada por causa do rate limit.
+  const loggedDuringCooldown = getRecentActivity(200).find(
+    (entry) => entry.from_number === RL && entry.type === "rate_limited" && entry.summary.includes("cooldown")
+  );
+  assert.ok(loggedDuringCooldown, "mensagem ignorada durante o cooldown devia deixar rastro no /admin");
 });
 
 // Regressao de um bug real relatado em producao: "atender carol as quinze horas"
