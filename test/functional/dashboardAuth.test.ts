@@ -1,6 +1,6 @@
 import { test, TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { startDashboardTestServer, startAdminTestServer } from "../helpers/app";
+import { startDashboardTestServer, startAdminTestServer, startFullAppTestServer } from "../helpers/app";
 import * as whatsappClient from "../../src/whatsapp/client";
 import { allowNumber } from "../../src/access/allowlist";
 import { upsertDashboardPassword } from "../../src/dashboard/accounts";
@@ -169,5 +169,24 @@ test("admin: reset de senha ignora o limite de 1h que vale pro autoatendimento",
     assert.equal(sent[1].to, PHONE);
   } finally {
     await adminServer.close();
+  }
+});
+
+// Regressao: em producao, /dashboard sem sessao nenhuma mostrava a tela de
+// LOGIN DO ADMIN em vez da tela de login do dashboard. Causa: adminRouter.use
+// (fn) sem path aplicava a TODA rota que passasse por esse router (nao so
+// /admin), e como adminRouter e montado antes de dashboardRouter em index.ts,
+// ele barrava /dashboard antes mesmo do dashboardRouter rodar. So aparecia
+// mascarado se o navegador ja tivesse uma sessao de admin valida de outro
+// teste manual (por isso os testes com um router de cada vez nunca pegaram).
+test("REGRESSAO: /dashboard sem sessao mostra o login do DASHBOARD, nao o do admin, mesmo com o adminRouter montado junto", async () => {
+  const server = await startFullAppTestServer();
+  try {
+    const res = await fetch(`${server.baseUrl}/dashboard`);
+    const html = await res.text();
+    assert.ok(html.includes("Entre com o número de WhatsApp"), "devia mostrar o login do dashboard");
+    assert.ok(!html.includes('action="/admin/login"'), "nao pode mostrar o login do admin aqui");
+  } finally {
+    await server.close();
   }
 });

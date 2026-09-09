@@ -47,3 +47,26 @@ export async function startAdminTestServer() {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
+
+// Monta os dois roteadores juntos, na MESMA ordem de src/index.ts
+// (adminRouter antes de dashboardRouter) -- os dois testes acima, sozinhos,
+// nunca teriam pegado a regressao real de producao onde um middleware do
+// admin (adminRouter.use(fn) sem path) interceptava QUALQUER rota que
+// passasse por ele, inclusive /dashboard, porque cada helper so montava um
+// router de cada vez.
+export async function startFullAppTestServer() {
+  const app = express();
+  app.use(cookieParser());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(adminRouter);
+  app.use(dashboardRouter);
+
+  const server = app.listen(0);
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const { port } = server.address() as AddressInfo;
+
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}

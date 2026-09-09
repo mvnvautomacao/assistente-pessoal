@@ -96,7 +96,10 @@ function requireAdminSession(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-adminRouter.use(requireAdminSession);
+// IMPORTANTE: com path -- adminRouter e montado na raiz do app (nao com um
+// prefixo "/admin"), entao um .use(fn) SEM path aqui interceptaria QUALQUER
+// rota que passasse por esse router (ex: /dashboard), nao so as de admin.
+adminRouter.use("/admin", requireAdminSession);
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);

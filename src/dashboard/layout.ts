@@ -40,11 +40,29 @@ const STYLE = `
       var(--bg);
     color: var(--text);
     margin: 0;
-    padding: 32px 24px 72px;
+    padding: 0 0 72px;
     -webkit-font-smoothing: antialiased;
   }
   a { color: inherit; }
-  .wrap { max-width: 1080px; margin: 0 auto; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 24px 0; }
+
+  .topbar {
+    background: var(--card); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .topbar-inner {
+    width: 100%; max-width: 1080px; margin: 0 auto; padding: 12px 24px;
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap; box-sizing: border-box;
+  }
+  .topbar .brand { font-weight: 800; font-size: 1.02rem; white-space: nowrap; flex: none; order: 1; }
+  .topbar nav.tabs { flex: 1; margin-bottom: 0; min-width: 0; order: 2; }
+  .topbar-user { display: flex; align-items: center; gap: 14px; flex: none; margin-left: auto; order: 3; }
+  .topbar-user .user-phone { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .topbar-user form { margin: 0; }
+  .topbar-user button {
+    all: unset; font-size: 0.8rem; color: var(--muted); cursor: pointer; font-weight: 600;
+  }
+  .topbar-user button:hover { color: var(--accent); }
 
   nav.tabs {
     display: flex; gap: 8px; margin-bottom: 28px;
@@ -54,7 +72,7 @@ const STYLE = `
   nav.tabs a {
     flex: none; padding: 9px 16px; border-radius: 999px; text-decoration: none;
     font-size: 0.85rem; font-weight: 600; white-space: nowrap;
-    background: var(--card); border: 1px solid var(--border); color: var(--muted);
+    background: var(--bg-soft); border: 1px solid var(--border); color: var(--muted);
     transition: color 0.15s, border-color 0.15s;
   }
   nav.tabs a.active { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -197,7 +215,14 @@ const STYLE = `
   .calendar-cell .ev-more { font-size: 0.66rem; color: var(--muted); padding: 0 5px; }
 
   @media (max-width: 600px) {
-    body { padding: 20px 14px 56px; }
+    body { padding: 0 0 56px; }
+    .wrap { padding: 20px 14px 0; }
+    .topbar-inner { padding: 10px 14px; gap: 10px; flex-wrap: nowrap; }
+    .topbar .brand { font-size: 0.94rem; }
+    /* tela estreita: nao da espaco pra tudo numa linha so -- esconde o numero
+       (o "Sair" sozinho ja basta) e deixa as abas rolarem de lado dentro do
+       proprio espaco flex:1 que sobrar, sem nunca estourar a largura da tela */
+    .topbar-user .user-phone { display: none; }
     h1 { font-size: 1.25rem; }
     .card .value { font-size: 1.3rem; }
     form.card-form { padding: 18px; }
@@ -219,7 +244,8 @@ const PHONE_MASK_SCRIPT = `
     var out = "";
     if (digits.length > 0) out += "(" + digits.slice(0, 2);
     if (digits.length >= 2) out += ")";
-    if (digits.length > 2) out += " " + digits.slice(2, 7);
+    if (digits.length > 2) out += " " + digits.slice(2, 3);
+    if (digits.length > 3) out += " " + digits.slice(3, 7);
     if (digits.length > 7) out += "-" + digits.slice(7, 11);
     return out;
   }
@@ -289,7 +315,7 @@ ${opts.error ? `<p class="banner error">${escapeHtml(opts.error)}</p>` : ""}
 ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, a senha foi enviada por WhatsApp. Pode levar alguns segundos.</p>` : ""}
 <form method="post" action="/dashboard/login">
   <label for="phone">WhatsApp</label>
-  <input name="phone" id="phone" placeholder="(61) 99921-0718" inputmode="numeric" autocomplete="off" autofocus required>
+  <input name="phone" id="phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="off" autofocus required>
   <p class="error field" id="phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
   <label for="password">Senha</label>
   <input name="password" id="password" type="text" autocomplete="off" required>
@@ -299,7 +325,7 @@ ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, 
   <summary>Esqueci minha senha</summary>
   <form method="post" action="/dashboard/request-password">
     <label for="reset-phone">WhatsApp</label>
-    <input name="phone" id="reset-phone" placeholder="(61) 99921-0718" inputmode="numeric" autocomplete="off" required>
+    <input name="phone" id="reset-phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="off" required>
     <p class="error field" id="reset-phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
     <button type="submit" class="secondary">Receber senha pelo WhatsApp</button>
   </form>
@@ -310,6 +336,18 @@ ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
 </script>
 </body></html>`;
+}
+
+// "556199210718" (formato canonico salvo, sem o "9" do meio -- e assim que o
+// WhatsApp identifica numeros brasileiros) -> "(61) 99921-0718" pra exibicao
+// humana, reinserindo o "9". So cosmetico -- nao afeta o valor usado pra
+// consultar o banco (esse continua vindo puro da sessao).
+function formatPhoneForDisplay(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (!/^55\d{10}$/.test(digits)) return phone;
+  const ddd = digits.slice(2, 4);
+  const rest = digits.slice(4); // 8 digitos, sem o "9"
+  return `(${ddd}) 9${rest.slice(0, 4)}-${rest.slice(4)}`;
 }
 
 export function renderPage(opts: {
@@ -330,26 +368,27 @@ ${pwaHeadTags()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>${STYLE}
-  .switch-phone { text-align: right; margin: -18px 0 18px; }
-  .switch-phone form { display: inline; }
-  .switch-phone button { all: unset; font-size: 0.78rem; color: var(--muted); cursor: pointer; }
-  .switch-phone button:hover { color: var(--accent); }
-</style>
+<style>${STYLE}</style>
 </head>
 <body>
-<div class="wrap">
-  <nav class="tabs">
-    ${tab("/dashboard", "expenses", "Gastos")}
-    ${tab("/dashboard/incomes", "incomes", "Entradas")}
-    ${tab("/dashboard/categories", "categories", "Categorias")}
-    ${tab("/dashboard/payment-methods", "payments", "Formas de pagamento")}
-    ${tab("/dashboard/events", "events", "Agenda")}
-    ${tab("/dashboard/reminders", "reminders", "Lembretes")}
-  </nav>
-  <div class="switch-phone">
-    <form method="post" action="/dashboard/logout"><button type="submit">Sair</button></form>
+<header class="topbar">
+  <div class="topbar-inner">
+    <span class="brand">Organizaí</span>
+    <div class="topbar-user">
+      <span class="user-phone">${escapeHtml(formatPhoneForDisplay(opts.phone))}</span>
+      <form method="post" action="/dashboard/logout"><button type="submit">Sair</button></form>
+    </div>
+    <nav class="tabs">
+      ${tab("/dashboard", "expenses", "Gastos")}
+      ${tab("/dashboard/incomes", "incomes", "Entradas")}
+      ${tab("/dashboard/categories", "categories", "Categorias")}
+      ${tab("/dashboard/payment-methods", "payments", "Formas de pagamento")}
+      ${tab("/dashboard/events", "events", "Agenda")}
+      ${tab("/dashboard/reminders", "reminders", "Lembretes")}
+    </nav>
   </div>
+</header>
+<div class="wrap">
   ${opts.body}
 </div>
 <script>
