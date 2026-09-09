@@ -6,45 +6,47 @@ import { ensureUserSeeded, getOrCreatePaymentMethod, findPaymentMethodByName, se
 const A = "551100070001";
 const B = "551100070002";
 
-async function withServer(fn: (baseUrl: string) => Promise<void>) {
+async function withServer(
+  fn: (baseUrl: string, authHeaders: (phone: string) => Record<string, string>) => Promise<void>
+) {
   const server = await startDashboardTestServer();
   try {
-    await fn(server.baseUrl);
+    await fn(server.baseUrl, server.authHeaders);
   } finally {
     await server.close();
   }
 }
 
 test("criar, renomear e excluir forma de pagamento pelo dashboard", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
-    await fetch(`${baseUrl}/dashboard/payment-methods/new?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/payment-methods/new`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ name: "Cartao Teste" }),
     });
     const created = findPaymentMethodByName(A, "Cartao Teste")!;
     assert.ok(created);
 
-    await fetch(`${baseUrl}/dashboard/payment-methods/${created.id}?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/payment-methods/${created.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ name: "Cartao Renomeado" }),
     });
     assert.ok(findPaymentMethodByName(A, "Cartao Renomeado"));
 
-    await fetch(`${baseUrl}/dashboard/payment-methods/${created.id}/delete?phone=${A}`, { method: "POST" });
+    await fetch(`${baseUrl}/dashboard/payment-methods/${created.id}/delete`, { method: "POST", headers: authHeaders(A) });
     assert.equal(findPaymentMethodByName(A, "Cartao Renomeado"), null);
   });
 });
 
 test("a pagina marca visualmente qual e a forma de pagamento padrao", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
     const method = getOrCreatePaymentMethod(A, "Padrao Visivel");
     setDefaultPaymentMethod(A, method.id);
 
-    const res = await fetch(`${baseUrl}/dashboard/payment-methods?phone=${A}`);
+    const res = await fetch(`${baseUrl}/dashboard/payment-methods`, { headers: authHeaders(A) });
     const html = await res.text();
     const idx = html.indexOf("Padrao Visivel");
     const snippet = html.slice(idx, idx + 400);
@@ -53,19 +55,19 @@ test("a pagina marca visualmente qual e a forma de pagamento padrao", async () =
 });
 
 test("SEGURANCA: numero B nao consegue renomear nem excluir forma de pagamento de A", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
     ensureUserSeeded(B);
     const method = getOrCreatePaymentMethod(A, "Protegida de A");
 
-    await fetch(`${baseUrl}/dashboard/payment-methods/${method.id}?phone=${B}`, {
+    await fetch(`${baseUrl}/dashboard/payment-methods/${method.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(B) },
       body: new URLSearchParams({ name: "Hackeada" }),
     });
     assert.ok(findPaymentMethodByName(A, "Protegida de A"));
 
-    await fetch(`${baseUrl}/dashboard/payment-methods/${method.id}/delete?phone=${B}`, { method: "POST" });
+    await fetch(`${baseUrl}/dashboard/payment-methods/${method.id}/delete`, { method: "POST", headers: authHeaders(B) });
     assert.ok(findPaymentMethodByName(A, "Protegida de A"));
   });
 });

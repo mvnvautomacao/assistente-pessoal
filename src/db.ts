@@ -105,6 +105,18 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- login do dashboard web: senha SEMPRE gerada pelo sistema e mandada por
+  -- WhatsApp (nunca escolhida digitando no site) -- prova que quem esta
+  -- pedindo acesso controla aquele numero de verdade. last_password_sent_at
+  -- e o controle do limite de 1 envio por hora (ver dashboard/accounts.ts).
+  CREATE TABLE IF NOT EXISTS dashboard_accounts (
+    phone_number TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_password_sent_at TEXT
+  );
+
   -- entradas de dinheiro (salario, freela, reembolso...), o outro lado da conta
   -- alem dos gastos. Isolado por numero, igual expenses.
   CREATE TABLE IF NOT EXISTS incomes (

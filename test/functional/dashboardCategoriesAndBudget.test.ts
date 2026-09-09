@@ -7,47 +7,49 @@ import { getBudget } from "../../src/expenses/budgets";
 const A = "551100060001";
 const B = "551100060002";
 
-async function withServer(fn: (baseUrl: string) => Promise<void>) {
+async function withServer(
+  fn: (baseUrl: string, authHeaders: (phone: string) => Record<string, string>) => Promise<void>
+) {
   const server = await startDashboardTestServer();
   try {
-    await fn(server.baseUrl);
+    await fn(server.baseUrl, server.authHeaders);
   } finally {
     await server.close();
   }
 }
 
 test("criar, renomear e excluir categoria pelo dashboard", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
-    await fetch(`${baseUrl}/dashboard/categories/new?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/categories/new`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ name: "Categoria Nova" }),
     });
     const created = findCategoryByName(A, "Categoria Nova")!;
     assert.ok(created);
 
-    await fetch(`${baseUrl}/dashboard/categories/${created.id}?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${created.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ name: "Categoria Renomeada" }),
     });
     assert.ok(findCategoryByName(A, "Categoria Renomeada"));
     assert.equal(findCategoryByName(A, "Categoria Nova"), null);
 
-    await fetch(`${baseUrl}/dashboard/categories/${created.id}/delete?phone=${A}`, { method: "POST" });
+    await fetch(`${baseUrl}/dashboard/categories/${created.id}/delete`, { method: "POST", headers: authHeaders(A) });
     assert.equal(findCategoryByName(A, "Categoria Renomeada"), null);
   });
 });
 
 test("definir orcamento mensal pela tela de categorias, com virgula decimal", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
     const cat = getOrCreateCategory(A, "Categoria com orcamento");
 
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ monthly_limit: "250,50" }),
     });
     assert.equal(getBudget(A, cat.id), 250.5);
@@ -55,19 +57,19 @@ test("definir orcamento mensal pela tela de categorias, com virgula decimal", as
 });
 
 test("deixar o campo de orcamento em branco remove o limite", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
     const cat = getOrCreateCategory(A, "Categoria remove orcamento");
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ monthly_limit: "100" }),
     });
     assert.equal(getBudget(A, cat.id), 100);
 
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget?phone=${A}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(A) },
       body: new URLSearchParams({ monthly_limit: "" }),
     });
     assert.equal(getBudget(A, cat.id), null);
@@ -75,27 +77,27 @@ test("deixar o campo de orcamento em branco remove o limite", async () => {
 });
 
 test("SEGURANCA: numero B nao consegue renomear, excluir nem definir orcamento pra categoria de A", async () => {
-  await withServer(async (baseUrl) => {
+  await withServer(async (baseUrl, authHeaders) => {
     ensureUserSeeded(A);
     ensureUserSeeded(B);
     const cat = getOrCreateCategory(A, "Categoria protegida");
 
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}?phone=${B}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(B) },
       body: new URLSearchParams({ name: "Hackeado" }),
     });
     assert.ok(findCategoryByName(A, "Categoria protegida"));
     assert.equal(findCategoryByName(A, "Hackeado"), null);
 
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget?phone=${B}`, {
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/budget`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(B) },
       body: new URLSearchParams({ monthly_limit: "1" }),
     });
     assert.equal(getBudget(A, cat.id), null); // B nao conseguiu setar orcamento nela
 
-    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/delete?phone=${B}`, { method: "POST" });
+    await fetch(`${baseUrl}/dashboard/categories/${cat.id}/delete`, { method: "POST", headers: authHeaders(B) });
     assert.ok(findCategoryByName(A, "Categoria protegida")); // continua existindo
   });
 });

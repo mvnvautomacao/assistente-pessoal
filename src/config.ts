@@ -23,6 +23,12 @@ export const config = {
   anthropicApiKey: required("ANTHROPIC_API_KEY"),
   groqApiKey: required("GROQ_API_KEY"),
 
+  // login fixo do /admin (painel de atividade e aprovacao de numeros).
+  admin: {
+    username: required("ADMIN_USERNAME"),
+    password: required("ADMIN_PASSWORD"),
+  },
+
   google: {
     clientId: required("GOOGLE_CLIENT_ID"),
     clientSecret: required("GOOGLE_CLIENT_SECRET"),

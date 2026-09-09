@@ -10,7 +10,7 @@ import {
   setEventReminderMinutes,
   EventRow,
 } from "../events/service";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import {
   normalizeBrazilPhone,
   escapeHtml,
@@ -89,7 +89,6 @@ function renderCalendar(phone: string, month: string, today: string, selected: s
 
 eventsRouter.get("/dashboard/events", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const qs = `phone=${encodeURIComponent(phone)}`;
   const days = req.query.days === "60" || req.query.days === "90" ? Number(req.query.days) : 30;
@@ -194,7 +193,6 @@ eventsRouter.get("/dashboard/events", (req, res) => {
 
 eventsRouter.post("/dashboard/events/settings", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const minutes = Number(req.body.reminder_minutes);
   if (Number.isFinite(minutes) && minutes >= 0) setEventReminderMinutes(phone, Math.round(minutes));
   res.redirect(`/dashboard/events?phone=${encodeURIComponent(phone)}`);
@@ -237,7 +235,6 @@ function eventForm(opts: {
 
 eventsRouter.get("/dashboard/events/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   // vindo do "+" de um dia especifico no calendario: pre-preenche a data (horario
   // padrao 09:00, o usuario ajusta se quiser)
   const dateParam = typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
@@ -253,7 +250,6 @@ eventsRouter.get("/dashboard/events/new", (req, res) => {
 
 eventsRouter.post("/dashboard/events/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const title = String(req.body.title || "").trim();
   const start = String(req.body.start || "");
   const end = String(req.body.end || "");
@@ -274,7 +270,6 @@ eventsRouter.post("/dashboard/events/new", (req, res) => {
 
 eventsRouter.get("/dashboard/events/:id/edit", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const event = getEventById(phone, Number(req.params.id));
   if (!event) return res.status(404).send("Evento não encontrado.");
@@ -294,7 +289,6 @@ eventsRouter.get("/dashboard/events/:id/edit", (req, res) => {
 
 eventsRouter.post("/dashboard/events/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const title = String(req.body.title || "").trim();
   const start = String(req.body.start || "");
   const end = String(req.body.end || "");
@@ -314,7 +308,6 @@ eventsRouter.post("/dashboard/events/:id", (req, res) => {
 
 eventsRouter.post("/dashboard/events/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deleteEvent(phone, Number(req.params.id));
   res.redirect(`/dashboard/events?phone=${encodeURIComponent(phone)}`);
 });

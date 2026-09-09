@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import cookieParser from "cookie-parser";
 import { config } from "./config";
 import { webhookRouter } from "./whatsapp/webhook";
 import { adminRouter } from "./admin";
@@ -11,6 +12,11 @@ import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import "./db";
 
 const app = express();
+// necessario pro Express enxergar corretamente req.secure/x-forwarded-proto
+// atras do proxy reverso do Coolify (Traefik) -- sem isso, o cookie de sessao
+// com secure:true nunca seria aceito pelo navegador em producao.
+app.set("trust proxy", 1);
+app.use(cookieParser());
 // limite padrao do express.json() e so 100kb -- muito pouco pro webhook da
 // Evolution API, que manda foto/audio em base64 dentro do proprio JSON (uma
 // foto de nota fiscal legivel facilmente passa disso). Sem esse limite maior,

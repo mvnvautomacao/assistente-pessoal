@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { listCategories, getOrCreateCategory, renameCategory, deleteCategory } from "../expenses/service";
 import { listBudgets, setBudget, removeBudget } from "../expenses/budgets";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import { normalizeBrazilPhone, escapeHtml, formatAmountInput, MONEY_MASK_SCRIPT } from "./utils";
 
 export const categoriesRouter = Router();
@@ -12,7 +12,6 @@ function getPhone(req: { query: Record<string, unknown> }): string {
 
 categoriesRouter.get("/dashboard/categories", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const categories = listCategories(phone);
   const budgetByCategory = new Map(listBudgets(phone).map((b) => [b.category_id, b.monthly_limit]));
@@ -67,7 +66,6 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
 
 categoriesRouter.post("/dashboard/categories/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const name = String(req.body.name || "").trim();
   if (name) getOrCreateCategory(phone, name);
   res.redirect(`/dashboard/categories?phone=${encodeURIComponent(phone)}`);
@@ -75,7 +73,6 @@ categoriesRouter.post("/dashboard/categories/new", (req, res) => {
 
 categoriesRouter.post("/dashboard/categories/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const name = String(req.body.name || "").trim();
   if (name) renameCategory(phone, Number(req.params.id), name);
   res.redirect(`/dashboard/categories?phone=${encodeURIComponent(phone)}`);
@@ -83,7 +80,6 @@ categoriesRouter.post("/dashboard/categories/:id", (req, res) => {
 
 categoriesRouter.post("/dashboard/categories/:id/budget", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const raw = String(req.body.monthly_limit || "").trim().replace(",", ".");
   const categoryId = Number(req.params.id);
   if (!raw) {
@@ -97,7 +93,6 @@ categoriesRouter.post("/dashboard/categories/:id/budget", (req, res) => {
 
 categoriesRouter.post("/dashboard/categories/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deleteCategory(phone, Number(req.params.id));
   res.redirect(`/dashboard/categories?phone=${encodeURIComponent(phone)}`);
 });

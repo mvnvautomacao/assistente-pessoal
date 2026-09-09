@@ -15,7 +15,7 @@ import {
   bulkUpdateExpenseCategory,
   ExpenseListItem,
 } from "../expenses/service";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import {
   normalizeBrazilPhone,
   escapeHtml,
@@ -140,7 +140,6 @@ function searchBox(phone: string, q: string) {
 // pra declarar imposto de renda ou levar pra uma planilha externa.
 expensesRouter.get("/dashboard/expenses/export.csv", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const items = getAllExpenses(phone);
   const rows = items.map((e) => [
@@ -159,7 +158,6 @@ expensesRouter.get("/dashboard/expenses/export.csv", (req, res) => {
 
 expensesRouter.get("/dashboard", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
 
@@ -287,14 +285,12 @@ function expenseForm(opts: {
 
 expensesRouter.get("/dashboard/expenses/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const body = expenseForm({ phone, action: `/dashboard/expenses/new?phone=${encodeURIComponent(phone)}`, submitLabel: "Adicionar" });
   res.send(renderPage({ title: "Novo gasto", phone, active: "expenses", body }));
 });
 
 expensesRouter.post("/dashboard/expenses/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const { amount, description, date, category_id, payment_method_id } = req.body;
   insertExpense({
@@ -316,7 +312,6 @@ expensesRouter.post("/dashboard/expenses/new", (req, res) => {
 // combina com qualquer string (Express casa rotas na ordem em que foram registradas).
 expensesRouter.post("/dashboard/expenses/bulk-recategorize", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const categoryId = Number(req.body.category_id);
   const rawIds = req.body.expense_ids;
@@ -331,7 +326,6 @@ expensesRouter.post("/dashboard/expenses/bulk-recategorize", (req, res) => {
 
 expensesRouter.get("/dashboard/expenses/:id/edit", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const expense = getExpenseById(phone, Number(req.params.id));
   if (!expense) return res.status(404).send("Gasto não encontrado.");
@@ -351,7 +345,6 @@ expensesRouter.get("/dashboard/expenses/:id/edit", (req, res) => {
 
 expensesRouter.post("/dashboard/expenses/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const { amount, description, date, category_id, payment_method_id } = req.body;
   updateExpense(phone, Number(req.params.id), {
@@ -367,7 +360,6 @@ expensesRouter.post("/dashboard/expenses/:id", (req, res) => {
 
 expensesRouter.post("/dashboard/expenses/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deleteExpense(phone, Number(req.params.id));
   res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
 });

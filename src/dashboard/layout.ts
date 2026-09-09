@@ -1,7 +1,7 @@
 import { escapeHtml } from "./utils";
 
 // Tags comuns de PWA (manifest, icone de tela inicial do iOS, cor da barra de
-// status) -- repetidas nos dois shells de HTML (renderPhoneGate e renderPage),
+// status) -- repetidas nos dois shells de HTML (renderLoginPage e renderPage),
 // ja que cada um monta seu proprio <head> do zero.
 function pwaHeadTags(): string {
   return `<meta name="theme-color" content="#0a1122">
@@ -12,13 +12,6 @@ function pwaHeadTags(): string {
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Organizaí">`;
-}
-
-// JSON.stringify escapa aspas/barras, mas nao a sequencia "</" -- sem esse
-// replace, um numero de telefone contendo "</script>" (via query string
-// manipulada) fecharia a tag e injetaria HTML/JS arbitrario na pagina.
-function jsStringLiteral(value: string): string {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
 const STYLE = `
@@ -217,7 +210,41 @@ const STYLE = `
   }
 `;
 
-export function renderPhoneGate(): string {
+// Mascara SEM o DDI "55" (o usuario so digita DDD + celular, 11 digitos --
+// sempre no formato moderno com o "9" na frente); "55" e prefixado no server
+// antes de normalizar/procurar a conta (ver src/dashboard/auth.ts).
+const PHONE_MASK_SCRIPT = `
+  function formatPhoneNoDDI(raw) {
+    var digits = raw.replace(/\\D/g, "").slice(0, 11);
+    var out = "";
+    if (digits.length > 0) out += "(" + digits.slice(0, 2);
+    if (digits.length >= 2) out += ")";
+    if (digits.length > 2) out += " " + digits.slice(2, 7);
+    if (digits.length > 7) out += "-" + digits.slice(7, 11);
+    return out;
+  }
+  function attachPhoneMask(input, errorEl) {
+    if (!input) return;
+    input.addEventListener("input", function () {
+      input.value = formatPhoneNoDDI(input.value);
+      input.classList.remove("invalid");
+      if (errorEl) errorEl.style.display = "none";
+    });
+    var form = input.closest("form");
+    if (form) {
+      form.addEventListener("submit", function (e) {
+        var digitCount = input.value.replace(/\\D/g, "").length;
+        if (digitCount !== 11) {
+          e.preventDefault();
+          input.classList.add("invalid");
+          if (errorEl) errorEl.style.display = "block";
+        }
+      });
+    }
+  }
+`;
+
+export function renderLoginPage(opts: { error?: string; sent?: boolean } = {}): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -227,7 +254,7 @@ ${pwaHeadTags()}
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0a1122; --card:#131d38; --border:#223055; --text:#eaf0fb; --muted:#8b98bd; --accent:#2f6fee; --accent-hover:#4c85ff; --danger:#f0576b; }
+  :root { --bg:#0a1122; --card:#131d38; --border:#223055; --text:#eaf0fb; --muted:#8b98bd; --accent:#2f6fee; --accent-hover:#4c85ff; --danger:#f0576b; --good:#34d399; }
   * { box-sizing: border-box; }
   body {
     font-family: "Manrope", -apple-system, "Segoe UI", sans-serif;
@@ -236,72 +263,51 @@ ${pwaHeadTags()}
   }
   h1 { font-size: 1.6rem; font-weight: 800; margin: 0 0 12px; }
   p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+  label { display: block; font-size: 0.8rem; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+  label:first-child { margin-top: 0; }
   form { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px; margin-top: 20px; box-shadow: 0 12px 28px -12px rgba(0,0,0,0.55); }
   input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); font-size: 1rem; box-sizing: border-box; background: #0e1830; color: var(--text); font-family: inherit; }
   input:focus { outline: none; border-color: var(--accent); }
   input.invalid { border-color: var(--danger); }
   button { margin-top: 14px; width: 100%; padding: 12px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; font-size: 0.95rem; font-weight: 700; cursor: pointer; font-family: inherit; }
   button:hover { background: var(--accent-hover); }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
   p.hint { color: var(--muted); font-size: 0.8rem; margin-top: 20px; }
-  p.error { color: var(--danger); font-size: 0.85rem; margin: 8px 0 0; display: none; }
+  p.error { color: var(--danger); font-size: 0.85rem; margin: 8px 0 0; }
+  p.error.field { display: none; }
+  p.banner { border-radius: 10px; padding: 10px 14px; font-size: 0.85rem; margin: 0 0 -8px; }
+  p.banner.error { background: rgba(240, 87, 107, 0.14); border: 1px solid rgba(240, 87, 107, 0.35); }
+  p.banner.success { background: rgba(52, 211, 153, 0.14); border: 1px solid rgba(52, 211, 153, 0.35); color: var(--good); }
+  details.forgot { margin-top: 18px; }
+  details.forgot summary { color: var(--muted); font-size: 0.85rem; cursor: pointer; }
+  details.forgot summary:hover { color: var(--accent); }
 </style></head>
 <body>
 <h1>Organizaí</h1>
-<p>Digite o número de WhatsApp (o mesmo que manda mensagem pro bot) pra ver e gerenciar os gastos dele.</p>
-<form id="phone-form" method="get" action="/dashboard">
-  <input name="phone" id="phone-input" placeholder="55 (61) 99921-0718" inputmode="numeric" autocomplete="off" autofocus required>
-  <p class="error" id="phone-error">Número incompleto — precisa do DDI (55), DDD e os 9 dígitos do celular.</p>
-  <button type="submit" id="phone-submit">Ver gastos</button>
+<p>Entre com o número de WhatsApp e a senha que foi enviada por lá.</p>
+${opts.error ? `<p class="banner error">${escapeHtml(opts.error)}</p>` : ""}
+${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, a senha foi enviada por WhatsApp. Pode levar alguns segundos.</p>` : ""}
+<form method="post" action="/dashboard/login">
+  <label for="phone">WhatsApp</label>
+  <input name="phone" id="phone" placeholder="(61) 99921-0718" inputmode="numeric" autocomplete="off" autofocus required>
+  <p class="error field" id="phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
+  <label for="password">Senha</label>
+  <input name="password" id="password" type="text" autocomplete="off" required>
+  <button type="submit">Entrar</button>
 </form>
-<p class="hint">Isso não é um login de verdade — qualquer um com o link e o número certo acessa. Pra virar produto de vários clientes, essa parte precisa de autenticação real.</p>
-<script>
-  // Se ja tiver numero salvo desse aparelho (ver renderPage), pula a tela de
-  // digitar de novo -- essencial pro PWA instalado abrir direto no gasto, em
-  // vez de sempre cair aqui primeiro. Registra o service worker de qualquer
-  // jeito, mesmo antes de ter numero, pra "adicionar a tela inicial" funcionar
-  // ja na primeira visita.
-  (function () {
-    try {
-      var saved = localStorage.getItem("organizai_phone");
-      if (saved) {
-        window.location.replace("/dashboard?phone=" + encodeURIComponent(saved));
-        return;
-      }
-    } catch (e) {}
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
-  })();
-</script>
-<script>
-  (function () {
-    var input = document.getElementById("phone-input");
-    var error = document.getElementById("phone-error");
-    var form = document.getElementById("phone-form");
-
-    function formatPhone(raw) {
-      var digits = raw.replace(/\\D/g, "").slice(0, 13);
-      var out = digits.slice(0, 2);
-      if (digits.length > 2) out += " (" + digits.slice(2, 4);
-      if (digits.length >= 4) out += ")";
-      if (digits.length > 4) out += " " + digits.slice(4, 9);
-      if (digits.length > 9) out += "-" + digits.slice(9, 13);
-      return out;
-    }
-
-    input.addEventListener("input", function () {
-      input.value = formatPhone(input.value);
-      input.classList.remove("invalid");
-      error.style.display = "none";
-    });
-
-    form.addEventListener("submit", function (e) {
-      var digitCount = input.value.replace(/\\D/g, "").length;
-      if (digitCount !== 13) {
-        e.preventDefault();
-        input.classList.add("invalid");
-        error.style.display = "block";
-      }
-    });
-  })();
+<details class="forgot">
+  <summary>Esqueci minha senha</summary>
+  <form method="post" action="/dashboard/request-password">
+    <label for="reset-phone">WhatsApp</label>
+    <input name="phone" id="reset-phone" placeholder="(61) 99921-0718" inputmode="numeric" autocomplete="off" required>
+    <p class="error field" id="reset-phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
+    <button type="submit" class="secondary">Receber senha pelo WhatsApp</button>
+  </form>
+</details>
+<script>${PHONE_MASK_SCRIPT}
+  attachPhoneMask(document.getElementById("phone"), document.getElementById("phone-error"));
+  attachPhoneMask(document.getElementById("reset-phone"), document.getElementById("reset-phone-error"));
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
 </script>
 </body></html>`;
 }
@@ -312,9 +318,7 @@ export function renderPage(opts: {
   active: "expenses" | "incomes" | "categories" | "payments" | "events" | "reminders";
   body: string;
 }): string {
-  const phoneQS = `phone=${encodeURIComponent(opts.phone)}`;
-  const tab = (href: string, key: string, label: string) =>
-    `<a href="${href}?${phoneQS}" class="${opts.active === key ? "active" : ""}">${label}</a>`;
+  const tab = (href: string, key: string, label: string) => `<a href="${href}" class="${opts.active === key ? "active" : ""}">${label}</a>`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -328,8 +332,9 @@ ${pwaHeadTags()}
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${STYLE}
   .switch-phone { text-align: right; margin: -18px 0 18px; }
-  .switch-phone a { font-size: 0.78rem; color: var(--muted); text-decoration: none; }
-  .switch-phone a:hover { color: var(--accent); }
+  .switch-phone form { display: inline; }
+  .switch-phone button { all: unset; font-size: 0.78rem; color: var(--muted); cursor: pointer; }
+  .switch-phone button:hover { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -342,25 +347,13 @@ ${pwaHeadTags()}
     ${tab("/dashboard/events", "events", "Agenda")}
     ${tab("/dashboard/reminders", "reminders", "Lembretes")}
   </nav>
-  <div class="switch-phone"><a href="#" id="switch-phone-link">Trocar número</a></div>
+  <div class="switch-phone">
+    <form method="post" action="/dashboard/logout"><button type="submit">Sair</button></form>
+  </div>
   ${opts.body}
 </div>
 <script>
-  // Salva o numero desse aparelho pra abrir direto aqui da proxima vez (ver
-  // renderPhoneGate) -- sem isso, o app instalado sempre voltaria pra tela de
-  // digitar o numero de novo, o que nao combina com "app instalado no celular".
-  (function () {
-    try { localStorage.setItem("organizai_phone", ${jsStringLiteral(opts.phone)}); } catch (e) {}
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
-    var switchLink = document.getElementById("switch-phone-link");
-    if (switchLink) {
-      switchLink.addEventListener("click", function (e) {
-        e.preventDefault();
-        try { localStorage.removeItem("organizai_phone"); } catch (e) {}
-        window.location.href = "/dashboard";
-      });
-    }
-  })();
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
 </script>
 </body>
 </html>`;

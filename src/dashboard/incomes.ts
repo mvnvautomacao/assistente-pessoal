@@ -8,7 +8,7 @@ import {
   insertIncome,
   getAllIncomes,
 } from "../incomes/service";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import {
   normalizeBrazilPhone,
   escapeHtml,
@@ -33,7 +33,6 @@ function getPhone(req: { query: Record<string, unknown> }): string {
 // pra declarar imposto de renda ou levar pra uma planilha externa.
 incomesRouter.get("/dashboard/incomes/export.csv", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const items = getAllIncomes(phone);
   const rows = items.map((i) => [formatDate(i.date), i.description, formatAmountCsv(i.amount)]);
@@ -46,7 +45,6 @@ incomesRouter.get("/dashboard/incomes/export.csv", (req, res) => {
 
 incomesRouter.get("/dashboard/incomes", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const months = getAvailableIncomeMonths(phone);
   const currentMonth = new Date().toISOString().slice(0, 7);
@@ -135,14 +133,12 @@ function incomeForm(opts: { phone: string; action: string; submitLabel: string; 
 
 incomesRouter.get("/dashboard/incomes/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const body = incomeForm({ phone, action: `/dashboard/incomes/new?phone=${encodeURIComponent(phone)}`, submitLabel: "Adicionar" });
   res.send(renderPage({ title: "Nova entrada", phone, active: "incomes", body }));
 });
 
 incomesRouter.post("/dashboard/incomes/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const { amount, description, date } = req.body;
   insertIncome({
@@ -157,7 +153,6 @@ incomesRouter.post("/dashboard/incomes/new", (req, res) => {
 
 incomesRouter.get("/dashboard/incomes/:id/edit", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const income = getIncomeById(phone, Number(req.params.id));
   if (!income) return res.status(404).send("Entrada não encontrada.");
@@ -175,7 +170,6 @@ incomesRouter.get("/dashboard/incomes/:id/edit", (req, res) => {
 
 incomesRouter.post("/dashboard/incomes/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const { amount, description, date } = req.body;
   updateIncome(phone, Number(req.params.id), {
@@ -189,7 +183,6 @@ incomesRouter.post("/dashboard/incomes/:id", (req, res) => {
 
 incomesRouter.post("/dashboard/incomes/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deleteIncome(phone, Number(req.params.id));
   res.redirect(`/dashboard/incomes?phone=${encodeURIComponent(phone)}`);
 });

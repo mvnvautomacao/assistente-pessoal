@@ -1,9 +1,102 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { timingSafeEqual } from "crypto";
 import { getRecentActivity, getPendingReminders, getRecentBlockedAttempts } from "./activity/service";
 import { listAllowedNumbers, allowNumber, revokeNumber } from "./access/allowlist";
 import { normalizeBrazilPhone } from "./dashboard/utils";
+import { config } from "./config";
+import { createSession, getSession, destroySession, ADMIN_SESSION_TTL_MS } from "./auth/session";
+import { isLoginLocked, recordFailedLogin, recordSuccessfulLogin } from "./auth/loginGuard";
+import { listDashboardAccounts } from "./dashboard/accounts";
+import { maybeSendNewPassword } from "./dashboard/auth";
 
 export const adminRouter = Router();
+
+const ADMIN_SESSION_COOKIE = "organizai_admin_session";
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  // comprimentos diferentes vazariam informacao pelo tempo de resposta se so
+  // chamassemos timingSafeEqual (que exige buffers do mesmo tamanho) -- aqui
+  // preenchemos o menor com Buffer.alloc do mesmo tamanho do maior, entao a
+  // comparacao sempre roda no mesmo "shape" independente do que foi digitado.
+  const length = Math.max(bufA.length, bufB.length, 1);
+  const paddedA = Buffer.alloc(length);
+  const paddedB = Buffer.alloc(length);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  return timingSafeEqual(paddedA, paddedB) && bufA.length === bufB.length;
+}
+
+function adminCookieOptions(req: Request) {
+  const isHttps = req.secure || req.headers["x-forwarded-proto"] === "https";
+  return { httpOnly: true, secure: isHttps, sameSite: "lax" as const, maxAge: ADMIN_SESSION_TTL_MS };
+}
+
+function renderAdminLoginPage(error?: string): string {
+  return `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — Organizaí</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 360px; margin: 96px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 1.3rem; }
+  form { border: 1px solid #ddd; border-radius: 10px; padding: 20px; margin-top: 16px; }
+  label { display: block; font-size: 0.85rem; color: #555; margin: 12px 0 4px; }
+  label:first-child { margin-top: 0; }
+  input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; box-sizing: border-box; }
+  button { margin-top: 14px; width: 100%; padding: 10px 14px; border-radius: 6px; border: none; background: #222; color: #fff; font-size: 0.95rem; cursor: pointer; }
+  p.error { color: #c0392b; font-size: 0.85rem; }
+</style></head>
+<body>
+<h1>Admin</h1>
+${error ? `<p class="error">${error}</p>` : ""}
+<form method="post" action="/admin/login">
+  <label for="username">Usuário</label>
+  <input name="username" id="username" autocomplete="off" autofocus required>
+  <label for="password">Senha</label>
+  <input name="password" id="password" type="password" required>
+  <button type="submit">Entrar</button>
+</form>
+</body></html>`;
+}
+
+adminRouter.post("/admin/login", (req, res) => {
+  const key = req.ip ?? "unknown";
+  if (isLoginLocked(key)) {
+    res.status(429).send(renderAdminLoginPage("Muitas tentativas erradas. Tenta de novo em alguns minutos."));
+    return;
+  }
+  const username = String(req.body.username || "");
+  const password = String(req.body.password || "");
+  const ok = timingSafeStringEqual(username, config.admin.username) && timingSafeStringEqual(password, config.admin.password);
+  if (!ok) {
+    recordFailedLogin(key);
+    res.status(401).send(renderAdminLoginPage("Usuário ou senha incorretos."));
+    return;
+  }
+  recordSuccessfulLogin(key);
+  const token = createSession({ type: "admin" }, ADMIN_SESSION_TTL_MS);
+  res.cookie(ADMIN_SESSION_COOKIE, token, adminCookieOptions(req));
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/logout", (req, res) => {
+  destroySession(req.cookies?.[ADMIN_SESSION_COOKIE]);
+  res.clearCookie(ADMIN_SESSION_COOKIE);
+  res.redirect("/admin");
+});
+
+function requireAdminSession(req: Request, res: Response, next: NextFunction) {
+  const session = getSession(req.cookies?.[ADMIN_SESSION_COOKIE]);
+  if (!session || session.type !== "admin") {
+    res.send(renderAdminLoginPage());
+    return;
+  }
+  next();
+}
+
+adminRouter.use(requireAdminSession);
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -55,6 +148,7 @@ adminRouter.get("/admin", (_req, res) => {
   const allowed = listAllowedNumbers();
   const allowedSet = new Set(allowed.map((a) => a.from_number));
   const blockedAttempts = getRecentBlockedAttempts(50).filter((b) => !allowedSet.has(b.from_number));
+  const dashboardAccounts = listDashboardAccounts();
 
   const activityRows = activity
     .map(
@@ -102,6 +196,23 @@ adminRouter.get("/admin", (_req, res) => {
     )
     .join("");
 
+  const dashboardAccountRows = dashboardAccounts
+    .map(
+      (a) => `
+      <tr>
+        <td>${escapeHtml(a.phone_number)}</td>
+        <td>${formatDate(a.created_at)}</td>
+        <td>${a.last_password_sent_at ? formatDate(a.last_password_sent_at) : "—"}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/dashboard-accounts/reset" onsubmit="return confirm('Gerar e mandar uma senha nova pro WhatsApp desse número?')">
+            <input type="hidden" name="phone_number" value="${escapeHtml(a.phone_number)}">
+            <button type="submit" class="link-btn">Redefinir senha</button>
+          </form>
+        </td>
+      </tr>`
+    )
+    .join("");
+
   res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -125,7 +236,16 @@ adminRouter.get("/admin", (_req, res) => {
 </style>
 </head>
 <body>
+<form class="inline" method="post" action="/admin/logout" style="float:right"><button type="submit" class="link-btn">Sair</button></form>
 <h1>Assistente Pessoal</h1>
+
+<h2>Contas do painel (${dashboardAccounts.length})</h2>
+<p class="warn">Senha sempre gerada pelo sistema e mandada por WhatsApp — nunca digitada aqui. "Redefinir senha" manda uma nova na hora, sem esperar o limite de 1h que vale pro autoatendimento.</p>
+${dashboardAccounts.length ? `<table><tr><th>Número</th><th>Criada em</th><th>Última senha enviada</th><th></th></tr>${dashboardAccountRows}</table>` : `<p class="empty">Nenhuma conta criada ainda.</p>`}
+<form class="add-form" method="post" action="/admin/dashboard-accounts/reset">
+  <input type="text" name="phone_number" placeholder="Ex: 5561999210718" required>
+  <button type="submit">Mandar senha</button>
+</form>
 
 <h2>Números autorizados (${allowed.length})</h2>
 <p class="warn">Só quem está nessa lista recebe resposta do assistente. Qualquer outro número é ignorado em silêncio (nada é respondido) — isso evita o bot ficar respondendo sem parar pra outro bot.</p>
@@ -167,5 +287,11 @@ adminRouter.post("/admin/allowlist/add", (req, res) => {
 adminRouter.post("/admin/allowlist/remove", (req, res) => {
   const fromNumber = String(req.body.from_number || "");
   if (fromNumber) revokeNumber(fromNumber);
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/dashboard-accounts/reset", async (req, res) => {
+  const phoneNumber = String(req.body.phone_number || "");
+  if (phoneNumber) await maybeSendNewPassword(phoneNumber, { bypassCooldown: true });
   res.redirect("/admin");
 });

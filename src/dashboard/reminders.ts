@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { listReminders, getReminderById, createReminder, updateReminder, deleteReminder } from "../reminders/service";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import { normalizeBrazilPhone, escapeHtml, toSPDateTimeLocal, fromSPDateTimeLocal } from "./utils";
 
 export const remindersRouter = Router();
@@ -11,7 +11,6 @@ function getPhone(req: { query: Record<string, unknown> }): string {
 
 remindersRouter.get("/dashboard/reminders", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const qs = `phone=${encodeURIComponent(phone)}`;
   const reminders = listReminders(phone);
@@ -68,14 +67,12 @@ function reminderForm(opts: { phone: string; action: string; submitLabel: string
 
 remindersRouter.get("/dashboard/reminders/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const body = reminderForm({ phone, action: `/dashboard/reminders/new?phone=${encodeURIComponent(phone)}`, submitLabel: "Adicionar" });
   res.send(renderPage({ title: "Novo lembrete", phone, active: "reminders", body }));
 });
 
 remindersRouter.post("/dashboard/reminders/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const message = String(req.body.message || "").trim();
   const dueAt = String(req.body.due_at || "");
   if (message && dueAt) createReminder(phone, message, fromSPDateTimeLocal(dueAt));
@@ -84,7 +81,6 @@ remindersRouter.post("/dashboard/reminders/new", (req, res) => {
 
 remindersRouter.get("/dashboard/reminders/:id/edit", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const reminder = getReminderById(phone, Number(req.params.id));
   if (!reminder) return res.status(404).send("Lembrete não encontrado.");
 
@@ -100,7 +96,6 @@ remindersRouter.get("/dashboard/reminders/:id/edit", (req, res) => {
 
 remindersRouter.post("/dashboard/reminders/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const message = String(req.body.message || "").trim();
   const dueAt = String(req.body.due_at || "");
   if (message && dueAt) updateReminder(phone, Number(req.params.id), { message, dueAt: fromSPDateTimeLocal(dueAt) });
@@ -109,7 +104,6 @@ remindersRouter.post("/dashboard/reminders/:id", (req, res) => {
 
 remindersRouter.post("/dashboard/reminders/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deleteReminder(phone, Number(req.params.id));
   res.redirect(`/dashboard/reminders?phone=${encodeURIComponent(phone)}`);
 });

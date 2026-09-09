@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { listPaymentMethods, getOrCreatePaymentMethod, renamePaymentMethod, deletePaymentMethod, getDefaultPaymentMethod } from "../expenses/service";
-import { renderPage, renderPhoneGate } from "./layout";
+import { renderPage } from "./layout";
 import { normalizeBrazilPhone, escapeHtml } from "./utils";
 
 export const paymentMethodsRouter = Router();
@@ -11,7 +11,6 @@ function getPhone(req: { query: Record<string, unknown> }): string {
 
 paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
 
   const methods = listPaymentMethods(phone);
   const defaultMethod = getDefaultPaymentMethod(phone);
@@ -58,7 +57,6 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
 
 paymentMethodsRouter.post("/dashboard/payment-methods/new", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const name = String(req.body.name || "").trim();
   if (name) getOrCreatePaymentMethod(phone, name);
   res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
@@ -66,7 +64,6 @@ paymentMethodsRouter.post("/dashboard/payment-methods/new", (req, res) => {
 
 paymentMethodsRouter.post("/dashboard/payment-methods/:id", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   const name = String(req.body.name || "").trim();
   if (name) renamePaymentMethod(phone, Number(req.params.id), name);
   res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
@@ -74,7 +71,6 @@ paymentMethodsRouter.post("/dashboard/payment-methods/:id", (req, res) => {
 
 paymentMethodsRouter.post("/dashboard/payment-methods/:id/delete", (req, res) => {
   const phone = getPhone(req);
-  if (!phone) return res.send(renderPhoneGate());
   deletePaymentMethod(phone, Number(req.params.id));
   res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
 });
