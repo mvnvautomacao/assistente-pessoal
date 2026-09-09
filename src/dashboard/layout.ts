@@ -1,5 +1,26 @@
 import { escapeHtml } from "./utils";
 
+// Tags comuns de PWA (manifest, icone de tela inicial do iOS, cor da barra de
+// status) -- repetidas nos dois shells de HTML (renderPhoneGate e renderPage),
+// ja que cada um monta seu proprio <head> do zero.
+function pwaHeadTags(): string {
+  return `<meta name="theme-color" content="#0a1122">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Organizaí">`;
+}
+
+// JSON.stringify escapa aspas/barras, mas nao a sequencia "</" -- sem esse
+// replace, um numero de telefone contendo "</script>" (via query string
+// manipulada) fecharia a tag e injetaria HTML/JS arbitrario na pagina.
+function jsStringLiteral(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
 const STYLE = `
   :root {
     --bg: #0a1122;
@@ -200,7 +221,8 @@ export function renderPhoneGate(): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gastos</title>
+<title>Organizaí</title>
+${pwaHeadTags()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet">
@@ -224,7 +246,7 @@ export function renderPhoneGate(): string {
   p.error { color: var(--danger); font-size: 0.85rem; margin: 8px 0 0; display: none; }
 </style></head>
 <body>
-<h1>Gastos</h1>
+<h1>Organizaí</h1>
 <p>Digite o número de WhatsApp (o mesmo que manda mensagem pro bot) pra ver e gerenciar os gastos dele.</p>
 <form id="phone-form" method="get" action="/dashboard">
   <input name="phone" id="phone-input" placeholder="55 (61) 99921-0718" inputmode="numeric" autocomplete="off" autofocus required>
@@ -232,6 +254,23 @@ export function renderPhoneGate(): string {
   <button type="submit" id="phone-submit">Ver gastos</button>
 </form>
 <p class="hint">Isso não é um login de verdade — qualquer um com o link e o número certo acessa. Pra virar produto de vários clientes, essa parte precisa de autenticação real.</p>
+<script>
+  // Se ja tiver numero salvo desse aparelho (ver renderPage), pula a tela de
+  // digitar de novo -- essencial pro PWA instalado abrir direto no gasto, em
+  // vez de sempre cair aqui primeiro. Registra o service worker de qualquer
+  // jeito, mesmo antes de ter numero, pra "adicionar a tela inicial" funcionar
+  // ja na primeira visita.
+  (function () {
+    try {
+      var saved = localStorage.getItem("organizai_phone");
+      if (saved) {
+        window.location.replace("/dashboard?phone=" + encodeURIComponent(saved));
+        return;
+      }
+    } catch (e) {}
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
+  })();
+</script>
 <script>
   (function () {
     var input = document.getElementById("phone-input");
@@ -283,10 +322,15 @@ export function renderPage(opts: {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(opts.title)}</title>
+${pwaHeadTags()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>${STYLE}</style>
+<style>${STYLE}
+  .switch-phone { text-align: right; margin: -18px 0 18px; }
+  .switch-phone a { font-size: 0.78rem; color: var(--muted); text-decoration: none; }
+  .switch-phone a:hover { color: var(--accent); }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -298,8 +342,26 @@ export function renderPage(opts: {
     ${tab("/dashboard/events", "events", "Agenda")}
     ${tab("/dashboard/reminders", "reminders", "Lembretes")}
   </nav>
+  <div class="switch-phone"><a href="#" id="switch-phone-link">Trocar número</a></div>
   ${opts.body}
 </div>
+<script>
+  // Salva o numero desse aparelho pra abrir direto aqui da proxima vez (ver
+  // renderPhoneGate) -- sem isso, o app instalado sempre voltaria pra tela de
+  // digitar o numero de novo, o que nao combina com "app instalado no celular".
+  (function () {
+    try { localStorage.setItem("organizai_phone", ${jsStringLiteral(opts.phone)}); } catch (e) {}
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
+    var switchLink = document.getElementById("switch-phone-link");
+    if (switchLink) {
+      switchLink.addEventListener("click", function (e) {
+        e.preventDefault();
+        try { localStorage.removeItem("organizai_phone"); } catch (e) {}
+        window.location.href = "/dashboard";
+      });
+    }
+  })();
+</script>
 </body>
 </html>`;
 }

@@ -1,4 +1,5 @@
 import express from "express";
+import path from "path";
 import { config } from "./config";
 import { webhookRouter } from "./whatsapp/webhook";
 import { adminRouter } from "./admin";
@@ -19,6 +20,11 @@ const app = express();
 // with status code 413", nosso app nunca processou nada).
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+// manifest.json, icones e o service worker do dashboard-como-PWA. process.cwd()
+// e a raiz do projeto tanto local (npm run dev) quanto no container (WORKDIR
+// /app no Dockerfile) -- a pasta public/ nunca passa pelo build do tsc, so e
+// copiada junto no `COPY . .` do Dockerfile.
+app.use(express.static(path.join(process.cwd(), "public")));
 app.use(webhookRouter);
 app.use(adminRouter);
 app.use(dashboardRouter);
