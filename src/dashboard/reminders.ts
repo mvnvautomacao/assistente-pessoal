@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { listReminders, getReminderById, createReminder, updateReminder, deleteReminder } from "../reminders/service";
 import { renderPage } from "./layout";
-import { normalizeBrazilPhone, escapeHtml, toSPDateTimeLocal, fromSPDateTimeLocal } from "./utils";
+import { normalizeBrazilPhone, escapeHtml, toSPDateTimeLocal, fromSPDateTimeLocal, parsePagination, paginate, renderPagination } from "./utils";
 
 export const remindersRouter = Router();
 
@@ -14,9 +14,11 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
 
   const qs = `phone=${encodeURIComponent(phone)}`;
   const reminders = listReminders(phone);
+  const { page, perPage } = parsePagination(req.query);
+  const pageItems = paginate(reminders, page, perPage);
 
-  const rows = reminders.length
-    ? reminders
+  const rows = pageItems.length
+    ? pageItems
         .map(
           (r) => `
       <tr>
@@ -43,7 +45,8 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
   <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Data/hora</th><th>Mensagem</th><th>Status</th><th></th></tr>
     ${rows}
-  </table></div>`;
+  </table></div>
+  ${renderPagination({ basePath: "/dashboard/reminders", params: { phone }, page, perPage, total: reminders.length })}`;
 
   res.send(renderPage({ title: "Lembretes", phone, active: "reminders", body }));
 });

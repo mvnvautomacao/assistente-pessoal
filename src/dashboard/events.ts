@@ -20,6 +20,9 @@ import {
   monthLabel,
   shiftMonth,
   calendarCells,
+  parsePagination,
+  paginate,
+  renderPagination,
 } from "./utils";
 
 export const eventsRouter = Router();
@@ -93,6 +96,8 @@ eventsRouter.get("/dashboard/events", (req, res) => {
   const qs = `phone=${encodeURIComponent(phone)}`;
   const days = req.query.days === "60" || req.query.days === "90" ? Number(req.query.days) : 30;
   const events = listUpcomingEvents(phone, days);
+  const { page, perPage } = parsePagination(req.query);
+  const pageItems = paginate(events, page, perPage);
 
   const today = todaySP();
   const month = typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : today.slice(0, 7);
@@ -133,8 +138,8 @@ eventsRouter.get("/dashboard/events", (req, res) => {
     }
   </div>`;
 
-  const rows = events.length
-    ? events
+  const rows = pageItems.length
+    ? pageItems
         .map(
           (e) => `
       <tr>
@@ -177,6 +182,7 @@ eventsRouter.get("/dashboard/events", (req, res) => {
     <tr><th>Quando</th><th>Título</th><th>Local</th><th></th></tr>
     ${rows}
   </table></div>
+  ${renderPagination({ basePath: "/dashboard/events", params: { phone, days: String(days) }, page, perPage, total: events.length })}
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Aviso padrão antes dos eventos</h2>
   <form class="card-form" method="post" action="/dashboard/events/settings?${qs}">

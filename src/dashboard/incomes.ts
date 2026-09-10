@@ -21,6 +21,9 @@ import {
   MONEY_MASK_SCRIPT,
   buildCsv,
   formatAmountCsv,
+  parsePagination,
+  paginate,
+  renderPagination,
 } from "./utils";
 
 export const incomesRouter = Router();
@@ -52,13 +55,15 @@ incomesRouter.get("/dashboard/incomes", (req, res) => {
 
   const incomes = getIncomesForMonth(phone, month);
   const monthTotal = incomes.reduce((sum, i) => sum + i.amount, 0);
+  const { page, perPage } = parsePagination(req.query);
+  const pageItems = paginate(incomes, page, perPage);
 
   const monthOptions = months.length
     ? months.map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`).join("")
     : `<option value="${month}" selected>${escapeHtml(monthLabel(month))}</option>`;
 
-  const incomeRows = incomes.length
-    ? incomes
+  const incomeRows = pageItems.length
+    ? pageItems
         .map(
           (i) => `
       <tr>
@@ -101,7 +106,8 @@ incomesRouter.get("/dashboard/incomes", (req, res) => {
   <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Data</th><th>Descrição</th><th style="text-align:right">Valor</th><th></th></tr>
     ${incomeRows}
-  </table></div>`;
+  </table></div>
+  ${renderPagination({ basePath: "/dashboard/incomes", params: { phone, month }, page, perPage, total: incomes.length })}`;
 
   res.send(renderPage({ title: `Entradas — ${monthLabel(month)}`, phone, active: "incomes", body }));
 });

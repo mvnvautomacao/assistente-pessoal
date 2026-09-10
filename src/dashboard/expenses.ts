@@ -28,6 +28,9 @@ import {
   MONEY_MASK_SCRIPT,
   buildCsv,
   formatAmountCsv,
+  parsePagination,
+  paginate,
+  renderPagination,
 } from "./utils";
 
 export const expensesRouter = Router();
@@ -190,11 +193,13 @@ expensesRouter.get("/dashboard", (req, res) => {
   const phone = getPhone(req);
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const { page, perPage } = parsePagination(req.query);
 
   if (q) {
     const results = searchExpenses(phone, q);
-    const rows = results.length
-      ? results.map((e) => expenseRow(phone, e)).join("")
+    const pageItems = paginate(results, page, perPage);
+    const rows = pageItems.length
+      ? pageItems.map((e) => expenseRow(phone, e)).join("")
       : `<tr><td colspan="7" class="empty">Nenhum gasto encontrado pra "${escapeHtml(q)}".</td></tr>`;
 
     const body = `
@@ -211,7 +216,8 @@ expensesRouter.get("/dashboard", (req, res) => {
     <div class="table-wrap"><table class="mobile-cards">
       <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
       ${rows}
-    </table></div>`;
+    </table></div>
+    ${renderPagination({ basePath: "/dashboard", params: { phone, q }, page, perPage, total: results.length })}`;
 
     res.send(renderPage({ title: `Busca: ${q}`, phone, active: "expenses", body }));
     return;
@@ -231,8 +237,9 @@ expensesRouter.get("/dashboard", (req, res) => {
     ? months.map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`).join("")
     : `<option value="${month}" selected>${escapeHtml(monthLabel(month))}</option>`;
 
-  const expenseRows = expenses.length
-    ? expenses.map((e) => expenseRow(phone, e)).join("")
+  const pageItems = paginate(expenses, page, perPage);
+  const expenseRows = pageItems.length
+    ? pageItems.map((e) => expenseRow(phone, e)).join("")
     : `<tr><td colspan="7" class="empty">Nenhum gasto registrado neste mês.</td></tr>`;
 
   const body = `
@@ -268,7 +275,8 @@ expensesRouter.get("/dashboard", (req, res) => {
   <div class="table-wrap"><table class="mobile-cards">
     <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
     ${expenseRows}
-  </table></div>`;
+  </table></div>
+  ${renderPagination({ basePath: "/dashboard", params: { phone, month }, page, perPage, total: expenses.length })}`;
 
   res.send(renderPage({ title: `Gastos — ${monthLabel(month)}`, phone, active: "expenses", body }));
 });

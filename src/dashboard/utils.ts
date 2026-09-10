@@ -109,6 +109,61 @@ export function formatAmountCsv(amount: number): string {
   return amount.toFixed(2).replace(".", ",");
 }
 
+export const PAGE_SIZES = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+export function parsePagination(query: Record<string, unknown>): { page: number; perPage: number } {
+  const rawPerPage = Number(query.per_page);
+  const perPage = PAGE_SIZES.includes(rawPerPage) ? rawPerPage : 10;
+  const rawPage = Number(query.page);
+  const page = Number.isInteger(rawPage) && rawPage >= 1 ? rawPage : 1;
+  return { page, perPage };
+}
+
+export function paginate<T>(items: T[], page: number, perPage: number): T[] {
+  const start = (page - 1) * perPage;
+  return items.slice(start, start + perPage);
+}
+
+// Controles de paginacao (tamanho de pagina + anterior/proximo), reutilizavel em
+// qualquer lista do dashboard -- so aparece se tiver mais de 10 itens (senao nao
+// ha o que paginar). "params" carrega os outros filtros da URL atual (phone,
+// month, q, days...) pra nao se perderem ao trocar de pagina/tamanho.
+export function renderPagination(opts: {
+  basePath: string;
+  params: Record<string, string>;
+  page: number;
+  perPage: number;
+  total: number;
+}): string {
+  if (opts.total <= 10) return "";
+
+  const totalPages = Math.max(1, Math.ceil(opts.total / opts.perPage));
+  const page = Math.min(Math.max(1, opts.page), totalPages);
+
+  const linkFor = (p: number) => `${opts.basePath}?${new URLSearchParams({ ...opts.params, page: String(p), per_page: String(opts.perPage) })}`;
+
+  const hiddenInputs = Object.entries(opts.params)
+    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
+    .join("");
+  const sizeOptions = PAGE_SIZES.map((n) => `<option value="${n}" ${n === opts.perPage ? "selected" : ""}>${n}</option>`).join("");
+
+  return `
+  <div class="pagination">
+    <form method="get" action="${opts.basePath}" class="pagination-size">
+      ${hiddenInputs}
+      <input type="hidden" name="page" value="1">
+      <label for="per_page">Mostrar</label>
+      <select name="per_page" id="per_page" onchange="this.form.submit()">${sizeOptions}</select>
+      <span>por página</span>
+    </form>
+    <div class="pagination-nav">
+      ${page <= 1 ? `<span class="arrow disabled">‹</span>` : `<a class="arrow" href="${linkFor(page - 1)}">‹</a>`}
+      <span>Página ${page} de ${totalPages} · ${opts.total} resultado(s)</span>
+      ${page >= totalPages ? `<span class="arrow disabled">›</span>` : `<a class="arrow" href="${linkFor(page + 1)}">›</a>`}
+    </div>
+  </div>`;
+}
+
 // Mascara de moeda BR (milhar com ponto, 2 casas decimais com virgula), reutilizavel
 // em qualquer pagina: cada <input class="money-mask"> precisa de um
 // <input type="hidden"> logo em seguida no HTML, que recebe o valor decimal puro

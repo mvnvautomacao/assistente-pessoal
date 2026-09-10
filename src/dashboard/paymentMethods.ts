@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { listPaymentMethods, getOrCreatePaymentMethod, renamePaymentMethod, deletePaymentMethod, getDefaultPaymentMethod } from "../expenses/service";
 import { renderPage } from "./layout";
-import { normalizeBrazilPhone, escapeHtml } from "./utils";
+import { normalizeBrazilPhone, escapeHtml, parsePagination, paginate, renderPagination } from "./utils";
 
 export const paymentMethodsRouter = Router();
 
@@ -15,8 +15,10 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   const methods = listPaymentMethods(phone);
   const defaultMethod = getDefaultPaymentMethod(phone);
   const qs = `phone=${encodeURIComponent(phone)}`;
+  const { page, perPage } = parsePagination(req.query);
+  const pageItems = paginate(methods, page, perPage);
 
-  const rows = methods
+  const rows = pageItems
     .map(
       (m) => `
       <tr>
@@ -43,6 +45,7 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
     <tr><th>Nome</th><th></th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
   </table></div>
+  ${renderPagination({ basePath: "/dashboard/payment-methods", params: { phone }, page, perPage, total: methods.length })}
   <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">A forma padrão é usada quando você não especifica no WhatsApp. Pra mudar, mande uma mensagem tipo "meu pagamento padrão é pix".</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova forma de pagamento</h2>

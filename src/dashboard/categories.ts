@@ -2,7 +2,7 @@ import { Router } from "express";
 import { listCategories, getOrCreateCategory, renameCategory, deleteCategory } from "../expenses/service";
 import { listBudgets, setBudget, removeBudget } from "../expenses/budgets";
 import { renderPage } from "./layout";
-import { normalizeBrazilPhone, escapeHtml, formatAmountInput, MONEY_MASK_SCRIPT } from "./utils";
+import { normalizeBrazilPhone, escapeHtml, formatAmountInput, MONEY_MASK_SCRIPT, parsePagination, paginate, renderPagination } from "./utils";
 
 export const categoriesRouter = Router();
 
@@ -16,8 +16,10 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
   const categories = listCategories(phone);
   const budgetByCategory = new Map(listBudgets(phone).map((b) => [b.category_id, b.monthly_limit]));
   const qs = `phone=${encodeURIComponent(phone)}`;
+  const { page, perPage } = parsePagination(req.query);
+  const pageItems = paginate(categories, page, perPage);
 
-  const rows = categories
+  const rows = pageItems
     .map(
       (c) => `
       <tr>
@@ -51,6 +53,7 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
     <tr><th>Nome</th><th>Orçamento mensal (R$)</th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma categoria ainda.</td></tr>`}
   </table></div>
+  ${renderPagination({ basePath: "/dashboard/categories", params: { phone }, page, perPage, total: categories.length })}
   <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">Orçamento é opcional. Deixe em branco e salve pra remover o limite de uma categoria. Você é avisado no WhatsApp ao chegar perto ou passar do valor.</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova categoria</h2>

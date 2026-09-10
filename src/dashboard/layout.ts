@@ -136,6 +136,22 @@ const STYLE = `
   .donut-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .donut-legend-value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+  .pagination {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    gap: 12px; margin: 10px 0 22px; font-size: 0.82rem; color: var(--muted);
+  }
+  .pagination-size { display: flex; align-items: center; gap: 8px; margin: 0; }
+  .pagination-size select { padding: 6px 10px; min-height: auto; font-size: 0.82rem; }
+  .pagination-nav { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  .pagination-nav .arrow {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 10px; flex: none;
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--text); text-decoration: none; font-size: 0.9rem;
+  }
+  .pagination-nav a.arrow:hover { border-color: var(--accent); color: var(--accent); }
+  .pagination-nav .arrow.disabled { opacity: 0.35; pointer-events: none; }
+
   .table-wrap {
     overflow-x: auto; border-radius: 14px; border: 1px solid var(--border);
     background: var(--card); box-shadow: var(--shadow); margin-bottom: 16px;
@@ -281,6 +297,9 @@ const STYLE = `
     table.mobile-cards td.cell-form { flex-direction: column; align-items: stretch; gap: 6px; }
     table.mobile-cards td.cell-form form { display: flex; gap: 8px; width: 100%; }
     table.mobile-cards td.cell-form input { flex: 1; min-width: 0; width: auto !important; }
+
+    .pagination { flex-direction: column; align-items: stretch; }
+    .pagination-nav { justify-content: space-between; }
 
     .donut-wrap { flex-direction: column; align-items: center; text-align: center; }
     .donut { width: 150px; height: 150px; }
