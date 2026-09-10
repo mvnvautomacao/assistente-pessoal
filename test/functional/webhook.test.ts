@@ -21,7 +21,7 @@ import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
-import { listReminders, createReminder, findPendingRemindersByText } from "../../src/reminders/service";
+import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
 
 function evolutionMessage(from: string, text: string) {
@@ -1426,6 +1426,79 @@ test("edit_reminder: mudar so o dia mantem o horario original", async (t) => {
   await handleIncomingMessage(evolutionMessage(ER2, "muda o lembrete do remedio pro dia 12"));
   await handleIncomingMessage(evolutionMessage(ER2, "sim"));
   assert.equal(listReminders(ER2).find((r) => r.id === reminderId)?.due_at, "2026-09-12T21:00:00-03:00"); // manteve as 21h
+});
+
+// Regressao: relatado em producao -- nao existia NENHUM jeito de apagar um
+// lembrete por mensagem (so existia cancelar EVENTO). delete_reminder fecha
+// essa lacuna, com a mesma confirmacao/undo ja usados em delete_event.
+test("delete_reminder: pede confirmacao antes de apagar, 'nao' mantem, 'sim' apaga, e undo recria", async (t) => {
+  const DR1 = "551100090120";
+  seed(DR1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "pagar a internet", due_at: "2026-09-15T09:00:00-03:00" }]);
+  await handleIncomingMessage(evolutionMessage(DR1, "me lembra de pagar a internet dia 15 as 9h"));
+  const reminderId = listReminders(DR1)[0].id;
+
+  queueReply([{ type: "delete_reminder", query: "pagar a internet" }]);
+  await handleIncomingMessage(evolutionMessage(DR1, "apaga o lembrete de pagar a internet"));
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.ok(getReminderById(DR1, reminderId)); // ainda nao apagou, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(DR1, "não"));
+  assert.match(sent[2].text, /não mexi/i);
+  assert.ok(getReminderById(DR1, reminderId));
+
+  queueReply([{ type: "delete_reminder", query: "pagar a internet" }]);
+  await handleIncomingMessage(evolutionMessage(DR1, "apaga o lembrete de pagar a internet"));
+  await handleIncomingMessage(evolutionMessage(DR1, "sim"));
+  assert.equal(getReminderById(DR1, reminderId), undefined);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(DR1, "desfaz isso"));
+  assert.ok(listReminders(DR1).find((r) => r.message === "pagar a internet"));
+});
+
+test("delete_reminder: nenhum lembrete encontrado avisa em vez de pedir confirmacao do nada", async (t) => {
+  const DR2 = "551100090121";
+  seed(DR2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_reminder", query: "nao existe" }]);
+  await handleIncomingMessage(evolutionMessage(DR2, "apaga o lembrete que nao existe"));
+  assert.match(sent[0].text, /[Nn]ão encontrei/);
+});
+
+// Pedido do usuario: lembrete simples nao suporta "avisa X minutos antes"
+// (isso e um recurso so de evento) -- em vez de criar errado ou ignorar, o
+// bot deve perguntar se quer virar evento (aviso antecipado de verdade) ou
+// so quer uma explicacao de como usar a agenda.
+test("reminder com 'avise X min antes': pergunta em vez de criar; 'evento' cria EVENTO com o aviso certo", async (t) => {
+  const RA1 = "551100090122";
+  seed(RA1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "consulta", due_at: "2026-09-20T15:00:00-03:00", advance_minutes: 20 }]);
+  await handleIncomingMessage(evolutionMessage(RA1, "me lembra da consulta dia 20 as 15h, me avisa 20 minutos antes"));
+  assert.match(sent[0].text, /evento/i);
+  assert.equal(listReminders(RA1).length, 0); // nao criou lembrete nenhum ainda
+
+  await handleIncomingMessage(evolutionMessage(RA1, "cria como evento"));
+  const [event] = findUpcomingEvents(RA1, "consulta");
+  assert.ok(event);
+  assert.equal(event.start, "2026-09-20T15:00:00-03:00");
+  assert.equal(event.reminder_minutes, 20);
+  assert.equal(listReminders(RA1).length, 0); // nunca virou lembrete
+});
+
+test("reminder com 'avise X min antes': responder 'explica' ensina a usar a agenda, sem criar nada", async (t) => {
+  const RA2 = "551100090123";
+  seed(RA2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "reminder", message: "reuniao", due_at: "2026-09-21T10:00:00-03:00", advance_minutes: 10 }]);
+  await handleIncomingMessage(evolutionMessage(RA2, "cria um lembrete da reuniao dia 21 as 10h e me avisa 10 min antes"));
+
+  await handleIncomingMessage(evolutionMessage(RA2, "explica"));
+  assert.match(sent[1].text, /agenda/i);
+  assert.equal(listReminders(RA2).length, 0);
+  assert.equal(findUpcomingEvents(RA2, "reuniao").length, 0);
 });
 
 // Pedido do usuario: nao so editar, tambem EXCLUIR (orcamento, gasto fixo) deve

@@ -54,6 +54,12 @@ const STYLE = `
     width: 100%; max-width: 1080px; margin: 0 auto; padding: 12px 24px;
     display: flex; align-items: center; gap: 20px; flex-wrap: wrap; box-sizing: border-box;
   }
+  .menu-toggle {
+    display: none; order: 0; flex: none; width: 38px; height: 38px; align-items: center; justify-content: center;
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+    font-size: 1.05rem; line-height: 1; cursor: pointer; padding: 0;
+  }
+  .menu-toggle:hover { border-color: var(--accent); color: var(--accent); }
   .topbar .brand { font-weight: 800; font-size: 1.02rem; white-space: nowrap; flex: none; order: 1; }
   .topbar nav.tabs { flex: 1; margin-bottom: 0; min-width: 0; order: 2; }
   .topbar-user { display: flex; align-items: center; gap: 14px; flex: none; margin-left: auto; order: 3; }
@@ -217,16 +223,54 @@ const STYLE = `
   @media (max-width: 600px) {
     body { padding: 0 0 56px; }
     .wrap { padding: 20px 14px 0; }
-    .topbar-inner { padding: 10px 14px; gap: 10px; flex-wrap: nowrap; }
+    .topbar-inner { padding: 10px 14px; gap: 10px; flex-wrap: nowrap; position: relative; }
     .topbar .brand { font-size: 0.94rem; }
-    /* tela estreita: nao da espaco pra tudo numa linha so -- esconde o numero
-       (o "Sair" sozinho ja basta) e deixa as abas rolarem de lado dentro do
-       proprio espaco flex:1 que sobrar, sem nunca estourar a largura da tela */
-    .topbar-user .user-phone { display: none; }
+    .topbar-user .user-phone { font-size: 0.72rem; }
+    /* tela estreita: as 6 abas nao cabem numa barra so -- vira um botao de
+       menu (hamburguer) que abre as abas como uma gaveta dropdown, em vez de
+       rolar de lado (dificil de descobrir que da pra arrastar) */
+    .menu-toggle { display: inline-flex; }
+    .topbar nav.tabs {
+      display: none; flex: none; position: absolute; left: 0; right: 0; top: 100%;
+      flex-direction: column; gap: 4px; background: var(--card); border-bottom: 1px solid var(--border);
+      padding: 10px 14px 14px; box-shadow: var(--shadow); overflow: visible;
+    }
+    .topbar nav.tabs.open { display: flex; }
+    .topbar nav.tabs a { width: 100%; text-align: left; }
     h1 { font-size: 1.25rem; }
     .card .value { font-size: 1.3rem; }
     form.card-form { padding: 18px; }
     th, td { padding: 10px 12px; font-size: 0.82rem; }
+
+    /* tabela de gastos (e outras marcadas com .mobile-cards) vira uma lista de
+       cartoes em tela estreita, em vez de rolar de lado -- cada linha vira um
+       bloco, cada celula mostra a coluna que representa (via data-label),
+       igual um app mobile de verdade em vez de uma planilha espremida */
+    .table-wrap table.mobile-cards { min-width: 0; }
+    /* o "> tr" NAO funciona aqui: browser insere um <tbody> implicito em volta
+       de <tr> soltos direto no <table> (nunca escrito no HTML), entao o
+       filho direto de fato e o tbody, nao a tr -- selector descendente
+       (sem ">") ignora essa camada extra e sempre acerta. */
+    table.mobile-cards tr:first-child { display: none; } /* linha de cabecalho (sem thead nessa tabela) */
+    table.mobile-cards tr {
+      display: flex; flex-direction: column; padding: 12px 14px; border-bottom: 1px solid var(--border);
+    }
+    table.mobile-cards tr:last-child { border-bottom: none; }
+    table.mobile-cards td {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 5px 0; border-bottom: none; font-size: 0.88rem;
+    }
+    table.mobile-cards td[data-label]::before {
+      content: attr(data-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--muted); font-weight: 700; flex: none;
+    }
+    /* checkbox de selecao em lote e os links de editar/excluir sao "acoes",
+       nao dado do gasto -- agrupados visualmente no fim do cartao (nao logo
+       no topo, onde ficaria estranho por nao ter rotulo nenhum) */
+    table.mobile-cards td.cell-check { order: 90; justify-content: flex-end; padding-top: 10px; }
+    table.mobile-cards td.row-actions { order: 91; justify-content: flex-end; gap: 16px; padding-top: 4px; }
+    table.mobile-cards td.empty { display: block; text-align: center; }
+
     .calendar { gap: 3px; }
     .calendar-cell { min-height: 52px; padding: 3px; border-radius: 7px; }
     .calendar-cell .day-num { font-size: 0.68rem; }
@@ -315,17 +359,17 @@ ${opts.error ? `<p class="banner error">${escapeHtml(opts.error)}</p>` : ""}
 ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, a senha foi enviada por WhatsApp. Pode levar alguns segundos.</p>` : ""}
 <form method="post" action="/dashboard/login">
   <label for="phone">WhatsApp</label>
-  <input name="phone" id="phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="off" autofocus required>
+  <input name="phone" id="phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="username" autofocus required>
   <p class="error field" id="phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
   <label for="password">Senha</label>
-  <input name="password" id="password" type="text" autocomplete="off" required>
+  <input name="password" id="password" type="text" autocomplete="current-password" required>
   <button type="submit">Entrar</button>
 </form>
 <details class="forgot">
   <summary>Esqueci minha senha</summary>
   <form method="post" action="/dashboard/request-password">
     <label for="reset-phone">WhatsApp</label>
-    <input name="phone" id="reset-phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="off" required>
+    <input name="phone" id="reset-phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="tel" required>
     <p class="error field" id="reset-phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
     <button type="submit" class="secondary">Receber senha pelo WhatsApp</button>
   </form>
@@ -373,12 +417,13 @@ ${pwaHeadTags()}
 <body>
 <header class="topbar">
   <div class="topbar-inner">
+    <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Abrir menu" aria-expanded="false">☰</button>
     <span class="brand">Organizaí</span>
     <div class="topbar-user">
       <span class="user-phone">${escapeHtml(formatPhoneForDisplay(opts.phone))}</span>
       <form method="post" action="/dashboard/logout"><button type="submit">Sair</button></form>
     </div>
-    <nav class="tabs">
+    <nav class="tabs" id="tabs-nav">
       ${tab("/dashboard", "expenses", "Gastos")}
       ${tab("/dashboard/incomes", "incomes", "Entradas")}
       ${tab("/dashboard/categories", "categories", "Categorias")}
@@ -393,6 +438,24 @@ ${pwaHeadTags()}
 </div>
 <script>
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
+  (function () {
+    // menu hamburguer: so existe efeito visual em telas estreitas (a media
+    // query e quem decide se o botao aparece e se nav.tabs vira dropdown) --
+    // aqui so cuida de abrir/fechar, sem se preocupar com o tamanho da tela.
+    var toggle = document.getElementById("menu-toggle");
+    var nav = document.getElementById("tabs-nav");
+    if (!toggle || !nav) return;
+    toggle.addEventListener("click", function () {
+      var isOpen = nav.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    });
+    document.addEventListener("click", function (e) {
+      if (!nav.classList.contains("open")) return;
+      if (nav.contains(e.target) || toggle.contains(e.target)) return;
+      nav.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+    });
+  })();
 </script>
 </body>
 </html>`;

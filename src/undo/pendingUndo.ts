@@ -21,6 +21,7 @@ export type UndoAction =
       description: string;
     }
   | { kind: "delete_reminder"; reminderId: number; description: string }
+  | { kind: "recreate_reminder"; params: { toNumber: string; message: string; dueAt: string }; description: string }
   | { kind: "delete_income"; incomeId: number; description: string }
   | {
       kind: "bulk_restore_category";

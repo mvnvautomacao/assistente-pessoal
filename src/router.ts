@@ -27,6 +27,7 @@ import {
   deleteReminder,
   updateReminder,
   findPendingRemindersByText,
+  getReminderById,
 } from "./reminders/service";
 import { setPendingEditEvent, getPendingEditEvent, clearPendingEditEvent, PendingEditEvent } from "./events/pendingEditEvent";
 import {
@@ -35,6 +36,16 @@ import {
   clearPendingEditReminder,
   PendingEditReminder,
 } from "./reminders/pendingEditReminder";
+import {
+  setPendingReminderDeletion,
+  getPendingReminderDeletion,
+  clearPendingReminderDeletion,
+} from "./reminders/pendingDeletion";
+import {
+  setPendingReminderAdvanceChoice,
+  getPendingReminderAdvanceChoice,
+  clearPendingReminderAdvanceChoice,
+} from "./reminders/pendingAdvanceChoice";
 import { setPendingRemoveBudget, getPendingRemoveBudget, clearPendingRemoveBudget, PendingRemoveBudget } from "./expenses/pendingRemoveBudget";
 import {
   setPendingRemoveRecurring,
@@ -514,6 +525,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingReminderDeletion = getPendingReminderDeletion(from);
+    if (pendingReminderDeletion) {
+      await resolveReminderDeletionConfirmation(from, pendingReminderDeletion, text);
+      return;
+    }
+
+    const pendingReminderAdvanceChoice = getPendingReminderAdvanceChoice(from);
+    if (pendingReminderAdvanceChoice) {
+      await resolveReminderAdvanceChoice(from, pendingReminderAdvanceChoice, text);
+      return;
+    }
+
     const pendingRemoveBudget = getPendingRemoveBudget(from);
     if (pendingRemoveBudget) {
       await resolveRemoveBudgetConfirmation(from, pendingRemoveBudget, text);
@@ -652,13 +675,23 @@ async function createExpenseAndNotify(
 // Cria o evento de verdade. Extraido do case "event" pra ser reaproveitado
 // tambem quando um evento parcial (faltando dia e/ou horario) termina de ser
 // completado (ver resolvePendingCompletion).
-async function createEventAndNotify(from: string, params: { title: string; start: string; end?: string; location?: string }) {
+async function createEventAndNotify(
+  from: string,
+  params: { title: string; start: string; end?: string; location?: string; reminderMinutes?: number }
+) {
   // a IA/o merge devolve o horario em hora local de Brasilia mas nem sempre
   // com o offset explicito -03:00; sem isso, o resto do sistema pode tratar
   // como UTC e adiantar o evento em 3h (ver ensureBrazilOffset em timeSP.ts)
   const start = ensureBrazilOffset(params.start);
   const end = params.end ? ensureBrazilOffset(params.end) : undefined;
-  const created = createEvent({ fromNumber: from, title: params.title, start, end, location: params.location });
+  const created = createEvent({
+    fromNumber: from,
+    title: params.title,
+    start,
+    end,
+    location: params.location,
+    reminderMinutes: params.reminderMinutes,
+  });
   setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: params.title });
   logActivity(from, "event", `${params.title} — ${start}`);
   await sendText(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`);
@@ -1418,6 +1451,79 @@ async function resolveEventDeletionConfirmation(from: string, pending: { eventId
   await sendText(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
 }
 
+// resposta a "confirma que quer apagar o lembrete X?" -- mesma ideia de
+// resolveEventDeletionConfirmation, pra lembrete.
+async function resolveReminderDeletionConfirmation(from: string, pending: { reminderId: number; message: string }, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — quer mesmo apagar o lembrete "${pending.message}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingReminderDeletion(from);
+  if (no) {
+    logActivity(from, "delete_reminder", `cancelamento de "${pending.message}" nao confirmado`);
+    await sendText(from, `Beleza, não mexi em nada — o lembrete "${pending.message}" continua ativo.`);
+    return;
+  }
+
+  const fullReminder = getReminderById(from, pending.reminderId);
+  deleteReminder(from, pending.reminderId);
+  if (fullReminder) {
+    setPendingUndo(from, {
+      kind: "recreate_reminder",
+      params: { toNumber: from, message: fullReminder.message, dueAt: fullReminder.due_at },
+      description: fullReminder.message,
+    });
+  }
+  logActivity(from, "delete_reminder", `confirmado: removido "${pending.message}"`);
+  await sendText(from, `🗑️ Lembrete "${pending.message}" removido.`);
+}
+
+// resposta a "quer que eu crie como evento ou te explico como usar a agenda?"
+// -- lembrete pedido com "avise X min antes", que lembrete simples nao suporta.
+async function resolveReminderAdvanceChoice(
+  from: string,
+  pending: { message: string; dueAt: string; advanceMinutes: number },
+  answerText: string
+) {
+  const normalized = answerText.trim().toLowerCase();
+  const wantsEvent = /\b(evento|agenda|cria|criar|marca|marcar|pode|sim|isso|beleza)\b/.test(normalized);
+  const wantsExplanation = /\b(explic|como|d[uú]vida|ensina)\b/.test(normalized);
+  const cancels = /^(n[aã]o|nao quero|cancela|deixa|esquece)\b/.test(normalized) && !wantsEvent;
+
+  if (cancels) {
+    clearPendingReminderAdvanceChoice(from);
+    logActivity(from, "reminder", `pedido de aviso antecipado pra "${pending.message}" cancelado`);
+    await sendText(from, "Beleza, não criei nada.");
+    return;
+  }
+
+  if (wantsExplanation && !wantsEvent) {
+    clearPendingReminderAdvanceChoice(from);
+    logActivity(from, "reminder", `explicou como usar a agenda pra aviso antecipado ("${pending.message}")`);
+    await sendText(
+      from,
+      `📅 Pra ser avisado com antecedência, marca como um EVENTO na agenda em vez de lembrete — o evento já tem esse recurso pronto.\n\nExemplo: "marca ${pending.message} dia ${formatDateOnly(pending.dueAt)} às ${pending.dueAt.slice(11, 16)}, me avisa ${pending.advanceMinutes} minutos antes".\n\nSe preferir, é só responder "cria como evento" agora que eu já crio com esses dados.`
+    );
+    return;
+  }
+
+  if (wantsEvent) {
+    clearPendingReminderAdvanceChoice(from);
+    await createEventAndNotify(from, { title: pending.message, start: pending.dueAt, reminderMinutes: pending.advanceMinutes });
+    return;
+  }
+
+  await sendText(
+    from,
+    `Não entendi — quer que eu crie "${pending.message}" como um EVENTO na agenda (aviso ${pending.advanceMinutes} min antes de verdade), ou prefere que eu explique como fazer isso você mesmo? Responde "evento" ou "explica".`
+  );
+}
+
 // resposta a "confirma que quer mudar N gastos pra categoria X?" -- so aplica de
 // verdade com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
 async function resolveBulkRecategorizeConfirmation(from: string, pending: PendingBulkRecategorize, answerText: string) {
@@ -1915,7 +2021,49 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "reminder": {
+      // due_at as vezes vem vazio/malformado quando a IA tenta preencher tanto
+      // due_at quanto advance_minutes ao mesmo tempo (caso raro ja visto na
+      // verificacao) -- sem essa guarda, ensureBrazilOffset quebraria em cima
+      // de um valor invalido em vez de so pedir de novo.
+      if (interpretation.advance_minutes && !interpretation.due_at) {
+        await sendText(from, "Não entendi direito pra quando é o lembrete. Me diga o dia e o horário de novo, junto com a antecedência do aviso.");
+        break;
+      }
+      if (interpretation.advance_minutes) {
+        const dueAt = ensureBrazilOffset(interpretation.due_at);
+        setPendingReminderAdvanceChoice(from, {
+          message: interpretation.message,
+          dueAt,
+          advanceMinutes: interpretation.advance_minutes,
+        });
+        logActivity(from, "reminder", `pediu aviso antecipado (${interpretation.advance_minutes} min) pra "${interpretation.message}" -- lembrete simples nao suporta, perguntando`);
+        await sendText(
+          from,
+          `⏰ Lembrete avisa exatamente na hora marcada, sem antecedência — não dá pra avisar ${interpretation.advance_minutes} min antes de um lembrete simples.\n\nQuer que eu crie "${interpretation.message}" como um EVENTO na agenda em vez disso (aí sim funciona o aviso antecipado), ou prefere que eu explique como fazer isso você mesmo? Responde "evento" ou "explica".`
+        );
+        break;
+      }
       await createReminderAndNotify(from, { message: interpretation.message, due_at: interpretation.due_at });
+      break;
+    }
+    case "delete_reminder": {
+      const matches = findPendingRemindersByText(from, interpretation.query);
+      if (matches.length === 0) {
+        logActivity(from, "delete_reminder", `nenhum lembrete encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não encontrei nenhum lembrete parecido com "${interpretation.query}".`);
+      } else if (matches.length === 1) {
+        const reminder = matches[0];
+        setPendingReminderDeletion(from, reminder.id, reminder.message);
+        logActivity(from, "delete_reminder", `pediu confirmacao pra apagar "${reminder.message}"`);
+        await sendText(
+          from,
+          `Encontrei o lembrete "${reminder.message}" pra ${formatDateTime(reminder.due_at)}. Confirma que quer apagar? Responde "sim" ou "não".`
+        );
+      } else {
+        const list = matches.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n");
+        logActivity(from, "delete_reminder", `${matches.length} lembretes parecidos com "${interpretation.query}", pedi pra especificar`);
+        await sendText(from, `Achei mais de um lembrete parecido com "${interpretation.query}":\n${list}\n\nMe diga o texto mais específico de qual quer apagar.`);
+      }
       break;
     }
     case "edit_reminder": {
@@ -2454,6 +2602,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           deleteReminder(from, undo.reminderId);
           logActivity(from, "undo", `lembrete removido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: lembrete "${undo.description}" removido.`);
+          break;
+        case "recreate_reminder":
+          createReminder(undo.params.toNumber, undo.params.message, undo.params.dueAt);
+          logActivity(from, "undo", `lembrete recriado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou.`);
           break;
         case "delete_income":
           deleteIncome(from, undo.incomeId);

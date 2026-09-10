@@ -71,12 +71,12 @@ function paymentMethodOptions(phone: string, selectedId: number | null) {
 function expenseRow(phone: string, e: ExpenseListItem) {
   return `
       <tr>
-        <td><input type="checkbox" class="bulk-select-checkbox" name="expense_ids" value="${e.id}" form="bulk-cat-form"></td>
-        <td>${formatDate(e.date)}</td>
-        <td>${escapeHtml(e.description)}</td>
-        <td><span class="tag">${escapeHtml(e.category ?? "Sem categoria")}</span></td>
-        <td>${escapeHtml(e.payment_method ?? "—")}</td>
-        <td class="amount">${formatMoney(e.amount)}</td>
+        <td class="cell-check"><input type="checkbox" class="bulk-select-checkbox" name="expense_ids" value="${e.id}" form="bulk-cat-form"></td>
+        <td data-label="Data">${formatDate(e.date)}</td>
+        <td data-label="Descrição">${escapeHtml(e.description)}</td>
+        <td data-label="Categoria"><span class="tag">${escapeHtml(e.category ?? "Sem categoria")}</span></td>
+        <td data-label="Pagamento">${escapeHtml(e.payment_method ?? "—")}</td>
+        <td class="amount" data-label="Valor">${formatMoney(e.amount)}</td>
         <td class="row-actions">
           <a class="link-action" href="/dashboard/expenses/${e.id}/edit?phone=${encodeURIComponent(phone)}">Editar</a>
           <form class="inline" method="post" action="/dashboard/expenses/${e.id}/delete?phone=${encodeURIComponent(phone)}" onsubmit="return confirm('Excluir esse gasto?')">
@@ -178,7 +178,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     ${searchBox(phone, q)}
     <p class="empty" style="text-align:left;padding:0 0 16px">${results.length} gasto(s) encontrado(s), de todos os meses.</p>
     ${results.length ? bulkRecategorizeBar(phone) : ""}
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="mobile-cards">
       <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
       ${rows}
     </table></div>`;
@@ -235,7 +235,7 @@ expensesRouter.get("/dashboard", (req, res) => {
   </div>
 
   ${expenses.length ? bulkRecategorizeBar(phone) : ""}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
     ${expenseRows}
   </table></div>`;
