@@ -36,19 +36,43 @@ function getPhone(req: { query: Record<string, unknown> }): string {
   return typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
 }
 
-function barList(items: { name: string; total: number }[]) {
+const CHART_COLORS = ["#2f6fee", "#34d399", "#f0576b", "#f5b942", "#a78bfa", "#38bdf8", "#fb7185", "#facc15", "#4ade80", "#c084fc"];
+
+// donut em SVG puro (sem lib de grafico): circulo com raio 15.915 tem
+// circunferencia = 100, entao a porcentagem de cada fatia vira direto o
+// stroke-dasharray. O dashoffset gira o inicio de cada fatia -- 25 poe a
+// primeira fatia no topo (12h em vez de 3h, que e onde o path comeca), e vai
+// subtraindo o acumulado das fatias anteriores pra encaixar a proxima em
+// seguida (normalizado com "+100 % 100" pra nao ficar negativo).
+function donutChart(items: { name: string; total: number }[]) {
   if (!items.length) return `<p class="empty">Nada neste mês.</p>`;
-  const max = Math.max(...items.map((i) => i.total));
-  return items
+  const total = items.reduce((sum, i) => sum + i.total, 0);
+  if (!total) return `<p class="empty">Nada neste mês.</p>`;
+
+  let cumulative = 0;
+  const segments = items.map((i, idx) => {
+    const pct = (i.total / total) * 100;
+    const offset = ((25 - cumulative) % 100 + 100) % 100;
+    cumulative += pct;
+    return `<circle class="donut-seg" cx="21" cy="21" r="15.915" fill="transparent" stroke="${CHART_COLORS[idx % CHART_COLORS.length]}" stroke-width="6" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}"></circle>`;
+  });
+
+  const legend = items
     .map(
-      (i) => `
-      <div class="bar-row">
-        <div class="bar-label">${escapeHtml(i.name)}</div>
-        <div class="bar-track"><div class="bar-fill" style="width:${Math.max((i.total / max) * 100, 3)}%"></div></div>
-        <div class="bar-value">${formatMoney(i.total)}</div>
+      (i, idx) => `
+      <div class="donut-legend-row">
+        <span class="dot" style="background:${CHART_COLORS[idx % CHART_COLORS.length]}"></span>
+        <span class="donut-legend-name">${escapeHtml(i.name)}</span>
+        <span class="donut-legend-value">${formatMoney(i.total)} · ${Math.round((i.total / total) * 100)}%</span>
       </div>`
     )
     .join("");
+
+  return `
+  <div class="donut-wrap">
+    <svg viewBox="0 0 42 42" class="donut">${segments.join("")}</svg>
+    <div class="donut-legend">${legend}</div>
+  </div>`;
 }
 
 function categoryOptions(phone: string, selectedId: number | null) {
@@ -112,7 +136,13 @@ function bulkRecategorizeBar(phone: string) {
         checkboxes().forEach(function (cb) { cb.checked = selectAll.checked; });
         updateCount();
       });
-      checkboxes().forEach(function (cb) { cb.addEventListener("change", updateCount); });
+      // delegacao no document: os checkboxes de cada linha ficam FORA deste
+      // form no HTML (apontam pra ca via form="bulk-cat-form") e sao
+      // renderizados DEPOIS deste <script> -- anexar o listener direto neles
+      // aqui nao pegaria nenhum, pois ainda nao existem no DOM nesse momento.
+      document.addEventListener("change", function (e) {
+        if (e.target && e.target.classList && e.target.classList.contains("bulk-select-checkbox")) updateCount();
+      });
       if (form) form.addEventListener("submit", function (e) {
         if (document.querySelectorAll(".bulk-select-checkbox:checked").length === 0) {
           e.preventDefault();
@@ -230,8 +260,8 @@ expensesRouter.get("/dashboard", (req, res) => {
   </div>
 
   <div class="panels">
-    <div class="panel"><h2>Por categoria</h2>${barList(categoryTotals)}</div>
-    <div class="panel"><h2>Por forma de pagamento</h2>${barList(paymentTotals)}</div>
+    <div class="panel"><h2>Por categoria</h2>${donutChart(categoryTotals)}</div>
+    <div class="panel"><h2>Por forma de pagamento</h2>${donutChart(paymentTotals)}</div>
   </div>
 
   ${expenses.length ? bulkRecategorizeBar(phone) : ""}

@@ -138,9 +138,9 @@ eventsRouter.get("/dashboard/events", (req, res) => {
         .map(
           (e) => `
       <tr>
-        <td>${escapeHtml(toSPDateTimeLocal(e.start)).replace("T", " ")}</td>
-        <td>${escapeHtml(e.title)}</td>
-        <td>${escapeHtml(e.location ?? "—")}</td>
+        <td data-label="Quando">${escapeHtml(toSPDateTimeLocal(e.start)).replace("T", " ")}</td>
+        <td data-label="Título">${escapeHtml(e.title)}</td>
+        <td data-label="Local">${escapeHtml(e.location ?? "—")}</td>
         <td class="row-actions">
           <a class="link-action" href="/dashboard/events/${e.id}/edit?${qs}">Editar</a>
           <form class="inline" method="post" action="/dashboard/events/${e.id}/delete?${qs}" onsubmit="return confirm('Excluir esse evento da agenda?')">
@@ -173,7 +173,7 @@ eventsRouter.get("/dashboard/events", (req, res) => {
   <h2 style="font-size:0.95rem;margin:0 0 12px">Próximos eventos</h2>
   <div class="chip-row">${dayChip(30, "30 dias")}${dayChip(60, "60 dias")}${dayChip(90, "90 dias")}</div>
 
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Quando</th><th>Título</th><th>Local</th><th></th></tr>
     ${rows}
   </table></div>

@@ -21,13 +21,13 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
     .map(
       (c) => `
       <tr>
-        <td>
+        <td class="cell-form" data-label="Nome">
           <form class="inline" method="post" action="/dashboard/categories/${c.id}?${qs}">
             <input type="text" name="name" value="${escapeHtml(c.name)}" style="width:220px">
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
-        <td>
+        <td class="cell-form" data-label="Orçamento mensal (R$)">
           <form class="inline" method="post" action="/dashboard/categories/${c.id}/budget?${qs}">
             <input type="text" inputmode="decimal" class="money-mask" placeholder="Sem limite" autocomplete="off" style="width:110px"
               value="${budgetByCategory.has(c.id) ? formatAmountInput(budgetByCategory.get(c.id)!) : ""}">
@@ -47,7 +47,7 @@ categoriesRouter.get("/dashboard/categories", (req, res) => {
   const body = `
   <header><h1>Categorias</h1></header>
 
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Nome</th><th>Orçamento mensal (R$)</th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma categoria ainda.</td></tr>`}
   </table></div>

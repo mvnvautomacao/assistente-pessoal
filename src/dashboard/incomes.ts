@@ -62,9 +62,9 @@ incomesRouter.get("/dashboard/incomes", (req, res) => {
         .map(
           (i) => `
       <tr>
-        <td>${formatDate(i.date)}</td>
-        <td>${escapeHtml(i.description)}</td>
-        <td class="amount">${formatMoney(i.amount)}</td>
+        <td data-label="Data">${formatDate(i.date)}</td>
+        <td data-label="Descrição">${escapeHtml(i.description)}</td>
+        <td class="amount" data-label="Valor">${formatMoney(i.amount)}</td>
         <td class="row-actions">
           <a class="link-action" href="/dashboard/incomes/${i.id}/edit?phone=${encodeURIComponent(phone)}">Editar</a>
           <form class="inline" method="post" action="/dashboard/incomes/${i.id}/delete?phone=${encodeURIComponent(phone)}" onsubmit="return confirm('Excluir essa entrada?')">
@@ -98,7 +98,7 @@ incomesRouter.get("/dashboard/incomes", (req, res) => {
     <div class="card"><div class="label">Nº de entradas</div><div class="value">${incomes.length}</div></div>
   </div>
 
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Data</th><th>Descrição</th><th style="text-align:right">Valor</th><th></th></tr>
     ${incomeRows}
   </table></div>`;

@@ -20,9 +20,9 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
         .map(
           (r) => `
       <tr>
-        <td>${escapeHtml(toSPDateTimeLocal(r.due_at)).replace("T", " ")}</td>
-        <td>${escapeHtml(r.message)}</td>
-        <td><span class="tag" style="${r.sent ? "background:var(--border);color:var(--muted)" : ""}">${r.sent ? "Enviado" : "Pendente"}</span></td>
+        <td data-label="Data/hora">${escapeHtml(toSPDateTimeLocal(r.due_at)).replace("T", " ")}</td>
+        <td data-label="Mensagem">${escapeHtml(r.message)}</td>
+        <td data-label="Status"><span class="tag" style="${r.sent ? "background:var(--border);color:var(--muted)" : ""}">${r.sent ? "Enviado" : "Pendente"}</span></td>
         <td class="row-actions">
           <a class="link-action" href="/dashboard/reminders/${r.id}/edit?${qs}">Editar</a>
           <form class="inline" method="post" action="/dashboard/reminders/${r.id}/delete?${qs}" onsubmit="return confirm('Excluir esse lembrete?')">
@@ -40,7 +40,7 @@ remindersRouter.get("/dashboard/reminders", (req, res) => {
     <a class="btn" href="/dashboard/reminders/new?${qs}">+ Novo lembrete</a>
   </header>
 
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Data/hora</th><th>Mensagem</th><th>Status</th><th></th></tr>
     ${rows}
   </table></div>`;

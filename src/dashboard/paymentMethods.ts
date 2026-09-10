@@ -20,13 +20,13 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
     .map(
       (m) => `
       <tr>
-        <td>
+        <td class="cell-form" data-label="Nome">
           <form class="inline" method="post" action="/dashboard/payment-methods/${m.id}?${qs}">
             <input type="text" name="name" value="${escapeHtml(m.name)}" style="width:220px">
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
-        <td>${defaultMethod?.id === m.id ? '<span class="tag">Padrão</span>' : ""}</td>
+        <td data-label="Padrão">${defaultMethod?.id === m.id ? '<span class="tag">Padrão</span>' : "—"}</td>
         <td class="row-actions">
           <form class="inline" method="post" action="/dashboard/payment-methods/${m.id}/delete?${qs}" onsubmit="return confirm('Excluir \\'${escapeHtml(m.name)}\\'? Os gastos com ela ficam sem forma de pagamento.')">
             <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
@@ -39,7 +39,7 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   const body = `
   <header><h1>Formas de pagamento</h1></header>
 
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table class="mobile-cards">
     <tr><th>Nome</th><th></th><th></th></tr>
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
   </table></div>

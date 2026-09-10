@@ -127,11 +127,14 @@ const STYLE = `
   @media (max-width: 700px) { .panels { grid-template-columns: 1fr; } }
   .panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: var(--shadow); }
   .panel h2 { font-size: 0.92rem; margin: 0 0 16px; color: var(--text); }
-  .bar-row { display: grid; grid-template-columns: 96px 1fr 84px; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 0.84rem; }
-  .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-  .bar-track { background: var(--bg-soft); border-radius: 6px; height: 9px; overflow: hidden; }
-  .bar-fill { background: linear-gradient(90deg, var(--accent), var(--accent-hover)); height: 100%; border-radius: 6px; }
-  .bar-value { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  .donut-wrap { display: flex; align-items: center; gap: 22px; }
+  .donut { width: 120px; height: 120px; flex: none; }
+  .donut-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+  .donut-legend-row { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; }
+  .donut-legend .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .donut-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .donut-legend-value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   .table-wrap {
     overflow-x: auto; border-radius: 14px; border: 1px solid var(--border);
@@ -270,6 +273,19 @@ const STYLE = `
     table.mobile-cards td.cell-check { order: 90; justify-content: flex-end; padding-top: 10px; }
     table.mobile-cards td.row-actions { order: 91; justify-content: flex-end; gap: 16px; padding-top: 4px; }
     table.mobile-cards td.empty { display: block; text-align: center; }
+
+    /* celulas com um <form> inline dentro (ex: renomear categoria/forma de
+       pagamento, editar orcamento) tem largura fixa no input (pensada pra
+       desktop) -- em cartao mobile isso forcava rolagem de lado, entao aqui
+       o rotulo vai pro topo e o form ocupa a largura toda do cartao. */
+    table.mobile-cards td.cell-form { flex-direction: column; align-items: stretch; gap: 6px; }
+    table.mobile-cards td.cell-form form { display: flex; gap: 8px; width: 100%; }
+    table.mobile-cards td.cell-form input { flex: 1; min-width: 0; width: auto !important; }
+
+    .donut-wrap { flex-direction: column; align-items: center; text-align: center; }
+    .donut { width: 150px; height: 150px; }
+    .donut-legend { width: 100%; }
+    .donut-legend-name { text-align: left; }
 
     .calendar { gap: 3px; }
     .calendar-cell { min-height: 52px; padding: 3px; border-radius: 7px; }
