@@ -893,10 +893,11 @@ async function finalizeReceiptExpense(from: string, pending: PendingReceiptConfi
 
 // Le a foto de comprovante e monta a pendencia de confirmacao -- SEMPRE passa
 // por confirmacao antes de registrar (foto erra mais que texto digitado).
-// A leitura da imagem traz SO valor total, data e local -- categoria e forma
-// de pagamento nunca vem da foto (ver interpretReceiptImage), sempre
-// perguntadas por texto aqui (exceto quando o local bate com uma palavra-chave
-// de categoria ja aprendida desse numero).
+// A leitura da imagem traz valor total, data, local e uma categoria unica
+// (inferida pelo estabelecimento/tipo geral dos itens, nunca item por item --
+// ver interpretReceiptImage) -- forma de pagamento nunca vem da foto, sempre
+// perguntada por texto aqui. Se a IA nao arriscou categoria, tenta ainda por
+// palavra-chave ja aprendida desse numero antes de perguntar.
 async function handleReceiptImage(from: string, imageBase64: string, mimeType: string) {
   const reading = await interpretReceiptImage(from, imageBase64, mimeType);
   if (!reading.isReceipt) {
@@ -908,7 +909,7 @@ async function handleReceiptImage(from: string, imageBase64: string, mimeType: s
     return;
   }
 
-  const resolvedCategory = findCategoryByKeyword(from, reading.description);
+  const resolvedCategory = (reading.category && findCategoryByName(from, reading.category)) || findCategoryByKeyword(from, reading.description);
 
   const base: ReceiptFields = {
     description: reading.description,

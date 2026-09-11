@@ -397,19 +397,25 @@ export type ReceiptReading =
       description: string;
       date: string;
       totalAmount: number;
+      category?: string;
     };
 
-// So 3 campos saem de uma foto: valor TOTAL, data e local (nome do
-// estabelecimento) -- NUNCA categoria, forma de pagamento ou parcelamento.
-// Isso e proposital (nao e so "a IA nao arriscou"): uma nota fiscal real pode
+// So sai da leitura de uma foto: valor TOTAL, data, local (nome do
+// estabelecimento) e uma UNICA categoria -- nunca forma de pagamento ou
+// parcelamento (ver historico deste comentario: uma nota fiscal real pode
 // listar varios itens/valores/parcelas, e uma leitura errada de qualquer um
-// desses campos ja causou gasto duplicado/errado em producao. Simplificando
-// pra so o total geral elimina essa classe de erro por completo -- categoria
-// e forma de pagamento sao sempre perguntadas por texto depois (ver
-// handleReceiptImage em router.ts), nunca adivinhadas a partir da imagem.
+// desses dois campos ja causou gasto duplicado/errado em producao). A
+// categoria PODE ser inferida olhando os itens da nota (ex: uma nota de
+// mercado com itens de limpeza sugere 'Mercado'; ler os itens so pra decidir
+// isso e permitido e ate incentivado, senao a categoria fica sempre em branco
+// pra notas de estabelecimento generico tipo 'Extrafarma'/'Magazine X') --
+// mas os itens em si NUNCA aparecem em nenhum campo da saida, so essa unica
+// categoria resumo. Categoria/forma de pagamento continuam podendo ser
+// perguntadas por texto depois quando a IA nao tiver confianca (ver
+// handleReceiptImage em router.ts).
 const READ_RECEIPT_TOOL: Anthropic.Tool = {
   name: "read_receipt",
-  description: "Le uma foto de comprovante/nota fiscal de compra e extrai SO o valor total, a data e o local -- nunca item por item.",
+  description: "Le uma foto de comprovante/nota fiscal de compra e extrai o valor total, a data, o local e a categoria -- nunca item por item.",
   input_schema: {
     type: "object",
     properties: {
@@ -430,6 +436,11 @@ const READ_RECEIPT_TOOL: Anthropic.Tool = {
         description:
           "Valor TOTAL geral da compra (rodape, rotulado 'TOTAL'/'VALOR PAGO'/'VALOR A PAGAR'), MESMO que a nota liste varios itens ou pareca parcelada -- ignore parcelamento e sempre retorne o total cheio da compra inteira. NUNCA some itens manualmente, NUNCA pegue o subtotal/valor de um produto ou parcela especifica -- se nao achar um total geral claro e explicito, deixe vazio.",
       },
+      category: {
+        type: "string",
+        description:
+          "Categoria do gasto, inferida pelo NOME do estabelecimento e/ou pelo TIPO GERAL dos itens visiveis na nota (ex: posto de gasolina -> Veiculo; itens de alimentacao/limpeza -> Mercado; remedios -> Saude; roupas -> Compras; comida pronta -> Alimentacao). Pode olhar os itens da nota SO pra decidir essa categoria unica -- mas NUNCA liste, descreva ou mencione os itens individualmente em nenhum campo (a nota inteira continua sendo UM gasto so, com o valor TOTAL geral, nunca um por item). Prefira uma das categorias existentes do usuario quando fizer sentido; se o tipo de estabelecimento/compra nao ficar claro o suficiente, deixe vazio -- o sistema pergunta ao usuario.",
+      },
     },
     required: ["is_receipt"],
   },
@@ -441,11 +452,14 @@ const READ_RECEIPT_TOOL: Anthropic.Tool = {
 // antes de registrar (foto erra mais que texto digitado), preenchendo so o
 // que faltar (categoria/forma de pagamento) antes de mostrar o resumo final.
 export async function interpretReceiptImage(fromNumber: string, imageBase64: string, mediaType: string): Promise<ReceiptReading> {
+  const categoryNames = listCategories(fromNumber)
+    .map((c) => c.name)
+    .join(", ");
   const response = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 300,
     system:
-      "Voce le fotos de comprovante/nota fiscal de compra pra um assistente financeiro pessoal. Extraia SO o valor TOTAL geral da compra, a data e o local (nome do estabelecimento) -- NUNCA liste ou some itens individuais, NUNCA tente identificar categoria, forma de pagamento ou parcelamento, mesmo que a nota mostre varios produtos/valores. Sempre chame a ferramenta read_receipt com o resultado.",
+      `Voce le fotos de comprovante/nota fiscal de compra pra um assistente financeiro pessoal. Categorias de gasto ja existentes desse usuario: ${categoryNames}. Extraia o valor TOTAL geral da compra, a data, o local (nome do estabelecimento) e UMA categoria unica pro gasto inteiro -- pode olhar o tipo geral dos itens da nota so pra decidir a categoria (ex: itens de mercado -> Mercado), mas NUNCA liste, some ou mencione os itens individualmente em nenhum campo, NUNCA identifique forma de pagamento ou parcelamento, mesmo que a nota mostre varios produtos/valores -- e sempre um unico gasto, com o valor total geral. Sempre chame a ferramenta read_receipt com o resultado.`,
     tools: [READ_RECEIPT_TOOL],
     tool_choice: { type: "tool", name: "read_receipt" },
     messages: [
@@ -453,7 +467,7 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mediaType as "image/jpeg", data: imageBase64 } },
-          { type: "text", text: "Essa imagem e um comprovante/nota fiscal de compra. Extraia so o valor total, a data e o local." },
+          { type: "text", text: "Essa imagem e um comprovante/nota fiscal de compra. Extraia o valor total, a data, o local e a categoria." },
         ],
       },
     ],
@@ -467,6 +481,7 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
     description?: string;
     date?: string;
     total_amount?: number;
+    category?: string;
   };
   if (!input.is_receipt || typeof input.total_amount !== "number") {
     return { isReceipt: false };
@@ -477,6 +492,7 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
     description: input.description?.trim() || "Compra",
     date: input.date?.trim() || spDateStringForReceipt(),
     totalAmount: input.total_amount,
+    category: input.category?.trim() || undefined,
   };
 }
 

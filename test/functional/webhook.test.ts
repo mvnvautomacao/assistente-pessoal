@@ -431,12 +431,12 @@ test("compra parcelada: undo remove todas as parcelas de uma vez", async (t) => 
   assert.match(sent[1].text, /desfiz/i);
 });
 
-// A leitura de uma foto de comprovante/nota fiscal traz SO valor total, data e
-// local (nunca categoria, forma de pagamento ou parcelamento -- ver
-// interpretReceiptImage/READ_RECEIPT_TOOL em src/ai/interpret.ts). Por isso o
-// fluxo abaixo SEMPRE pergunta categoria e forma de pagamento por texto,
-// exceto quando o local bate com uma palavra-chave de categoria ja aprendida.
-test("imagem de comprovante: fluxo completo pergunta categoria e forma de pagamento, confirma com 'sim' e registra", async (t) => {
+// A leitura de uma foto de comprovante/nota fiscal traz valor total, data,
+// local e uma UNICA categoria (inferida pelo estabelecimento/tipo geral dos
+// itens, nunca item por item -- ver interpretReceiptImage/READ_RECEIPT_TOOL em
+// src/ai/interpret.ts) -- forma de pagamento e parcelamento nunca vem da foto.
+// Categoria/forma de pagamento sao perguntadas por texto so quando faltarem.
+test("imagem de comprovante: categoria identificada pela foto pula a pergunta de categoria, so falta forma de pagamento", async (t) => {
   const RC1 = "551100090401";
   seed(RC1);
   const { sent } = withMocks(t);
@@ -445,23 +445,43 @@ test("imagem de comprovante: fluxo completo pergunta categoria e forma de pagame
     description: "Posto Ipiranga",
     date: "2026-09-01",
     totalAmount: 150,
+    category: "Veículo",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC1));
-  assert.match(sent[0].text, /[Cc]ategoria/);
+  assert.match(sent[0].text, /forma de pagamento/i);
   assert.equal(searchExpenses(RC1, "Posto Ipiranga").length, 0);
 
-  await handleIncomingMessage(evolutionMessage(RC1, "Veículo"));
-  assert.match(sent[1].text, /forma de pagamento/i);
-
   await handleIncomingMessage(evolutionMessage(RC1, "Pix"));
-  assert.match(sent[2].text, /Li assim/);
-  assert.match(sent[2].text, /150/);
+  assert.match(sent[1].text, /Li assim/);
+  assert.match(sent[1].text, /150/);
+  assert.match(sent[1].text, /Veículo/);
 
   await handleIncomingMessage(evolutionMessage(RC1, "sim"));
   const items = searchExpenses(RC1, "Posto Ipiranga");
   assert.equal(items.length, 1);
   assert.equal(items[0].amount, 150);
-  assert.match(sent[3].text, /✅/);
+  assert.match(sent[2].text, /✅/);
+});
+
+test("imagem de comprovante: IA nao identificou categoria nenhuma -- pergunta antes de confirmar", async (t) => {
+  const RC1B = "551100090400";
+  seed(RC1B);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
+    isReceipt: true,
+    description: "Estabelecimento Genérico",
+    date: "2026-09-01",
+    totalAmount: 42,
+  }));
+  await handleIncomingMessage(evolutionImageMessage(RC1B));
+  assert.match(sent[0].text, /[Cc]ategoria/);
+
+  await handleIncomingMessage(evolutionMessage(RC1B, "Compras"));
+  assert.match(sent[1].text, /forma de pagamento/i);
+
+  await handleIncomingMessage(evolutionMessage(RC1B, "Pix"));
+  await handleIncomingMessage(evolutionMessage(RC1B, "sim"));
+  assert.equal(searchExpenses(RC1B, "Estabelecimento Genérico").length, 1);
 });
 
 test("imagem de comprovante: local com palavra-chave de categoria ja aprendida pula a pergunta de categoria", async (t) => {
