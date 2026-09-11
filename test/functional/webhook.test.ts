@@ -12,6 +12,7 @@ import {
   getExpenseById,
   findCategoryByName,
   searchExpenses,
+  learnKeyword,
 } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
@@ -23,6 +24,8 @@ import { spDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
+import { listBillAlerts, getBillAlertById, createBillAlert } from "../../src/bills/service";
+import { setPendingBillCheckin } from "../../src/bills/pendingCheckin";
 
 function evolutionMessage(from: string, text: string) {
   return {
@@ -428,7 +431,12 @@ test("compra parcelada: undo remove todas as parcelas de uma vez", async (t) => 
   assert.match(sent[1].text, /desfiz/i);
 });
 
-test("imagem de comprovante: leitura completa mostra resumo, confirma com 'sim' e registra", async (t) => {
+// A leitura de uma foto de comprovante/nota fiscal traz SO valor total, data e
+// local (nunca categoria, forma de pagamento ou parcelamento -- ver
+// interpretReceiptImage/READ_RECEIPT_TOOL em src/ai/interpret.ts). Por isso o
+// fluxo abaixo SEMPRE pergunta categoria e forma de pagamento por texto,
+// exceto quando o local bate com uma palavra-chave de categoria ja aprendida.
+test("imagem de comprovante: fluxo completo pergunta categoria e forma de pagamento, confirma com 'sim' e registra", async (t) => {
   const RC1 = "551100090401";
   seed(RC1);
   const { sent } = withMocks(t);
@@ -437,43 +445,49 @@ test("imagem de comprovante: leitura completa mostra resumo, confirma com 'sim' 
     description: "Posto Ipiranga",
     date: "2026-09-01",
     totalAmount: 150,
-    category: "Veículo",
-    paymentMethod: "Pix",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC1));
-  assert.match(sent[0].text, /Li assim/);
-  assert.match(sent[0].text, /150/);
+  assert.match(sent[0].text, /[Cc]ategoria/);
   assert.equal(searchExpenses(RC1, "Posto Ipiranga").length, 0);
+
+  await handleIncomingMessage(evolutionMessage(RC1, "Veículo"));
+  assert.match(sent[1].text, /forma de pagamento/i);
+
+  await handleIncomingMessage(evolutionMessage(RC1, "Pix"));
+  assert.match(sent[2].text, /Li assim/);
+  assert.match(sent[2].text, /150/);
 
   await handleIncomingMessage(evolutionMessage(RC1, "sim"));
   const items = searchExpenses(RC1, "Posto Ipiranga");
   assert.equal(items.length, 1);
   assert.equal(items[0].amount, 150);
-  assert.match(sent[1].text, /✅/);
+  assert.match(sent[3].text, /✅/);
 });
 
-test("imagem de comprovante: categoria nao identificada pergunta antes de confirmar", async (t) => {
+test("imagem de comprovante: local com palavra-chave de categoria ja aprendida pula a pergunta de categoria", async (t) => {
   const RC2 = "551100090402";
   seed(RC2);
+  const category = getOrCreateCategory(RC2, "Compras");
+  learnKeyword(RC2, "loja xpto", category.id);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
     description: "Loja XPTO Bem Estranha",
     date: "2026-09-01",
     totalAmount: 80,
-    paymentMethod: "Débito",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC2));
-  assert.match(sent[0].text, /[Cc]ategoria/);
+  assert.match(sent[0].text, /forma de pagamento/i);
 
-  await handleIncomingMessage(evolutionMessage(RC2, "Compras"));
+  await handleIncomingMessage(evolutionMessage(RC2, "Débito"));
   assert.match(sent[1].text, /Li assim/);
+  assert.match(sent[1].text, /Compras/);
 
   await handleIncomingMessage(evolutionMessage(RC2, "sim"));
   assert.equal(searchExpenses(RC2, "Loja XPTO Bem Estranha").length, 1);
 });
 
-test("imagem de comprovante: forma de pagamento nao identificada pergunta antes de confirmar", async (t) => {
+test("imagem de comprovante: responder 'não sei' na forma de pagamento segue sem definir", async (t) => {
   const RC3 = "551100090403";
   seed(RC3);
   const { sent } = withMocks(t);
@@ -482,14 +496,13 @@ test("imagem de comprovante: forma de pagamento nao identificada pergunta antes 
     description: "Restaurante do Zé",
     date: "2026-09-01",
     totalAmount: 60,
-    category: "Mercado",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC3));
-  assert.match(sent[0].text, /forma de pagamento/i);
+  await handleIncomingMessage(evolutionMessage(RC3, "Mercado"));
+  assert.match(sent[1].text, /forma de pagamento/i);
 
-  await handleIncomingMessage(evolutionMessage(RC3, "no débito"));
-  assert.match(sent[1].text, /Li assim/);
-  assert.match(sent[1].text, /débito/i);
+  await handleIncomingMessage(evolutionMessage(RC3, "não sei"));
+  assert.match(sent[2].text, /Li assim/);
 
   await handleIncomingMessage(evolutionMessage(RC3, "sim"));
   assert.equal(searchExpenses(RC3, "Restaurante do Zé").length, 1);
@@ -504,12 +517,12 @@ test("imagem de comprovante: responder 'nao' cancela sem registrar nada", async 
     description: "Farmacia Central",
     date: "2026-09-01",
     totalAmount: 35.9,
-    category: "Saúde",
-    paymentMethod: "Dinheiro",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC4));
+  await handleIncomingMessage(evolutionMessage(RC4, "Saúde"));
+  await handleIncomingMessage(evolutionMessage(RC4, "Dinheiro"));
   await handleIncomingMessage(evolutionMessage(RC4, "não"));
-  assert.match(sent[1].text, /não registrei nada/i);
+  assert.match(sent[3].text, /não registrei nada/i);
   assert.equal(searchExpenses(RC4, "Farmacia Central").length, 0);
 });
 
@@ -522,14 +535,14 @@ test("imagem de comprovante: correcao em texto livre antes de confirmar ajusta o
     description: "Supermercado Extra",
     date: "2026-09-01",
     totalAmount: 100,
-    category: "Mercado",
-    paymentMethod: "Pix",
   }));
   await handleIncomingMessage(evolutionImageMessage(RC5));
+  await handleIncomingMessage(evolutionMessage(RC5, "Mercado"));
+  await handleIncomingMessage(evolutionMessage(RC5, "Pix"));
 
   t.mock.method(aiInterpret, "extractReceiptCorrectionFromAnswer", async () => ({ amount: 120 }));
   await handleIncomingMessage(evolutionMessage(RC5, "na verdade foi 120"));
-  assert.match(sent[1].text, /120/);
+  assert.match(sent[3].text, /120/);
 
   await handleIncomingMessage(evolutionMessage(RC5, "sim"));
   const items = searchExpenses(RC5, "Supermercado Extra");
@@ -537,26 +550,28 @@ test("imagem de comprovante: correcao em texto livre antes de confirmar ajusta o
   assert.equal(items[0].amount, 120);
 });
 
-test("imagem de comprovante: parcelamento detectado no cupom cria as N parcelas ao confirmar", async (t) => {
+// Regressao: um cliente relatou que o bot tentou "interpretar os gastos" de
+// uma nota fiscal (varios itens/valores na mesma imagem) em vez de tratar
+// como um unico gasto -- causa raiz era o campo de parcelamento lido da
+// imagem, removido de proposito (ver comentario em READ_RECEIPT_TOOL).
+// Confirma que uma foto NUNCA cria mais de um gasto, so o valor total.
+test("imagem de comprovante: nunca cria mais de um gasto a partir de uma foto (so o valor total)", async (t) => {
   const RC6 = "551100090406";
   seed(RC6);
-  const { sent } = withMocks(t);
+  withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
     description: "Loja de Eletronicos",
     date: "2026-09-01",
-    installmentAmount: 200,
-    installments: 3,
-    category: "Compras",
-    paymentMethod: "Cartão de crédito",
+    totalAmount: 600,
   }));
   await handleIncomingMessage(evolutionImageMessage(RC6));
-  assert.match(sent[0].text, /3x/);
-
+  await handleIncomingMessage(evolutionMessage(RC6, "Compras"));
+  await handleIncomingMessage(evolutionMessage(RC6, "Cartão de crédito"));
   await handleIncomingMessage(evolutionMessage(RC6, "sim"));
   const items = searchExpenses(RC6, "Loja de Eletronicos");
-  assert.equal(items.length, 3);
-  for (const item of items) assert.equal(item.amount, 200);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].amount, 600);
 });
 
 test("imagem de comprovante: imagem que nao parece nota fiscal nao registra nada", async (t) => {
@@ -833,6 +848,149 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
   await handleIncomingMessage(evolutionMessage(R5, "sim"));
   assert.match(sent[2].text, /removido/);
   assert.equal(listRecurringExpenses(R5).length, 0);
+});
+
+// Alerta de conta fixa: diferente de gasto fixo, NUNCA lanca um gasto sozinho --
+// so pergunta "ja pagou?" todo mes no dia configurado (ver bills/scheduler.ts).
+test("set_bill_alert: cadastra o alerta e confirma com o dia do mes", async (t) => {
+  const BA1 = "551100090301";
+  seed(BA1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Conta de água", day_of_month: 5 }]);
+  await handleIncomingMessage(evolutionMessage(BA1, "me lembra de pagar a conta de água todo dia 5"));
+
+  assert.match(sent[0].text, /📌/);
+  assert.match(sent[0].text, /dia 5/);
+  const bills = listBillAlerts(BA1);
+  assert.equal(bills.length, 1);
+  assert.equal(bills[0].name, "Conta de água");
+  assert.equal(bills[0].day_of_month, 5);
+});
+
+test("set_bill_alert: dia do mes invalido nao cadastra nada", async (t) => {
+  const BA2 = "551100090302";
+  seed(BA2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Conta esquisita", day_of_month: 32 }]);
+  await handleIncomingMessage(evolutionMessage(BA2, "me lembra da conta esquisita todo dia 32"));
+
+  assert.match(sent[0].text, /entre 1 e 31/);
+  assert.equal(listBillAlerts(BA2).length, 0);
+});
+
+test("list_bill_alerts: lista os alertas cadastrados, isolado por numero", async (t) => {
+  const BA3 = "551100090303";
+  const BA4 = "551100090304";
+  seed(BA3, BA4);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "set_bill_alert", description: "Conta de luz", day_of_month: 10 }]);
+  await handleIncomingMessage(evolutionMessage(BA3, "cadastra um alerta da luz todo dia 10"));
+
+  queueReply([{ type: "list_bill_alerts" }]);
+  await handleIncomingMessage(evolutionMessage(BA4, "quais alertas de conta eu tenho"));
+  assert.match(sent[1].text, /ainda não tem nenhum alerta/i);
+
+  queueReply([{ type: "list_bill_alerts" }]);
+  await handleIncomingMessage(evolutionMessage(BA3, "quais alertas de conta eu tenho"));
+  assert.match(sent[2].text, /Conta de luz/);
+});
+
+test("remove_bill_alert: desativa o alerta encontrado por texto", async (t) => {
+  const BA5 = "551100090305";
+  seed(BA5);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Internet fixa", day_of_month: 20 }]);
+  await handleIncomingMessage(evolutionMessage(BA5, "me lembra da internet fixa todo dia 20"));
+
+  queueReply([{ type: "remove_bill_alert", query: "internet" }]);
+  await handleIncomingMessage(evolutionMessage(BA5, "cancela o alerta da internet"));
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.equal(listBillAlerts(BA5).length, 1); // ainda nao removido, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(BA5, "sim"));
+  assert.match(sent[2].text, /removido/);
+  assert.equal(listBillAlerts(BA5).length, 0);
+});
+
+test("remove_bill_alert: responder 'nao' mantem o alerta ativo", async (t) => {
+  const BA6 = "551100090306";
+  seed(BA6);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Gás encanado", day_of_month: 8 }]);
+  await handleIncomingMessage(evolutionMessage(BA6, "me lembra do gás encanado todo dia 8"));
+
+  queueReply([{ type: "remove_bill_alert", query: "gás" }]);
+  await handleIncomingMessage(evolutionMessage(BA6, "cancela o alerta do gás"));
+  await handleIncomingMessage(evolutionMessage(BA6, "não, deixa"));
+  assert.match(sent[2].text, /não mexi/i);
+  assert.equal(listBillAlerts(BA6).length, 1);
+});
+
+test("remove_bill_alert: undo recria o alerta removido", async (t) => {
+  const BA7 = "551100090307";
+  seed(BA7);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Condomínio undo", day_of_month: 12 }]);
+  await handleIncomingMessage(evolutionMessage(BA7, "me lembra do condomínio undo todo dia 12"));
+
+  queueReply([{ type: "remove_bill_alert", query: "condomínio undo" }]);
+  await handleIncomingMessage(evolutionMessage(BA7, "cancela o alerta do condomínio undo"));
+  await handleIncomingMessage(evolutionMessage(BA7, "sim"));
+  assert.equal(listBillAlerts(BA7).length, 0);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(BA7, "desfaz isso"));
+  const restored = listBillAlerts(BA7);
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].name, "Condomínio undo");
+  assert.equal(restored[0].day_of_month, 12);
+});
+
+// A pergunta mensal em si (disparada pelo scheduler) e simulada aqui direto via
+// setPendingBillCheckin, sem precisar esperar o cron -- o scheduler so decide
+// QUANDO perguntar (getDueBillAlerts, coberto nos testes de src/bills/service),
+// a resposta do usuario e sempre tratada pelo router (resolveBillCheckinAnswer).
+test("bill checkin: responder que ja pagou fecha o ciclo do mes, sem lancar gasto nenhum", async (t) => {
+  const BA8 = "551100090308";
+  seed(BA8);
+  const { sent } = withMocks(t);
+  const bill = createBillAlert({ fromNumber: BA8, name: "Conta de água checkin", dayOfMonth: 5 });
+  setPendingBillCheckin(BA8, { billAlertId: bill.id, name: bill.name });
+
+  await handleIncomingMessage(evolutionMessage(BA8, "já paguei"));
+  assert.match(sent[0].text, /mês que vem/i);
+  const updated = getBillAlertById(BA8, bill.id)!;
+  assert.equal(updated.confirmed_month, today().slice(0, 7));
+  assert.equal(updated.snoozed_until, null);
+});
+
+test("bill checkin: responder 'amanha' adia a pergunta pro dia seguinte", async (t) => {
+  const BA9 = "551100090309";
+  seed(BA9);
+  const { sent } = withMocks(t);
+  const bill = createBillAlert({ fromNumber: BA9, name: "Conta de luz checkin", dayOfMonth: 10 });
+  setPendingBillCheckin(BA9, { billAlertId: bill.id, name: bill.name });
+
+  await handleIncomingMessage(evolutionMessage(BA9, "ainda não, lembra amanhã"));
+  assert.match(sent[0].text, /amanhã/i);
+  const updated = getBillAlertById(BA9, bill.id)!;
+  assert.equal(updated.confirmed_month, null);
+  assert.ok(updated.snoozed_until);
+});
+
+test("bill checkin: resposta nao reconhecida pergunta de novo, sem mudar nada", async (t) => {
+  const BA10 = "551100090310";
+  seed(BA10);
+  const { sent } = withMocks(t);
+  const bill = createBillAlert({ fromNumber: BA10, name: "Conta confusa", dayOfMonth: 15 });
+  setPendingBillCheckin(BA10, { billAlertId: bill.id, name: bill.name });
+
+  await handleIncomingMessage(evolutionMessage(BA10, "sei lá, talvez"));
+  assert.match(sent[0].text, /[Nn]ão entendi/);
+  const updated = getBillAlertById(BA10, bill.id)!;
+  assert.equal(updated.confirmed_month, null);
+  assert.equal(updated.snoozed_until, null);
 });
 
 test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita loop de bot com bot)", async (t) => {

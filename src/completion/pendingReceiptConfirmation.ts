@@ -9,9 +9,7 @@ const TTL_MS = 5 * 60 * 1000;
 export interface PendingReceiptConfirmation {
   description: string;
   date: string;
-  totalAmount?: number;
-  installmentAmount?: number;
-  installments?: number;
+  totalAmount: number;
   category?: string;
   paymentMethod?: string;
   awaiting: "category" | "payment_method" | "confirm";

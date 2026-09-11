@@ -88,6 +88,9 @@ import {
   findActiveRecurringExpenseByDescription,
   deactivateRecurringExpense,
 } from "./expenses/recurring";
+import { createBillAlert, listBillAlerts, findActiveBillAlertByName, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
+import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
+import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
@@ -549,6 +552,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingRemoveBillAlert = getPendingRemoveBillAlert(from);
+    if (pendingRemoveBillAlert) {
+      await resolveRemoveBillAlertConfirmation(from, pendingRemoveBillAlert, text);
+      return;
+    }
+
+    const pendingBillCheckin = getPendingBillCheckin(from);
+    if (pendingBillCheckin) {
+      await resolveBillCheckinAnswer(from, pendingBillCheckin, text);
+      return;
+    }
+
     const pendingReceipt = getPendingReceiptConfirmation(from);
     if (pendingReceipt) {
       try {
@@ -833,27 +848,13 @@ function installmentCategoryQuestionText(from: string, params: { description?: s
 type ReceiptFields = {
   description: string;
   date: string;
-  totalAmount?: number;
-  installmentAmount?: number;
-  installments?: number;
+  totalAmount: number;
   category?: string;
   paymentMethod?: string;
 };
 
 function receiptAmountLabel(fields: ReceiptFields): string {
-  if (fields.installments && fields.installments > 1) {
-    if (fields.installmentAmount !== undefined) {
-      const total = fields.installmentAmount * fields.installments;
-      return `R$${total.toFixed(2)} em ${fields.installments}x de R$${fields.installmentAmount.toFixed(2)}`;
-    }
-    if (fields.totalAmount !== undefined) {
-      const perInstallment = fields.totalAmount / fields.installments;
-      return `R$${fields.totalAmount.toFixed(2)} em ${fields.installments}x de R$${perInstallment.toFixed(2)}`;
-    }
-  }
-  if (fields.totalAmount !== undefined) return `R$${fields.totalAmount.toFixed(2)}`;
-  if (fields.installmentAmount !== undefined) return `R$${fields.installmentAmount.toFixed(2)}`;
-  return "";
+  return `R$${fields.totalAmount.toFixed(2)}`;
 }
 
 function receiptCategoryQuestionText(from: string, fields: ReceiptFields): string {
@@ -877,23 +878,12 @@ function receiptConfirmationSummaryText(fields: ReceiptFields, retry = false): s
 }
 
 // Registra de verdade um gasto lido de foto de comprovante, ja confirmado --
-// reaproveita createExpenseAndNotify/finalizeInstallmentExpense (undo, alerta
-// de orcamento e mensagem de confirmacao ja vem de graca dali).
+// reaproveita createExpenseAndNotify (undo, alerta de orcamento e mensagem de
+// confirmacao ja vem de graca dali). Sempre um unico gasto, nunca parcelado --
+// uma foto so traz o valor TOTAL geral (ver interpretReceiptImage).
 async function finalizeReceiptExpense(from: string, pending: PendingReceiptConfirmation) {
-  if (pending.installments && pending.installments > 1) {
-    await finalizeInstallmentExpense(from, {
-      description: pending.description,
-      category: pending.category,
-      payment_method: pending.paymentMethod,
-      date: pending.date,
-      totalAmount: pending.totalAmount,
-      installmentAmount: pending.installmentAmount,
-      installments: pending.installments,
-    });
-    return;
-  }
   await createExpenseAndNotify(from, {
-    amount: (pending.totalAmount ?? pending.installmentAmount)!,
+    amount: pending.totalAmount,
     description: pending.description,
     date: pending.date,
     category: pending.category,
@@ -902,9 +892,11 @@ async function finalizeReceiptExpense(from: string, pending: PendingReceiptConfi
 }
 
 // Le a foto de comprovante e monta a pendencia de confirmacao -- SEMPRE passa
-// por confirmacao antes de registrar (foto erra mais que texto digitado),
-// perguntando antes disso categoria e/ou forma de pagamento se nao vieram
-// legiveis/identificaveis na imagem.
+// por confirmacao antes de registrar (foto erra mais que texto digitado).
+// A leitura da imagem traz SO valor total, data e local -- categoria e forma
+// de pagamento nunca vem da foto (ver interpretReceiptImage), sempre
+// perguntadas por texto aqui (exceto quando o local bate com uma palavra-chave
+// de categoria ja aprendida desse numero).
 async function handleReceiptImage(from: string, imageBase64: string, mimeType: string) {
   const reading = await interpretReceiptImage(from, imageBase64, mimeType);
   if (!reading.isReceipt) {
@@ -916,17 +908,13 @@ async function handleReceiptImage(from: string, imageBase64: string, mimeType: s
     return;
   }
 
-  const keywordHints = [reading.category, reading.description].filter((hint): hint is string => Boolean(hint));
-  const resolvedCategory = (reading.category && findCategoryByName(from, reading.category)) || findCategoryByKeyword(from, ...keywordHints);
+  const resolvedCategory = findCategoryByKeyword(from, reading.description);
 
   const base: ReceiptFields = {
     description: reading.description,
     date: reading.date,
     totalAmount: reading.totalAmount,
-    installmentAmount: reading.installmentAmount,
-    installments: reading.installments,
     category: resolvedCategory?.name,
-    paymentMethod: reading.paymentMethod,
   };
 
   if (!base.category) {
@@ -1007,13 +995,9 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
     ...pending,
     description: correction.description ?? pending.description,
     date: correction.date ?? pending.date,
-    installments: correction.installments ?? pending.installments,
   };
   if (correction.amount !== undefined) {
-    // corrige sempre como valor TOTAL (mesma convencao do resto do fluxo de
-    // parcelamento) -- se nao for mais parcelado, vira o valor avulso normal
     updated.totalAmount = correction.amount;
-    updated.installmentAmount = undefined;
   }
   if (correction.category) {
     const category = getOrCreateCategory(from, correction.category);
@@ -1846,6 +1830,69 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
   await sendText(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
 }
 
+// mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
+async function resolveRemoveBillAlertConfirmation(from: string, pending: PendingRemoveBillAlert, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer parar de receber o alerta de "${pending.name}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingRemoveBillAlert(from);
+  if (no) {
+    logActivity(from, "remove_bill_alert", `remocao de "${pending.name}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  deactivateBillAlert(from, pending.billAlertId);
+  setPendingUndo(from, {
+    kind: "restore_bill_alert",
+    params: { fromNumber: from, name: pending.name, dayOfMonth: pending.dayOfMonth },
+    description: pending.name,
+  });
+  logActivity(from, "remove_bill_alert", `confirmado: "${pending.name}" removido`);
+  await sendText(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
+}
+
+// "YYYY-MM-DD" + 1 dia, mesma matematica de isLastDayOfMonthSP (src/timeSP.ts)
+function addOneDaySP(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
+}
+
+// Resposta a pergunta mensal "ja pagou a conta X, ou quer que eu lembre
+// amanha?" (disparada pelo scheduler, ver bills/scheduler.ts). So duas saidas
+// possiveis, sem meio-termo -- se nao reconhecer nenhuma, pergunta nas mesmas
+// duas opcoes de novo, sem deixar a pendencia sem resposta.
+async function resolveBillCheckinAnswer(from: string, pending: PendingBillCheckin, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const paid = /^(sim|s|j[aá] paguei|paguei|pago|quitei|confirmo|confirma)\b/.test(normalized);
+  const snooze = /^(n[aã]o|n|ainda n[aã]o|amanh[aã]|lembra|manda amanh[aã]|depois|mais tarde)\b/.test(normalized);
+
+  if (!paid && !snooze) {
+    await sendText(from, `Não entendi — já pagou "${pending.name}", ou quer que eu lembre amanhã?`);
+    return;
+  }
+
+  clearPendingBillCheckin(from);
+  const today = spDateString();
+  if (paid) {
+    confirmBillAlertPaid(pending.billAlertId, today.slice(0, 7));
+    logActivity(from, "bill_alert", `confirmado pago: ${pending.name}`);
+    await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" mês que vem, no dia certo.`);
+    return;
+  }
+
+  snoozeBillAlert(pending.billAlertId, addOneDaySP(today));
+  logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
+  await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -2515,6 +2562,45 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       );
       break;
     }
+    case "set_bill_alert": {
+      if (interpretation.day_of_month < 1 || interpretation.day_of_month > 31) {
+        await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.day_of_month}" não é um dia válido.`);
+        break;
+      }
+      createBillAlert({ fromNumber: from, name: interpretation.description, dayOfMonth: interpretation.day_of_month });
+      logActivity(from, "set_bill_alert", `${interpretation.description}, todo dia ${interpretation.day_of_month}`);
+      await sendText(
+        from,
+        `📌 Alerta cadastrado: todo dia ${interpretation.day_of_month} eu te pergunto se já pagou "${interpretation.description}". Se ainda não tiver pago, é só pedir pra eu lembrar de novo no dia seguinte.`
+      );
+      break;
+    }
+    case "list_bill_alerts": {
+      const bills = listBillAlerts(from);
+      logActivity(from, "list_bill_alerts", `${bills.length} alerta(s) de conta fixa`);
+      if (!bills.length) {
+        await sendText(
+          from,
+          "Você ainda não tem nenhum alerta de conta fixa cadastrado. Pode dizer algo como \"me lembra de pagar a conta de água todo dia 5\"."
+        );
+        break;
+      }
+      const lines = bills.map((b) => `• ${b.name} — todo dia ${b.day_of_month}`).join("\n");
+      await sendText(from, `📌 Seus alertas de conta fixa:\n\n${lines}\n\nPra cancelar um, é só dizer, ex: "cancela o alerta da água".`);
+      break;
+    }
+    case "remove_bill_alert": {
+      const bill = findActiveBillAlertByName(from, interpretation.query);
+      if (!bill) {
+        logActivity(from, "remove_bill_alert", `nenhum alerta encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não achei nenhum alerta de conta parecido com "${interpretation.query}".`);
+        break;
+      }
+      setPendingRemoveBillAlert(from, { billAlertId: bill.id, name: bill.name, dayOfMonth: bill.day_of_month });
+      logActivity(from, "remove_bill_alert", `pediu confirmacao pra remover "${bill.name}"`);
+      await sendText(from, `Vou parar de te perguntar sobre "${bill.name}" (todo dia ${bill.day_of_month}). Confirma? Responde "sim" ou "não".`);
+      break;
+    }
     case "income": {
       const date = interpretation.date || spDateString();
       const created = insertIncome({ fromNumber: from, amount: interpretation.amount, description: interpretation.description, date });
@@ -2653,6 +2739,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           logActivity(from, "undo", `gasto fixo recriado: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o gasto fixo "${undo.description}" voltou a ser lançado automaticamente.`);
           break;
+        case "restore_bill_alert":
+          createBillAlert(undo.params);
+          logActivity(from, "undo", `alerta de conta fixa recriado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" voltou a ser perguntado todo mês.`);
+          break;
       }
       break;
     }
@@ -2673,6 +2764,9 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 
 🔁 *Gastos fixos*
 "Todo dia 10 pago 50 reais de internet" — eu cadastro e lanço esse valor sozinho todo mês, sem você precisar mandar mensagem de novo.
+
+📌 *Alertas de conta fixa*
+"Me lembra de pagar a conta de água todo dia 5" — eu não lanço nada sozinho, só te pergunto todo mês nesse dia se já pagou. Se não tiver pago ainda, é só pedir pra eu lembrar de novo no dia seguinte.
 
 💵 *Entradas e saldo*
 "Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).

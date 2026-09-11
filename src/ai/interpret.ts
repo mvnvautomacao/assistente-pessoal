@@ -49,6 +49,9 @@ export type Interpretation =
   | { type: "set_recurring_expense"; description: string; amount: number; category: string; day_of_month: number; payment_method?: string }
   | { type: "list_recurring_expenses" }
   | { type: "remove_recurring_expense"; query: string }
+  | { type: "set_bill_alert"; description: string; day_of_month: number }
+  | { type: "list_bill_alerts" }
+  | { type: "remove_bill_alert"; query: string }
   | { type: "income"; amount: number; description: string; date: string }
   | { type: "income_report"; period?: "week" | "month"; days?: number }
   | { type: "balance"; period?: "week" | "month"; days?: number }
@@ -119,6 +122,9 @@ const ACTION_SCHEMA = {
         "set_recurring_expense",
         "list_recurring_expenses",
         "remove_recurring_expense",
+        "set_bill_alert",
+        "list_bill_alerts",
+        "remove_bill_alert",
         "income",
         "income_report",
         "balance",
@@ -126,7 +132,7 @@ const ACTION_SCHEMA = {
         "unknown",
       ],
       description:
-        "expense = o usuario relatou um gasto/compra JA ACONTECIDO E A VISTA (nao parcelada -- se mencionar parcelamento, use installment_expense), com valor E com uma descricao minima do que foi (ex: '50 no mercado', 'gastei 30 reais de uber'). Se faltar um dos dois -- so o valor sem dizer do que foi (ex: 'gastei 50 reais'), ou so a descricao sem o valor (ex: 'comprei remedio na farmacia', sem dizer quanto) -- NAO INVENTE o que falta: classifique como 'unknown' com likely_intent='expense', preenchendo 'amount' SE o valor ficou claro e 'description' SE a descricao ficou clara, pra pedir so o que realmente falta. installment_expense = quer registrar uma COMPRA PARCELADA/DIVIDIDA, nao uma compra a vista (ex: 'comprei uma tv de 1500 em 3x', 'dividi a compra do mercado em 3 vezes', 'parcelei em 2x', '200 no cartao em 2x', 'gastei 90 parcelado'). QUALQUER mencao a 'parcelado'/'parcelei'/'dividido'/'dividi'/'Nx'/'N vezes' indica esse tipo em vez de 'expense', MESMO que falte informacao -- nunca vira 'unknown' nem 'expense' simples. Preencha 'description' e 'category' se ficaram claros (podem ficar vazios). Preencha 'total_amount' SE o usuario disse o valor TOTAL da compra, OU 'installment_amount' SE disse o valor de CADA parcela -- nunca os dois ao mesmo tempo; se nao disse valor nenhum, deixe os dois vazios. Preencha 'installments' com a quantidade de parcelas SE foi mencionada (ex: '3x', 'em 3 vezes' -> 3); se so disse 'parcelado'/'dividido' sem dizer quantas vezes, deixe 'installments' vazio -- o sistema pergunta a quantidade que falta, junto com qualquer outro dado que tambem esteja faltando. Preencha 'date' com o dia da compra/1a parcela SE mencionado (sem mencao, o sistema assume hoje sozinho -- pode deixar vazio). event = quer marcar algo na agenda, E a mensagem MENCIONA TANTO o dia QUANTO o horario (ex: 'dentista amanha 15h', 'reuniao sexta as 10h'). Se faltar UM dos dois -- so o dia sem horario (ex: 'quarta-feira agendar revisao do carro'), so o horario sem dia, ou nenhum dos dois (ex: 'adicionar consulta medica', 'marca dentista') -- NAO INVENTE o que falta: classifique como 'unknown' com likely_intent='event', preenchendo 'title' com o titulo/assunto SE ficou claro (ex: 'revisao do carro'), 'date' (YYYY-MM-DD) SE o dia ficou claro, e 'time' (HH:MM) SE o horario ficou claro -- pra pedir so o que falta, sem o usuario precisar repetir o que ja disse. reminder = quer ser lembrado de algo depois, E a mensagem menciona TANTO o dia/momento QUANTO o horario de aviso; mesma regra do event acima -- se faltar o dia, o horario, ou os dois, classifique como 'unknown' com likely_intent='reminder', preenchendo 'message' com o texto do lembrete SE ficou claro, 'date' SE o dia ficou claro e 'time' SE o horario ficou claro. IMPORTANTE: lembrete (type=reminder) sempre avisa EXATAMENTE no horario marcado (due_at) -- nao existe 'avisar X minutos antes' pra lembrete (isso so existe pra evento, no campo reminder_minutes). Se o usuario pedir isso pra um lembrete E TAMBEM disse o dia e o horario completos (ex: 'me lembra da consulta dia 10 as 15h, me avise 20 minutos antes' -> due_at='2026-09-10T15:00:00-03:00'), preencha type='reminder' EXATAMENTE como o caso normal -- 'message' e 'due_at' (datetime ISO COMBINADO com offset, igual sempre; NUNCA use os campos separados 'date'/'time' aqui, esses sao SO pra type=unknown) -- e ADICIONE 'advance_minutes' com a quantidade de minutos pedida. O sistema, ao ver 'advance_minutes' preenchido, para ANTES de criar o lembrete e pergunta ao usuario se quer que isso vire um EVENTO na agenda (que suporta aviso antecipado de verdade) ou uma explicacao de como usar a agenda. Se faltar o dia OU o horario do lembrete em si (sem contar a antecedencia), classifique como 'unknown' com likely_intent='reminder' normalmente (o pedido de antecedencia so e processado depois que o dia/horario do lembrete ja estiverem completos). Sem mencao a antecedencia, deixe 'advance_minutes' vazio e crie o lembrete normalmente. delete_reminder = quer cancelar/apagar/remover um lembrete que ja existe, sem editar mais nada (ex: 'apaga o lembrete de pagar a internet', 'cancela o lembrete do remedio', 'pode tirar aquele lembrete da reuniao'). Preencha 'query' com uma palavra-chave da mensagem do lembrete (busca igual edit_reminder). Diferente de edit_reminder (muda data/hora, nao cancela) e de undo (desfaz a ULTIMA acao, nao busca por nome). delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. edit_event = quer MUDAR A DATA e/ou A HORA de um evento que ja existe na agenda, sem cancelar (ex: 'muda a consulta pra sexta as 16h', 'muda so o dia da consulta pro dia 20', 'muda so o horario da consulta pra 15h', 'a reuniao de amanha na verdade e as 15h'). Preencha 'query' com o titulo/parte do titulo do evento (busca igual delete_event). Preencha 'new_date' (YYYY-MM-DD) SE o usuario mencionou um dia novo, e 'new_time' (HH:MM) SE mencionou um horario novo -- preencha SO o que ele pediu pra mudar, NUNCA invente/repita o outro campo: se ele so falou do dia, deixe 'new_time' vazio (o sistema mantem o horario original do evento sozinho); se so falou do horario, deixe 'new_date' vazio (mantem a data original). Se mudou os dois, preencha os dois. Diferente de delete_event (cancela de vez) e de event (cria um evento novo do zero). edit_reminder = quer MUDAR A DATA e/ou A HORA de um lembrete que ja existe, sem cancelar (ex: 'muda o lembrete de pagar a internet pra amanha', 'o lembrete do remedio na verdade e as 21h', 'muda so o dia do lembrete pra sexta'). Preencha 'query' com uma palavra-chave da mensagem do lembrete. Preencha 'new_date' (YYYY-MM-DD) SE mencionou um dia novo e 'new_time' (HH:MM) SE mencionou um horario novo -- mesma regra do edit_event: preencha SO o que foi pedido, deixando o outro campo vazio pra manter o valor original do lembrete. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes). Duas formas: 'proximos X dias' a partir de agora (ex: 'o que tenho agendado', 'proximos 15 dias') -- preencha 'days' (padrao 7 se nao especificar); ou um MES especifico, nomeado (ex: 'exibir minha agenda de novembro', 'o que tenho marcado em dezembro', 'agenda de janeiro que vem') -- preencha 'month' com 'YYYY-MM' (resolva o ano: se o mes nomeado ja passou esse ano, use o ano que vem; senao, esse ano mesmo) e NAO preencha 'days' nesse caso. expense_report = quer saber quanto gastou/resumo de gastos num periodo (total/por categoria), opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar so a CATEGORIA de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). create_category = quer CRIAR uma categoria nova, sem estar associada a nenhum gasto especifico ainda (ex: 'criar categoria Marina nos meus gastos', 'cria uma categoria chamada Pets', 'adiciona a categoria Viagem'). Repare que o pedido e sobre a CATEGORIA em si (o substantivo 'categoria' aparece na frase, mesmo com erro de digitacao tipo 'caregoria'), nao um gasto de verdade -- nao confundir com type=expense (que e um gasto JA ACONTECIDO com valor). Preencha 'category' com o nome exato pedido. merge_categories = quer JUNTAR/FUNDIR duas categorias que ja existem numa so, apagando a categoria de origem depois de mover os gastos dela (ex: 'junta a categoria Mercado com Supermercado', 'funde Lazer e Diversao numa so'). Preencha 'category' com a categoria de ORIGEM (que vai deixar de existir) e 'to_category' com a categoria final que sobra. Diferente de bulk_recategorize scope='from_category', que so move os gastos mas MANTEM a categoria de origem (vazia); merge_categories tambem apaga ela. bulk_recategorize = quer mudar a categoria de VARIOS gastos de uma vez (nao um so -- pra um so, use correct_category). Preencha 'to_category' com a categoria final desejada, e 'scope' com uma destas formas de escolher quais gastos mudam: 'today' = todos os gastos de hoje (ex: 'muda os gastos de hoje pra lazer'); 'last_n' = os N gastos mais recentes, preencha tambem 'n' com a quantidade (ex: 'muda os ultimos 5 gastos pra mercado', n=5); 'from_category' = TODOS os gastos que estao numa categoria especifica (categoria de origem continua existindo, so fica vazia), preencha tambem 'category' com o nome dela (ex: 'muda os gastos de mercado pra lazer' -> category='mercado', to_category='lazer'); 'period' = gastos de um periodo especifico, preencha 'days' (ultimos X dias), 'period' ('week'/'month') ou 'date_start'+'date_end' (intervalo exato de datas ISO, ex: 'gastos de 10 a 20 desse mes' -> date_start/date_end desse mes); 'keyword' = todos os gastos cuja DESCRICAO bate com um texto, preencha 'query' com a palavra-chave (ex: 'muda todo gasto com ifood na descricao pra alimentacao' -> query='ifood'). list_expenses = quer ver os GASTOS INDIVIDUAIS (nao o resumo por categoria) de um dia ou periodo, normalmente pra depois editar um deles (ex: 'quais gastos eu tive hoje', 'lista as compras de ontem', 'editar gastos do dia 20', 'me mostra os gastos dos ultimos 3 dias'). Isso inclui pedidos VAGOS sem nenhum dia mencionado, tipo so 'editar compras', 'editar gastos' ou 'quero editar uma compra' — NAO classifique esses como unknown, classifique como list_expenses mesmo sem 'date'/'days' (o sistema avisa o usuario que vai assumir hoje e pede pra especificar se quiser outro dia). Preencha 'date' (ISO 8601, so a data) se um dia especifico foi mencionado, ou 'days' pra 'ultimos X dias'; sem nenhum dos dois, assume hoje. help = quer saber o que o assistente faz, como usar, ou tem uma DUVIDA especifica sobre como fazer algo (ex: 'o que voce faz', 'como funciona', 'como adiciono um gasto', 'como marco um compromisso', 'como faço pra editar um gasto que ja registrei'). Se a duvida for sobre um assunto especifico que o sistema faz, preencha 'topic' com ele (expense/event/reminder/budget/expense_report/edit_expense/category/payment_method) pra explicar so aquilo, com exemplo — nao o catalogo inteiro. Se o usuario pedir EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas'), preencha topic='welcome'. Se for uma pergunta bem generica tipo 'o que voce faz' ou 'me ajuda', sem tema especifico, deixe 'topic' em branco. edit_expense = quer ALTERAR um gasto ja registrado (valor, data, descricao ou forma de pagamento — pra mudar categoria use correct_category). Se ele se referir a um item por numero de uma lista mostrada antes (ex: 'edita o 2', 'muda o 3 pro valor 45'), preencha 'list_ref' com esse numero e NAO preencha 'query'. Se ele descrever o gasto por texto (ex: 'a farmacia foi no pix', 'o gasto do mercado era 45 no total'), preencha 'query' com esse texto e NAO preencha 'list_ref'. Sempre preencha 'field' (amount/date/description/payment_method) e 'value' com o novo valor. undo = quer desfazer/cancelar a ULTIMA acao que ele mesmo pediu ao assistente (ex: 'desfaz isso', 'desfaz a ultima acao', 'cancela isso que eu mandei', 'volta atras', 'tira esse gasto que acabei de colocar'). Diferente de delete_event, que e especificamente sobre cancelar um COMPROMISSO DA AGENDA por nome/busca. set_recurring_expense = quer cadastrar um GASTO FIXO/RECORRENTE, que se repete todo mes no mesmo dia, pra ser lancado automaticamente sem precisar mandar mensagem de novo (ex: 'todo dia 10 pago 50 de internet', 'cadastra um gasto fixo de 89,90 de academia todo dia 5', 'toda vez dia 15 pago 200 de aluguel'). Preencha 'description', 'amount', 'category' e 'day_of_month' (o dia do mes, numero de 1 a 31). Diferente de 'expense', que e um gasto AVULSO ja acontecido uma unica vez. list_recurring_expenses = quer ver quais gastos fixos ja tem cadastrados (ex: 'quais gastos fixos eu tenho', 'lista minhas contas fixas'). remove_recurring_expense = quer parar de lancar automaticamente um gasto fixo (ex: 'cancela o gasto fixo da academia', 'para de lançar a internet todo mes') — preencha 'query' com uma palavra-chave pra identificar qual. income = o usuario relatou uma ENTRADA de dinheiro JA ACONTECIDA (salario, freela, reembolso, venda...), nao um gasto (ex: 'recebi 3000 de salario', 'entrou 500 de freela', 'ganhei 200 de reembolso'). Preencha 'amount', 'description' e 'date' (se nao mencionar a data, use hoje). income_report = quer saber quanto recebeu/resumo de entradas num periodo (ex: 'quanto recebi esse mes', 'quanto entrou essa semana'). Preencha 'period' ('week'/'month') ou 'days', igual expense_report. balance = quer saber o SALDO (entradas menos gastos) de um periodo (ex: 'quanto sobrou esse mes', 'qual meu saldo', 'entrou mais do que gastei esse mes?'). Preencha 'period' ('week'/'month') ou 'days', igual expense_report; sem nenhum dos dois, assume o mes atual. unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Isso inclui pedidos de evento/lembrete/gasto com informacao PARCIAL -- falta o dia e/ou o horario (evento/lembrete), ou falta o valor e/ou a descricao (gasto) -- NUNCA invente o que falta pra completar. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder) e preencha os campos que JA ficaram claros ('title'/'message' + 'date'/'time' pra evento/lembrete, 'amount'/'description' pra gasto), deixando os que faltam vazios -- assim o sistema pede so o que realmente falta, sem o usuario repetir o que ja disse.",
+        "expense = o usuario relatou um gasto/compra JA ACONTECIDO E A VISTA (nao parcelada -- se mencionar parcelamento, use installment_expense), com valor E com uma descricao minima do que foi (ex: '50 no mercado', 'gastei 30 reais de uber'). Se faltar um dos dois -- so o valor sem dizer do que foi (ex: 'gastei 50 reais'), ou so a descricao sem o valor (ex: 'comprei remedio na farmacia', sem dizer quanto) -- NAO INVENTE o que falta: classifique como 'unknown' com likely_intent='expense', preenchendo 'amount' SE o valor ficou claro e 'description' SE a descricao ficou clara, pra pedir so o que realmente falta. installment_expense = quer registrar uma COMPRA PARCELADA/DIVIDIDA, nao uma compra a vista (ex: 'comprei uma tv de 1500 em 3x', 'dividi a compra do mercado em 3 vezes', 'parcelei em 2x', '200 no cartao em 2x', 'gastei 90 parcelado'). QUALQUER mencao a 'parcelado'/'parcelei'/'dividido'/'dividi'/'Nx'/'N vezes' indica esse tipo em vez de 'expense', MESMO que falte informacao -- nunca vira 'unknown' nem 'expense' simples. Preencha 'description' e 'category' se ficaram claros (podem ficar vazios). Preencha 'total_amount' SE o usuario disse o valor TOTAL da compra, OU 'installment_amount' SE disse o valor de CADA parcela -- nunca os dois ao mesmo tempo; se nao disse valor nenhum, deixe os dois vazios. Preencha 'installments' com a quantidade de parcelas SE foi mencionada (ex: '3x', 'em 3 vezes' -> 3); se so disse 'parcelado'/'dividido' sem dizer quantas vezes, deixe 'installments' vazio -- o sistema pergunta a quantidade que falta, junto com qualquer outro dado que tambem esteja faltando. Preencha 'date' com o dia da compra/1a parcela SE mencionado (sem mencao, o sistema assume hoje sozinho -- pode deixar vazio). event = quer marcar algo na agenda, E a mensagem MENCIONA TANTO o dia QUANTO o horario (ex: 'dentista amanha 15h', 'reuniao sexta as 10h'). Se faltar UM dos dois -- so o dia sem horario (ex: 'quarta-feira agendar revisao do carro'), so o horario sem dia, ou nenhum dos dois (ex: 'adicionar consulta medica', 'marca dentista') -- NAO INVENTE o que falta: classifique como 'unknown' com likely_intent='event', preenchendo 'title' com o titulo/assunto SE ficou claro (ex: 'revisao do carro'), 'date' (YYYY-MM-DD) SE o dia ficou claro, e 'time' (HH:MM) SE o horario ficou claro -- pra pedir so o que falta, sem o usuario precisar repetir o que ja disse. reminder = quer ser lembrado de algo depois, E a mensagem menciona TANTO o dia/momento QUANTO o horario de aviso; mesma regra do event acima -- se faltar o dia, o horario, ou os dois, classifique como 'unknown' com likely_intent='reminder', preenchendo 'message' com o texto do lembrete SE ficou claro, 'date' SE o dia ficou claro e 'time' SE o horario ficou claro. IMPORTANTE: lembrete (type=reminder) sempre avisa EXATAMENTE no horario marcado (due_at) -- nao existe 'avisar X minutos antes' pra lembrete (isso so existe pra evento, no campo reminder_minutes). Se o usuario pedir isso pra um lembrete E TAMBEM disse o dia e o horario completos (ex: 'me lembra da consulta dia 10 as 15h, me avise 20 minutos antes' -> due_at='2026-09-10T15:00:00-03:00'), preencha type='reminder' EXATAMENTE como o caso normal -- 'message' e 'due_at' (datetime ISO COMBINADO com offset, igual sempre; NUNCA use os campos separados 'date'/'time' aqui, esses sao SO pra type=unknown) -- e ADICIONE 'advance_minutes' com a quantidade de minutos pedida. O sistema, ao ver 'advance_minutes' preenchido, para ANTES de criar o lembrete e pergunta ao usuario se quer que isso vire um EVENTO na agenda (que suporta aviso antecipado de verdade) ou uma explicacao de como usar a agenda. Se faltar o dia OU o horario do lembrete em si (sem contar a antecedencia), classifique como 'unknown' com likely_intent='reminder' normalmente (o pedido de antecedencia so e processado depois que o dia/horario do lembrete ja estiverem completos). Sem mencao a antecedencia, deixe 'advance_minutes' vazio e crie o lembrete normalmente. delete_reminder = quer cancelar/apagar/remover um lembrete que ja existe, sem editar mais nada (ex: 'apaga o lembrete de pagar a internet', 'cancela o lembrete do remedio', 'pode tirar aquele lembrete da reuniao'). Preencha 'query' com uma palavra-chave da mensagem do lembrete (busca igual edit_reminder). Diferente de edit_reminder (muda data/hora, nao cancela) e de undo (desfaz a ULTIMA acao, nao busca por nome). delete_event = quer cancelar/remover/desmarcar um compromisso que ja existe na agenda. edit_event = quer MUDAR A DATA e/ou A HORA de um evento que ja existe na agenda, sem cancelar (ex: 'muda a consulta pra sexta as 16h', 'muda so o dia da consulta pro dia 20', 'muda so o horario da consulta pra 15h', 'a reuniao de amanha na verdade e as 15h'). Preencha 'query' com o titulo/parte do titulo do evento (busca igual delete_event). Preencha 'new_date' (YYYY-MM-DD) SE o usuario mencionou um dia novo, e 'new_time' (HH:MM) SE mencionou um horario novo -- preencha SO o que ele pediu pra mudar, NUNCA invente/repita o outro campo: se ele so falou do dia, deixe 'new_time' vazio (o sistema mantem o horario original do evento sozinho); se so falou do horario, deixe 'new_date' vazio (mantem a data original). Se mudou os dois, preencha os dois. Diferente de delete_event (cancela de vez) e de event (cria um evento novo do zero). edit_reminder = quer MUDAR A DATA e/ou A HORA de um lembrete que ja existe, sem cancelar (ex: 'muda o lembrete de pagar a internet pra amanha', 'o lembrete do remedio na verdade e as 21h', 'muda so o dia do lembrete pra sexta'). Preencha 'query' com uma palavra-chave da mensagem do lembrete. Preencha 'new_date' (YYYY-MM-DD) SE mencionou um dia novo e 'new_time' (HH:MM) SE mencionou um horario novo -- mesma regra do edit_event: preencha SO o que foi pedido, deixando o outro campo vazio pra manter o valor original do lembrete. report = quer um resumo/relatorio do que tem agendado (eventos e/ou lembretes). Duas formas: 'proximos X dias' a partir de agora (ex: 'o que tenho agendado', 'proximos 15 dias') -- preencha 'days' (padrao 7 se nao especificar); ou um MES especifico, nomeado (ex: 'exibir minha agenda de novembro', 'o que tenho marcado em dezembro', 'agenda de janeiro que vem') -- preencha 'month' com 'YYYY-MM' (resolva o ano: se o mes nomeado ja passou esse ano, use o ano que vem; senao, esse ano mesmo) e NAO preencha 'days' nesse caso. expense_report = quer saber quanto gastou/resumo de gastos num periodo (total/por categoria), opcionalmente numa categoria especifica (ex: 'quanto gastei essa semana', 'ultimos 15 dias quanto gastei em veiculo'). correct_category = quer mudar so a CATEGORIA de um gasto que ja foi registrado (ex: 'muda a categoria do mercado pra lazer', 'aquilo era carro, nao mercado'). set_default_payment = quer definir a forma de pagamento padrao pros proximos gastos (ex: 'meu pagamento padrao e pix', 'sempre uso o cartao nubank'). set_report_day = quer escolher/mudar em qual dia da semana recebe o relatorio semanal automatico de gastos (ex: 'quero receber o relatorio toda sexta'). set_budget = quer definir/mudar um orcamento mensal maximo pra uma categoria, pra ser avisado se passar (ex: 'me avisa se eu passar de 500 reais em lazer', 'define um orcamento de 300 pra mercado'). remove_budget = quer remover o orcamento de uma categoria (ex: 'tira o limite de lazer'). list_budgets = quer ver o(s) orcamento(s) definidos e quanto ja gastou — se o usuario mencionar uma categoria especifica (ex: 'qual o limite de mercado', 'quanto ainda posso gastar em lazer'), preencha 'category' com ela; se pedir todos (ex: 'quais orcamentos eu tenho'), deixe 'category' em branco. list_categories = quer ver quais categorias de gasto existem (ex: 'quais categorias eu tenho', 'lista as categorias'). create_category = quer CRIAR uma categoria nova, sem estar associada a nenhum gasto especifico ainda (ex: 'criar categoria Marina nos meus gastos', 'cria uma categoria chamada Pets', 'adiciona a categoria Viagem'). Repare que o pedido e sobre a CATEGORIA em si (o substantivo 'categoria' aparece na frase, mesmo com erro de digitacao tipo 'caregoria'), nao um gasto de verdade -- nao confundir com type=expense (que e um gasto JA ACONTECIDO com valor). Preencha 'category' com o nome exato pedido. merge_categories = quer JUNTAR/FUNDIR duas categorias que ja existem numa so, apagando a categoria de origem depois de mover os gastos dela (ex: 'junta a categoria Mercado com Supermercado', 'funde Lazer e Diversao numa so'). Preencha 'category' com a categoria de ORIGEM (que vai deixar de existir) e 'to_category' com a categoria final que sobra. Diferente de bulk_recategorize scope='from_category', que so move os gastos mas MANTEM a categoria de origem (vazia); merge_categories tambem apaga ela. bulk_recategorize = quer mudar a categoria de VARIOS gastos de uma vez (nao um so -- pra um so, use correct_category). Preencha 'to_category' com a categoria final desejada, e 'scope' com uma destas formas de escolher quais gastos mudam: 'today' = todos os gastos de hoje (ex: 'muda os gastos de hoje pra lazer'); 'last_n' = os N gastos mais recentes, preencha tambem 'n' com a quantidade (ex: 'muda os ultimos 5 gastos pra mercado', n=5); 'from_category' = TODOS os gastos que estao numa categoria especifica (categoria de origem continua existindo, so fica vazia), preencha tambem 'category' com o nome dela (ex: 'muda os gastos de mercado pra lazer' -> category='mercado', to_category='lazer'); 'period' = gastos de um periodo especifico, preencha 'days' (ultimos X dias), 'period' ('week'/'month') ou 'date_start'+'date_end' (intervalo exato de datas ISO, ex: 'gastos de 10 a 20 desse mes' -> date_start/date_end desse mes); 'keyword' = todos os gastos cuja DESCRICAO bate com um texto, preencha 'query' com a palavra-chave (ex: 'muda todo gasto com ifood na descricao pra alimentacao' -> query='ifood'). list_expenses = quer ver os GASTOS INDIVIDUAIS (nao o resumo por categoria) de um dia ou periodo, normalmente pra depois editar um deles (ex: 'quais gastos eu tive hoje', 'lista as compras de ontem', 'editar gastos do dia 20', 'me mostra os gastos dos ultimos 3 dias'). Isso inclui pedidos VAGOS sem nenhum dia mencionado, tipo so 'editar compras', 'editar gastos' ou 'quero editar uma compra' — NAO classifique esses como unknown, classifique como list_expenses mesmo sem 'date'/'days' (o sistema avisa o usuario que vai assumir hoje e pede pra especificar se quiser outro dia). Preencha 'date' (ISO 8601, so a data) se um dia especifico foi mencionado, ou 'days' pra 'ultimos X dias'; sem nenhum dos dois, assume hoje. help = quer saber o que o assistente faz, como usar, ou tem uma DUVIDA especifica sobre como fazer algo (ex: 'o que voce faz', 'como funciona', 'como adiciono um gasto', 'como marco um compromisso', 'como faço pra editar um gasto que ja registrei'). Se a duvida for sobre um assunto especifico que o sistema faz, preencha 'topic' com ele (expense/event/reminder/budget/expense_report/edit_expense/category/payment_method) pra explicar so aquilo, com exemplo — nao o catalogo inteiro. Se o usuario pedir EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas'), preencha topic='welcome'. Se for uma pergunta bem generica tipo 'o que voce faz' ou 'me ajuda', sem tema especifico, deixe 'topic' em branco. edit_expense = quer ALTERAR um gasto ja registrado (valor, data, descricao ou forma de pagamento — pra mudar categoria use correct_category). Se ele se referir a um item por numero de uma lista mostrada antes (ex: 'edita o 2', 'muda o 3 pro valor 45'), preencha 'list_ref' com esse numero e NAO preencha 'query'. Se ele descrever o gasto por texto (ex: 'a farmacia foi no pix', 'o gasto do mercado era 45 no total'), preencha 'query' com esse texto e NAO preencha 'list_ref'. Sempre preencha 'field' (amount/date/description/payment_method) e 'value' com o novo valor. undo = quer desfazer/cancelar a ULTIMA acao que ele mesmo pediu ao assistente (ex: 'desfaz isso', 'desfaz a ultima acao', 'cancela isso que eu mandei', 'volta atras', 'tira esse gasto que acabei de colocar'). Diferente de delete_event, que e especificamente sobre cancelar um COMPROMISSO DA AGENDA por nome/busca. set_recurring_expense = quer cadastrar um GASTO FIXO/RECORRENTE, que se repete todo mes no mesmo dia, pra ser lancado automaticamente sem precisar mandar mensagem de novo (ex: 'todo dia 10 pago 50 de internet', 'cadastra um gasto fixo de 89,90 de academia todo dia 5', 'toda vez dia 15 pago 200 de aluguel'). Preencha 'description', 'amount', 'category' e 'day_of_month' (o dia do mes, numero de 1 a 31). Diferente de 'expense', que e um gasto AVULSO ja acontecido uma unica vez. list_recurring_expenses = quer ver quais gastos fixos ja tem cadastrados (ex: 'quais gastos fixos eu tenho', 'lista minhas contas fixas'). remove_recurring_expense = quer parar de lancar automaticamente um gasto fixo (ex: 'cancela o gasto fixo da academia', 'para de lançar a internet todo mes') — preencha 'query' com uma palavra-chave pra identificar qual. set_bill_alert = quer cadastrar um ALERTA/LEMBRETE MENSAL pra nao esquecer de pagar uma conta fixa (agua, luz, internet, aluguel, cartao...) que ELE MESMO paga manualmente todo mes -- DIFERENTE de set_recurring_expense, que LANCA o gasto sozinho automaticamente sem perguntar nada. Use set_bill_alert quando o pedido for sobre SER AVISADO/LEMBRADO de pagar (ex: 'me lembra de pagar a conta de agua todo dia 5', 'cadastra um alerta da luz todo dia 10', 'quero um aviso mensal da fatura do cartao dia 15'), e set_recurring_expense quando o pedido for pra REGISTRAR O GASTO sozinho, sem intervencao (ex: 'todo dia 10 pago 50 de internet, lanca sozinho'). Na duvida entre os dois (o usuario so falou 'me lembra' ou 'me avisa', sem dizer um valor em reais), prefira set_bill_alert -- ele NAO tem nem pede valor, so pergunta 'ja pagou?' todo mes no dia certo, e se responder que nao, pergunta de novo no dia seguinte. Preencha 'description' com o nome da conta (ex: 'Conta de água') e 'day_of_month' (1 a 31). list_bill_alerts = quer ver quais alertas de conta fixa ja tem cadastrados (ex: 'quais contas fixas eu tenho pra pagar', 'lista meus alertas de conta'). remove_bill_alert = quer parar de receber o alerta mensal de uma conta (ex: 'cancela o alerta da agua', 'para de me lembrar da luz') — preencha 'query' com uma palavra-chave pra identificar qual. income = o usuario relatou uma ENTRADA de dinheiro JA ACONTECIDA (salario, freela, reembolso, venda...), nao um gasto (ex: 'recebi 3000 de salario', 'entrou 500 de freela', 'ganhei 200 de reembolso'). Preencha 'amount', 'description' e 'date' (se nao mencionar a data, use hoje). income_report = quer saber quanto recebeu/resumo de entradas num periodo (ex: 'quanto recebi esse mes', 'quanto entrou essa semana'). Preencha 'period' ('week'/'month') ou 'days', igual expense_report. balance = quer saber o SALDO (entradas menos gastos) de um periodo (ex: 'quanto sobrou esse mes', 'qual meu saldo', 'entrou mais do que gastei esse mes?'). Preencha 'period' ('week'/'month') ou 'days', igual expense_report; sem nenhum dos dois, assume o mes atual. unknown = mensagem curta/vaga que so indica a INTENCAO de fazer algo mas falta informacao pra completar (ex: so 'gasto', 'criar gasto', 'cadastrar compra', 'quero marcar um evento', 'lembrete') OU realmente nao deu pra entender nada. Isso inclui pedidos de evento/lembrete/gasto com informacao PARCIAL -- falta o dia e/ou o horario (evento/lembrete), ou falta o valor e/ou a descricao (gasto) -- NUNCA invente o que falta pra completar. Nesses casos preencha 'likely_intent' com o tipo que pareceu ser (expense/event/reminder) e preencha os campos que JA ficaram claros ('title'/'message' + 'date'/'time' pra evento/lembrete, 'amount'/'description' pra gasto), deixando os que faltam vazios -- assim o sistema pede so o que realmente falta, sem o usuario repetir o que ja disse.",
     },
     amount: {
       type: "number",
@@ -183,11 +189,12 @@ const ACTION_SCHEMA = {
     description: {
       type: "string",
       description:
-        "Descricao curta do gasto (type=expense, type=installment_expense, type=set_recurring_expense), a descricao JA CONHECIDA de um gasto parcial (type=unknown com likely_intent='expense', se o usuario ja descreveu do que foi mas nao o valor), ou o motivo/observacao geral (type=unknown sem informacao parcial nenhuma).",
+        "Descricao curta do gasto (type=expense, type=installment_expense, type=set_recurring_expense), o nome da conta fixa a ser avisado (type=set_bill_alert, ex: 'Conta de água'), a descricao JA CONHECIDA de um gasto parcial (type=unknown com likely_intent='expense', se o usuario ja descreveu do que foi mas nao o valor), ou o motivo/observacao geral (type=unknown sem informacao parcial nenhuma).",
     },
     day_of_month: {
       type: "number",
-      description: "Dia do mes (1 a 31) em que o gasto fixo deve ser lancado automaticamente (so para type=set_recurring_expense).",
+      description:
+        "Dia do mes (1 a 31) em que o gasto fixo deve ser lancado automaticamente (type=set_recurring_expense), ou em que o alerta de conta fixa deve avisar (type=set_bill_alert).",
     },
     likely_intent: {
       type: "string",
@@ -242,7 +249,7 @@ const ACTION_SCHEMA = {
     query: {
       type: "string",
       description:
-        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event ou type=edit_event), a mensagem do lembrete (type=edit_reminder), a descricao do gasto (type=correct_category ou type=edit_expense, opcional — se omitido em correct_category, aplica no gasto mais recente. Em edit_expense, so preencha se NAO usar list_ref), a descricao do gasto fixo a remover (type=remove_recurring_expense), ou a palavra que a descricao dos gastos precisa ter (type=bulk_recategorize, so quando scope='keyword').",
+        "Palavra-chave pra buscar o item: o titulo do evento (type=delete_event ou type=edit_event), a mensagem do lembrete (type=edit_reminder ou type=delete_reminder), a descricao do gasto (type=correct_category ou type=edit_expense, opcional — se omitido em correct_category, aplica no gasto mais recente. Em edit_expense, so preencha se NAO usar list_ref), a descricao do gasto fixo a remover (type=remove_recurring_expense), o nome da conta fixa cujo alerta deve parar (type=remove_bill_alert), ou a palavra que a descricao dos gastos precisa ter (type=bulk_recategorize, so quando scope='keyword').",
     },
     new_date: {
       type: "string",
@@ -389,26 +396,30 @@ export type ReceiptReading =
       isReceipt: true;
       description: string;
       date: string;
-      totalAmount?: number;
-      installmentAmount?: number;
-      installments?: number;
-      category?: string;
-      paymentMethod?: string;
+      totalAmount: number;
     };
 
+// So 3 campos saem de uma foto: valor TOTAL, data e local (nome do
+// estabelecimento) -- NUNCA categoria, forma de pagamento ou parcelamento.
+// Isso e proposital (nao e so "a IA nao arriscou"): uma nota fiscal real pode
+// listar varios itens/valores/parcelas, e uma leitura errada de qualquer um
+// desses campos ja causou gasto duplicado/errado em producao. Simplificando
+// pra so o total geral elimina essa classe de erro por completo -- categoria
+// e forma de pagamento sao sempre perguntadas por texto depois (ver
+// handleReceiptImage em router.ts), nunca adivinhadas a partir da imagem.
 const READ_RECEIPT_TOOL: Anthropic.Tool = {
   name: "read_receipt",
-  description: "Le uma foto de comprovante/nota fiscal de compra e extrai os dados do gasto.",
+  description: "Le uma foto de comprovante/nota fiscal de compra e extrai SO o valor total, a data e o local -- nunca item por item.",
   input_schema: {
     type: "object",
     properties: {
       is_receipt: {
         type: "boolean",
-        description: "false se a imagem NAO parecer um comprovante/nota fiscal de compra, ou estiver ilegivel a ponto de nao dar pra ler nem o valor.",
+        description: "false se a imagem NAO parecer um comprovante/nota fiscal de compra, ou estiver ilegivel a ponto de nao dar pra ler nem o valor total.",
       },
       description: {
         type: "string",
-        description: "Nome do estabelecimento ou do que foi a compra, da forma mais literal possivel (ex: 'Posto Ipiranga', 'Supermercado Extra', 'Restaurante do Zé').",
+        description: "SO o nome do estabelecimento/local da compra, da forma mais literal possivel (ex: 'Posto Ipiranga', 'Supermercado Extra', 'Restaurante do Zé'). NAO descreva os produtos/itens comprados.",
       },
       date: {
         type: "string",
@@ -416,25 +427,8 @@ const READ_RECEIPT_TOOL: Anthropic.Tool = {
       },
       total_amount: {
         type: "number",
-        description: "Valor TOTAL da compra (rodape, rotulado 'TOTAL'/'VALOR PAGO'/'VALOR A PAGAR') -- NUNCA some itens manualmente nem pegue o subtotal de um produto especifico. Preencher SO se a compra nao for parcelada, OU se o valor total (nao o de cada parcela) estiver explicito no comprovante.",
-      },
-      installment_amount: {
-        type: "number",
-        description: "Valor de CADA parcela, SE a compra for parcelada e o comprovante mostrar o valor por parcela (comum em comprovante de cartao). Nao preencher junto com 'total_amount' -- se os dois vierem no cupom, prefira preencher so um (o que estiver mais destacado).",
-      },
-      installments: {
-        type: "number",
-        description: "Quantidade de parcelas, SE o comprovante indicar parcelamento (ex: '3X SEM JUROS', 'PARC 01/03' -> 3). Omita se a compra for a vista (nao parcelada) ou nao houver nenhuma indicacao de parcelamento.",
-      },
-      category: {
-        type: "string",
         description:
-          "Categoria do gasto, inferida pelo tipo de estabelecimento (ex: posto de gasolina -> Veiculo, mercado/supermercado -> Mercado, restaurante/lanchonete -> Alimentacao, farmacia -> Saude). Prefira uma das categorias existentes do usuario quando fizer sentido; se nao tiver como identificar o tipo de estabelecimento com confianca, deixe vazio -- o sistema pergunta ao usuario.",
-      },
-      payment_method: {
-        type: "string",
-        description:
-          "Forma de pagamento, SO se estiver impressa e legivel no comprovante (ex: 'CARTAO DEBITO', 'PIX', 'DINHEIRO'). NUNCA suponha -- se nao vier impressa ou nao der pra ler com confianca, deixe vazio, o sistema pergunta ao usuario.",
+          "Valor TOTAL geral da compra (rodape, rotulado 'TOTAL'/'VALOR PAGO'/'VALOR A PAGAR'), MESMO que a nota liste varios itens ou pareca parcelada -- ignore parcelamento e sempre retorne o total cheio da compra inteira. NUNCA some itens manualmente, NUNCA pegue o subtotal/valor de um produto ou parcela especifica -- se nao achar um total geral claro e explicito, deixe vazio.",
       },
     },
     required: ["is_receipt"],
@@ -447,16 +441,11 @@ const READ_RECEIPT_TOOL: Anthropic.Tool = {
 // antes de registrar (foto erra mais que texto digitado), preenchendo so o
 // que faltar (categoria/forma de pagamento) antes de mostrar o resumo final.
 export async function interpretReceiptImage(fromNumber: string, imageBase64: string, mediaType: string): Promise<ReceiptReading> {
-  const categoryNames = listCategories(fromNumber)
-    .map((c) => c.name)
-    .join(", ");
-  const paymentMethodNames = listPaymentMethods(fromNumber)
-    .map((p) => p.name)
-    .join(", ");
   const response = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
-    max_tokens: 500,
-    system: `Voce le fotos de comprovante/nota fiscal de compra pra um assistente financeiro pessoal. Categorias de gasto ja existentes desse usuario: ${categoryNames}. Formas de pagamento ja existentes: ${paymentMethodNames}. Sempre chame a ferramenta read_receipt com o resultado.`,
+    max_tokens: 300,
+    system:
+      "Voce le fotos de comprovante/nota fiscal de compra pra um assistente financeiro pessoal. Extraia SO o valor TOTAL geral da compra, a data e o local (nome do estabelecimento) -- NUNCA liste ou some itens individuais, NUNCA tente identificar categoria, forma de pagamento ou parcelamento, mesmo que a nota mostre varios produtos/valores. Sempre chame a ferramenta read_receipt com o resultado.",
     tools: [READ_RECEIPT_TOOL],
     tool_choice: { type: "tool", name: "read_receipt" },
     messages: [
@@ -464,7 +453,7 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mediaType as "image/jpeg", data: imageBase64 } },
-          { type: "text", text: "Essa imagem e um comprovante/nota fiscal de compra. Extraia os dados do gasto." },
+          { type: "text", text: "Essa imagem e um comprovante/nota fiscal de compra. Extraia so o valor total, a data e o local." },
         ],
       },
     ],
@@ -478,12 +467,8 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
     description?: string;
     date?: string;
     total_amount?: number;
-    installment_amount?: number;
-    installments?: number;
-    category?: string;
-    payment_method?: string;
   };
-  if (!input.is_receipt || (input.total_amount === undefined && input.installment_amount === undefined)) {
+  if (!input.is_receipt || typeof input.total_amount !== "number") {
     return { isReceipt: false };
   }
 
@@ -491,11 +476,7 @@ export async function interpretReceiptImage(fromNumber: string, imageBase64: str
     isReceipt: true,
     description: input.description?.trim() || "Compra",
     date: input.date?.trim() || spDateStringForReceipt(),
-    totalAmount: typeof input.total_amount === "number" ? input.total_amount : undefined,
-    installmentAmount: typeof input.installment_amount === "number" ? input.installment_amount : undefined,
-    installments: typeof input.installments === "number" && input.installments > 1 ? input.installments : undefined,
-    category: input.category?.trim() || undefined,
-    paymentMethod: input.payment_method?.trim() || undefined,
+    totalAmount: input.total_amount,
   };
 }
 
@@ -516,7 +497,6 @@ const EXTRACT_RECEIPT_CORRECTION_TOOL: Anthropic.Tool = {
       category: { type: "string", description: "Nova categoria, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
       payment_method: { type: "string", description: "Nova forma de pagamento, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
       date: { type: "string", description: "Nova data (YYYY-MM-DD), SO se a mensagem corrigiu isso. Omita se nao mencionou." },
-      installments: { type: "number", description: "Nova quantidade de parcelas, SO se a mensagem corrigiu isso. Omita se nao mencionou." },
     },
     required: [],
   },
@@ -532,13 +512,12 @@ export async function extractReceiptCorrectionFromAnswer(answerText: string): Pr
   category?: string;
   paymentMethod?: string;
   date?: string;
-  installments?: number;
 } | null> {
   const now = spNowFormatter.format(new Date()).replace(" ", "T");
   const response = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 200,
-    system: `Data/hora atual: ${now}-03:00, horario de Brasilia. Extraia SO os campos que a mensagem do usuario corrigiu explicitamente sobre um gasto (valor, descricao, categoria, forma de pagamento, data, quantidade de parcelas). Deixe de fora qualquer campo que a mensagem nao mencionou.`,
+    system: `Data/hora atual: ${now}-03:00, horario de Brasilia. Extraia SO os campos que a mensagem do usuario corrigiu explicitamente sobre um gasto (valor, descricao, categoria, forma de pagamento, data). Deixe de fora qualquer campo que a mensagem nao mencionou.`,
     tools: [EXTRACT_RECEIPT_CORRECTION_TOOL],
     tool_choice: { type: "tool", name: "extract_receipt_correction" },
     messages: [{ role: "user", content: answerText }],
@@ -551,25 +530,16 @@ export async function extractReceiptCorrectionFromAnswer(answerText: string): Pr
     category?: string;
     payment_method?: string;
     date?: string;
-    installments?: number;
   };
   const amount = typeof input.amount === "number" ? input.amount : undefined;
   const description = input.description?.trim() || undefined;
   const category = input.category?.trim() || undefined;
   const paymentMethod = input.payment_method?.trim() || undefined;
   const date = input.date?.trim() || undefined;
-  const installments = typeof input.installments === "number" ? input.installments : undefined;
-  if (
-    amount === undefined &&
-    description === undefined &&
-    category === undefined &&
-    paymentMethod === undefined &&
-    date === undefined &&
-    installments === undefined
-  ) {
+  if (amount === undefined && description === undefined && category === undefined && paymentMethod === undefined && date === undefined) {
     return null;
   }
-  return { amount, description, category, paymentMethod, date, installments };
+  return { amount, description, category, paymentMethod, date };
 }
 
 const EXTRACT_CATEGORY_TOOL: Anthropic.Tool = {

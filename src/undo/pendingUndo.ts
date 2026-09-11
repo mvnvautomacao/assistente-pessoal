@@ -59,6 +59,13 @@ export type UndoAction =
         dayOfMonth: number;
       };
       description: string;
+    }
+  | {
+      // mesma ideia de restore_recurring_expense: desativar so muda active=0,
+      // mas recriar do zero mantem o padrao dos outros undos desse arquivo.
+      kind: "restore_bill_alert";
+      params: { fromNumber: string; name: string; dayOfMonth: number };
+      description: string;
     };
 
 interface PendingUndo {

@@ -144,6 +144,22 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- alertas de conta fixa (agua, luz, internet...): NAO lanca gasto sozinho --
+  -- so manda "ja pagou?" todo mes no dia configurado (ver bills/scheduler.ts).
+  -- confirmed_month ("YYYY-MM") evita perguntar de novo no mesmo mes depois de
+  -- confirmado. snoozed_until ("YYYY-MM-DD") guarda o "me lembra amanha".
+  CREATE TABLE IF NOT EXISTS bill_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    name TEXT NOT NULL,
+    day_of_month INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_asked_date TEXT,
+    confirmed_month TEXT,
+    snoozed_until TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- fila por numero: enquanto houver pendencia mais antiga, a proxima mensagem
   -- de texto/audio desse numero e tratada como resposta da categoria, nao pedido novo
   CREATE TABLE IF NOT EXISTS pending_categorizations (
