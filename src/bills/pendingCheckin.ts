@@ -10,6 +10,8 @@ const TTL_MS = 20 * 60 * 60 * 1000;
 export interface PendingBillCheckin {
   billAlertId: number;
   name: string;
+  recurrenceType: "day_of_month" | "interval";
+  intervalDays: number | null;
   createdAt: number;
 }
 

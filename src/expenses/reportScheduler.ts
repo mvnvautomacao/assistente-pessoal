@@ -12,8 +12,12 @@ export function startExpenseReportScheduler() {
       const today = spDayOfWeek();
       const subscribers = getReportSubscribers().filter((s) => s.report_day_of_week === today);
       for (const s of subscribers) {
-        const text = buildExpenseReportText(previousWeekRange(), { compare: true, fromNumber: s.from_number });
-        await sendText(s.from_number, text).catch((err) => console.error(`Erro ao enviar relatorio semanal pra ${s.from_number}:`, err));
+        try {
+          const text = buildExpenseReportText(previousWeekRange(), { compare: true, fromNumber: s.from_number });
+          await sendText(s.from_number, text);
+        } catch (err) {
+          console.error(`Erro ao enviar relatorio semanal pra ${s.from_number}:`, err);
+        }
       }
     },
     { timezone: "America/Sao_Paulo" }
@@ -27,8 +31,12 @@ export function startExpenseReportScheduler() {
       if (!isLastDayOfMonthSP()) return;
       const subscribers = getReportSubscribers();
       for (const s of subscribers) {
-        const text = buildExpenseReportText(currentMonthRange(), { compare: true, fromNumber: s.from_number });
-        await sendText(s.from_number, text).catch((err) => console.error(`Erro ao enviar relatorio mensal pra ${s.from_number}:`, err));
+        try {
+          const text = buildExpenseReportText(currentMonthRange(), { compare: true, fromNumber: s.from_number });
+          await sendText(s.from_number, text);
+        } catch (err) {
+          console.error(`Erro ao enviar relatorio mensal pra ${s.from_number}:`, err);
+        }
       }
     },
     { timezone: "America/Sao_Paulo" }

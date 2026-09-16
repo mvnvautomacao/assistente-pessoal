@@ -23,6 +23,14 @@ export function isLastDayOfMonthSP(d: Date = new Date()): boolean {
   return nextDay.getUTCMonth() !== m - 1;
 }
 
+// "YYYY-MM-DD" + N dias (N pode ser negativo) -- pura aritmetica de calendario
+// (sem fuso nenhum de verdade envolvido, so soma dias corridos numa data-calendario).
+export function addDaysToDateString(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + days));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
+}
+
 // A IA devolve horario de evento/lembrete em ISO local de Brasilia (instruida no
 // system prompt), mas as vezes sem o offset explicito (ex: "2026-08-27T15:00:00"
 // em vez de "...T15:00:00-03:00"). Sem o offset, new Date(str) e o datetime() do

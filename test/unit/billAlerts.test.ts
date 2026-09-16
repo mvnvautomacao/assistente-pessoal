@@ -52,7 +52,7 @@ test("getDueBillAlerts: so pergunta o que bate com o dia de hoje e ainda nao foi
   assert.ok(due.some((b) => b.id === dueToday.id));
   assert.ok(!due.some((b) => b.name === "vence outro dia"));
 
-  confirmBillAlertPaid(dueToday.id, "2026-03");
+  confirmBillAlertPaid(dueToday.id, "2026-03-12");
   const dueAgainSameMonth = getDueBillAlerts("2026-03-12");
   assert.ok(!dueAgainSameMonth.some((b) => b.id === dueToday.id)); // ja confirmado esse mes
 
@@ -92,4 +92,48 @@ test("getDueBillAlerts: soneca de 'lembra amanha' faz perguntar so na data adiad
 
   const dueAfterSnoozedDate = getDueBillAlerts("2026-06-11");
   assert.ok(dueAfterSnoozedDate.some((b) => b.id === bill.id)); // depois do adiado tambem (nao passou nem foi confirmado)
+});
+
+// Recorrencia por INTERVALO (ex: "comprar racao a cada 45 dias") -- diferente
+// de dia fixo do mes, conta a partir de HOJE (data de criacao/ultima
+// confirmacao), nao de um dia de calendario especifico.
+test("createBillAlert por intervalo: next_due_date comeca hoje + interval_days", () => {
+  const bill = createBillAlert({ fromNumber: A, name: "ração a cada 45 dias", intervalDays: 45 });
+  assert.equal(bill.recurrence_type, "interval");
+  assert.equal(bill.interval_days, 45);
+  assert.ok(bill.next_due_date); // calculado a partir de hoje (spDateString), nao fixo no teste
+});
+
+test("getDueBillAlerts: alerta por intervalo so pergunta quando next_due_date chega", () => {
+  const bill = createBillAlert({ fromNumber: A, name: "trocar filtro", intervalDays: 30 });
+  // forca uma data de vencimento conhecida pro teste, sem depender do "hoje" real
+  confirmBillAlertPaid(bill.id, "2026-01-01"); // reseta next_due_date pra 2026-01-01 + 30 = 2026-01-31
+
+  const notDueYet = getDueBillAlerts("2026-01-30");
+  assert.ok(!notDueYet.some((b) => b.id === bill.id));
+
+  const dueOnDay = getDueBillAlerts("2026-01-31");
+  assert.ok(dueOnDay.some((b) => b.id === bill.id));
+
+  const dueAfter = getDueBillAlerts("2026-02-05");
+  assert.ok(dueAfter.some((b) => b.id === bill.id)); // ainda nao confirmado, continua valendo
+});
+
+test("confirmBillAlertPaid por intervalo: reinicia a contagem a partir de HOJE, nao do vencimento original", () => {
+  const bill = createBillAlert({ fromNumber: A, name: "ração confirmar", intervalDays: 45 });
+  confirmBillAlertPaid(bill.id, "2026-07-01"); // reseta next_due_date pra 2026-07-01 + 45 = 2026-08-15
+
+  const updated = getBillAlertById(A, bill.id)!;
+  assert.equal(updated.next_due_date, "2026-08-15");
+  assert.equal(updated.snoozed_until, null);
+});
+
+test("snoozeBillAlert funciona igual pra alerta por intervalo", () => {
+  const bill = createBillAlert({ fromNumber: A, name: "ração soneca", intervalDays: 10 });
+  confirmBillAlertPaid(bill.id, "2026-09-01"); // next_due_date = 2026-09-11
+  markBillAlertAsked(bill.id, "2026-09-11");
+  snoozeBillAlert(bill.id, "2026-09-12");
+
+  assert.ok(!getDueBillAlerts("2026-09-11").some((b) => b.id === bill.id));
+  assert.ok(getDueBillAlerts("2026-09-12").some((b) => b.id === bill.id));
 });

@@ -13,6 +13,7 @@ import {
   findCategoryByName,
   searchExpenses,
   learnKeyword,
+  getReportSubscribers,
 } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
@@ -20,7 +21,7 @@ import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
 import { getRecentBlockedAttempts, getRecentActivity } from "../../src/activity/service";
 import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
-import { spDateString } from "../../src/timeSP";
+import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
@@ -898,6 +899,55 @@ test("set_bill_alert: dia do mes invalido nao cadastra nada", async (t) => {
   assert.equal(listBillAlerts(BA2).length, 0);
 });
 
+// Recorrencia por INTERVALO (ex: "comprar ração a cada 45 dias"), alternativa
+// ao dia fixo do mes -- mesma pergunta "ja fez?", mas contando em dias corridos
+// a partir de hoje em vez de um dia de calendario.
+test("set_bill_alert: intervalo em dias (\"a cada N dias\") cadastra o alerta", async (t) => {
+  const BA11 = "551100090311";
+  seed(BA11);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Ração do cachorro", interval_days: 45 }]);
+  await handleIncomingMessage(evolutionMessage(BA11, "me lembra de comprar ração a cada 45 dias"));
+
+  assert.match(sent[0].text, /a cada 45 dias/);
+  const bills = listBillAlerts(BA11);
+  assert.equal(bills.length, 1);
+  assert.equal(bills[0].recurrence_type, "interval");
+  assert.equal(bills[0].interval_days, 45);
+});
+
+test("set_bill_alert: sem dia do mes e sem intervalo pede pra esclarecer a recorrencia", async (t) => {
+  const BA12 = "551100090312";
+  seed(BA12);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Alguma coisa vaga" }]);
+  await handleIncomingMessage(evolutionMessage(BA12, "me lembra de fazer alguma coisa"));
+
+  assert.match(sent[0].text, /recorrência/i);
+  assert.equal(listBillAlerts(BA12).length, 0);
+});
+
+test("bill checkin: alerta por intervalo confirmado avisa 'daqui a N dias', nao 'mes que vem'", async (t) => {
+  const BA13 = "551100090313";
+  seed(BA13);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_bill_alert", description: "Ração checkin", interval_days: 45 }]);
+  await handleIncomingMessage(evolutionMessage(BA13, "me lembra de comprar ração a cada 45 dias"));
+  const bill = listBillAlerts(BA13)[0];
+
+  setPendingBillCheckin(BA13, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
+  await handleIncomingMessage(evolutionMessage(BA13, "já comprei"));
+  assert.match(sent[1].text, /daqui a 45 dias/);
+
+  const updated = getBillAlertById(BA13, bill.id)!;
+  assert.equal(updated.confirmed_month, null); // alerta por intervalo nunca usa confirmed_month
+  // confirmado no mesmo dia em que foi criado (teste roda tudo "hoje"): o novo
+  // vencimento e hoje+45 de novo, igual foi na criacao -- o que importa aqui e
+  // que reconta a partir de HOJE (a confirmacao), nao que fique estritamente
+  // maior que o valor anterior.
+  assert.equal(updated.next_due_date, addDaysToDateString(spDateString(), 45));
+});
+
 test("list_bill_alerts: lista os alertas cadastrados, isolado por numero", async (t) => {
   const BA3 = "551100090303";
   const BA4 = "551100090304";
@@ -976,7 +1026,7 @@ test("bill checkin: responder que ja pagou fecha o ciclo do mes, sem lancar gast
   seed(BA8);
   const { sent } = withMocks(t);
   const bill = createBillAlert({ fromNumber: BA8, name: "Conta de água checkin", dayOfMonth: 5 });
-  setPendingBillCheckin(BA8, { billAlertId: bill.id, name: bill.name });
+  setPendingBillCheckin(BA8, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
 
   await handleIncomingMessage(evolutionMessage(BA8, "já paguei"));
   assert.match(sent[0].text, /mês que vem/i);
@@ -990,7 +1040,7 @@ test("bill checkin: responder 'amanha' adia a pergunta pro dia seguinte", async 
   seed(BA9);
   const { sent } = withMocks(t);
   const bill = createBillAlert({ fromNumber: BA9, name: "Conta de luz checkin", dayOfMonth: 10 });
-  setPendingBillCheckin(BA9, { billAlertId: bill.id, name: bill.name });
+  setPendingBillCheckin(BA9, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
 
   await handleIncomingMessage(evolutionMessage(BA9, "ainda não, lembra amanhã"));
   assert.match(sent[0].text, /amanhã/i);
@@ -1004,13 +1054,43 @@ test("bill checkin: resposta nao reconhecida pergunta de novo, sem mudar nada", 
   seed(BA10);
   const { sent } = withMocks(t);
   const bill = createBillAlert({ fromNumber: BA10, name: "Conta confusa", dayOfMonth: 15 });
-  setPendingBillCheckin(BA10, { billAlertId: bill.id, name: bill.name });
+  setPendingBillCheckin(BA10, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
 
   await handleIncomingMessage(evolutionMessage(BA10, "sei lá, talvez"));
   assert.match(sent[0].text, /[Nn]ão entendi/);
   const updated = getBillAlertById(BA10, bill.id)!;
   assert.equal(updated.confirmed_month, null);
   assert.equal(updated.snoozed_until, null);
+});
+
+test("set_report_day: dia especifico ativa o relatorio semanal nesse dia", async (t) => {
+  const SR1 = "551100090501";
+  seed(SR1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_report_day", day_of_week: "sexta" }]);
+  await handleIncomingMessage(evolutionMessage(SR1, "quero receber o relatório toda sexta"));
+  assert.match(sent[0].text, /sexta/);
+  const sub = getReportSubscribers().find((s) => s.from_number === SR1);
+  assert.equal(sub?.report_day_of_week, 5);
+});
+
+// Regressao: relatado pelo usuario -- o relatorio semanal simplesmente nunca
+// chegava. Causa: um pedido generico sem citar um dia especifico (ex: "ativa
+// o relatorio semanal") classificava certo como set_report_day, mas SEM
+// 'day_of_week' preenchido -- o codigo respondia "nao entendi o dia" e
+// desistia, nunca chamando setReportDayOfWeek nem pedindo o dia de novo.
+// Confirmado contra a API real que a IA de fato omite 'day_of_week' nesse
+// caso. Agora um pedido generico ativa com segunda-feira como padrao.
+test("set_report_day: pedido generico sem citar o dia usa segunda como padrao, em vez de nao ativar nada", async (t) => {
+  const SR2 = "551100090502";
+  seed(SR2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_report_day" }]);
+  await handleIncomingMessage(evolutionMessage(SR2, "ativa o relatório semanal"));
+  assert.match(sent[0].text, /segunda/i);
+  assert.doesNotMatch(sent[0].text, /[Nn]ão entendi/);
+  const sub = getReportSubscribers().find((s) => s.from_number === SR2);
+  assert.equal(sub?.report_day_of_week, 1);
 });
 
 test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita loop de bot com bot)", async (t) => {

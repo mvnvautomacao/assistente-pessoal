@@ -63,8 +63,10 @@ export type UndoAction =
   | {
       // mesma ideia de restore_recurring_expense: desativar so muda active=0,
       // mas recriar do zero mantem o padrao dos outros undos desse arquivo.
+      // params bate com CreateBillAlertParams (bills/service.ts) -- dia fixo
+      // do mes OU intervalo em dias, nunca os dois.
       kind: "restore_bill_alert";
-      params: { fromNumber: string; name: string; dayOfMonth: number };
+      params: { fromNumber: string; name: string } & ({ dayOfMonth: number } | { intervalDays: number });
       description: string;
     };
 

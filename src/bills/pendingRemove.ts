@@ -6,7 +6,9 @@ const TTL_MS = 5 * 60 * 1000;
 export interface PendingRemoveBillAlert {
   billAlertId: number;
   name: string;
+  recurrenceType: "day_of_month" | "interval";
   dayOfMonth: number;
+  intervalDays: number | null;
   createdAt: number;
 }
 

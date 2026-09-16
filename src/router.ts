@@ -112,7 +112,7 @@ import { isNumberAllowed } from "./access/allowlist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
-import { spDateString, ensureBrazilOffset } from "./timeSP";
+import { spDateString, ensureBrazilOffset, addDaysToDateString } from "./timeSP";
 import {
   ensureUserSeeded,
   findCategoryByName,
@@ -1852,44 +1852,43 @@ async function resolveRemoveBillAlertConfirmation(from: string, pending: Pending
   deactivateBillAlert(from, pending.billAlertId);
   setPendingUndo(from, {
     kind: "restore_bill_alert",
-    params: { fromNumber: from, name: pending.name, dayOfMonth: pending.dayOfMonth },
+    params:
+      pending.recurrenceType === "interval"
+        ? { fromNumber: from, name: pending.name, intervalDays: pending.intervalDays! }
+        : { fromNumber: from, name: pending.name, dayOfMonth: pending.dayOfMonth },
     description: pending.name,
   });
   logActivity(from, "remove_bill_alert", `confirmado: "${pending.name}" removido`);
   await sendText(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
 }
 
-// "YYYY-MM-DD" + 1 dia, mesma matematica de isLastDayOfMonthSP (src/timeSP.ts)
-function addOneDaySP(dateStr: string): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const next = new Date(Date.UTC(y, m - 1, d + 1));
-  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
-}
-
-// Resposta a pergunta mensal "ja pagou a conta X, ou quer que eu lembre
-// amanha?" (disparada pelo scheduler, ver bills/scheduler.ts). So duas saidas
-// possiveis, sem meio-termo -- se nao reconhecer nenhuma, pergunta nas mesmas
-// duas opcoes de novo, sem deixar a pendencia sem resposta.
+// Resposta a pergunta "ja fez X, ou quer que eu lembre amanha?" (disparada
+// pelo scheduler, ver bills/scheduler.ts). So duas saidas possiveis, sem
+// meio-termo -- se nao reconhecer nenhuma, pergunta nas mesmas duas opcoes de
+// novo, sem deixar a pendencia sem resposta.
 async function resolveBillCheckinAnswer(from: string, pending: PendingBillCheckin, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const paid = /^(sim|s|j[aá] paguei|paguei|pago|quitei|confirmo|confirma)\b/.test(normalized);
+  const paid = /^(sim|s|j[aá] paguei|paguei|pago|quitei|j[aá] fiz|fiz|j[aá] comprei|comprei|resolvido|resolvi|feito|confirmo|confirma)\b/.test(
+    normalized
+  );
   const snooze = /^(n[aã]o|n|ainda n[aã]o|amanh[aã]|lembra|manda amanh[aã]|depois|mais tarde)\b/.test(normalized);
 
   if (!paid && !snooze) {
-    await sendText(from, `Não entendi — já pagou "${pending.name}", ou quer que eu lembre amanhã?`);
+    await sendText(from, `Não entendi — já resolveu "${pending.name}", ou quer que eu lembre amanhã?`);
     return;
   }
 
   clearPendingBillCheckin(from);
   const today = spDateString();
   if (paid) {
-    confirmBillAlertPaid(pending.billAlertId, today.slice(0, 7));
-    logActivity(from, "bill_alert", `confirmado pago: ${pending.name}`);
-    await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" mês que vem, no dia certo.`);
+    confirmBillAlertPaid(pending.billAlertId, today);
+    logActivity(from, "bill_alert", `confirmado: ${pending.name}`);
+    const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
+    await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" ${nextLabel}.`);
     return;
   }
 
-  snoozeBillAlert(pending.billAlertId, addOneDaySP(today));
+  snoozeBillAlert(pending.billAlertId, addDaysToDateString(today, 1));
   logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
   await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
 }
@@ -2192,16 +2191,24 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "set_report_day": {
       const dayMap: Record<string, number> = { domingo: 0, segunda: 1, terca: 2, quarta: 3, quinta: 4, sexta: 5, sabado: 6 };
-      const dayNumber = dayMap[interpretation.day_of_week];
-      if (dayNumber === undefined) {
+      // pedido generico tipo "ativa o relatorio semanal", sem citar um dia --
+      // antes disso caia num beco sem saida ("nao entendi o dia" e nada mais
+      // acontecia, sem nem perguntar de novo). Um dia padrao (segunda) deixa o
+      // pedido generico funcionar de primeira; se o usuario CITOU um dia mas a
+      // IA nao reconheceu (nao deveria acontecer, o enum ja restringe), ainda
+      // avisa e pede pra tentar de novo.
+      if (interpretation.day_of_week && dayMap[interpretation.day_of_week] === undefined) {
         await sendText(from, "Não entendi o dia. Pode ser: domingo, segunda, terça, quarta, quinta, sexta ou sábado.");
         break;
       }
-      setReportDayOfWeek(from, dayNumber);
-      logActivity(from, "set_report_day", `relatorio semanal agora chega toda(o) ${interpretation.day_of_week}`);
+      const dayLabel = interpretation.day_of_week ?? "segunda";
+      setReportDayOfWeek(from, dayMap[dayLabel]);
+      logActivity(from, "set_report_day", `relatorio semanal agora chega toda(o) ${dayLabel}${interpretation.day_of_week ? "" : " (padrao)"}`);
       await sendText(
         from,
-        `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${interpretation.day_of_week} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
+        interpretation.day_of_week
+          ? `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${dayLabel} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
+          : `✅ Relatório semanal ativado! Vou te mandar toda segunda-feira de manhã (pode pedir pra eu mudar o dia quando quiser, ex: "quero receber toda sexta"), e o relatório do mês no último dia de cada mês às 18h.`
       );
       break;
     }
@@ -2564,42 +2571,71 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "set_bill_alert": {
-      if (interpretation.day_of_month < 1 || interpretation.day_of_month > 31) {
+      const hasDayOfMonth = typeof interpretation.day_of_month === "number";
+      const hasInterval = typeof interpretation.interval_days === "number";
+
+      if (!hasDayOfMonth && !hasInterval) {
+        await sendText(
+          from,
+          `Não entendi a recorrência de "${interpretation.description}". Pode ser um dia fixo do mês (ex: "todo dia 10") ou um intervalo (ex: "a cada 45 dias")?`
+        );
+        break;
+      }
+      if (hasDayOfMonth && (interpretation.day_of_month! < 1 || interpretation.day_of_month! > 31)) {
         await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.day_of_month}" não é um dia válido.`);
         break;
       }
-      createBillAlert({ fromNumber: from, name: interpretation.description, dayOfMonth: interpretation.day_of_month });
-      logActivity(from, "set_bill_alert", `${interpretation.description}, todo dia ${interpretation.day_of_month}`);
+      if (hasInterval && interpretation.interval_days! < 1) {
+        await sendText(from, `O intervalo precisa ser de pelo menos 1 dia.`);
+        break;
+      }
+
+      createBillAlert(
+        hasDayOfMonth
+          ? { fromNumber: from, name: interpretation.description, dayOfMonth: interpretation.day_of_month! }
+          : { fromNumber: from, name: interpretation.description, intervalDays: interpretation.interval_days! }
+      );
+      const recurrenceLabel = hasDayOfMonth ? `todo dia ${interpretation.day_of_month}` : `a cada ${interpretation.interval_days} dias`;
+      logActivity(from, "set_bill_alert", `${interpretation.description}, ${recurrenceLabel}`);
       await sendText(
         from,
-        `📌 Alerta cadastrado: todo dia ${interpretation.day_of_month} eu te pergunto se já pagou "${interpretation.description}". Se ainda não tiver pago, é só pedir pra eu lembrar de novo no dia seguinte.`
+        `📌 Alerta cadastrado: ${recurrenceLabel} eu te pergunto se já fez "${interpretation.description}". Se ainda não tiver feito, é só pedir pra eu lembrar de novo no dia seguinte.`
       );
       break;
     }
     case "list_bill_alerts": {
       const bills = listBillAlerts(from);
-      logActivity(from, "list_bill_alerts", `${bills.length} alerta(s) de conta fixa`);
+      logActivity(from, "list_bill_alerts", `${bills.length} alerta(s) cadastrado(s)`);
       if (!bills.length) {
         await sendText(
           from,
-          "Você ainda não tem nenhum alerta de conta fixa cadastrado. Pode dizer algo como \"me lembra de pagar a conta de água todo dia 5\"."
+          "Você ainda não tem nenhum alerta cadastrado. Pode dizer algo como \"me lembra de pagar a conta de água todo dia 5\" ou \"me lembra de comprar ração a cada 45 dias\"."
         );
         break;
       }
-      const lines = bills.map((b) => `• ${b.name} — todo dia ${b.day_of_month}`).join("\n");
-      await sendText(from, `📌 Seus alertas de conta fixa:\n\n${lines}\n\nPra cancelar um, é só dizer, ex: "cancela o alerta da água".`);
+      const lines = bills
+        .map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`)
+        .join("\n");
+      await sendText(from, `📌 Seus alertas:\n\n${lines}\n\nPra cancelar um, é só dizer, ex: "cancela o alerta da água".`);
       break;
     }
     case "remove_bill_alert": {
       const bill = findActiveBillAlertByName(from, interpretation.query);
       if (!bill) {
         logActivity(from, "remove_bill_alert", `nenhum alerta encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não achei nenhum alerta de conta parecido com "${interpretation.query}".`);
+        await sendText(from, `Não achei nenhum alerta parecido com "${interpretation.query}".`);
         break;
       }
-      setPendingRemoveBillAlert(from, { billAlertId: bill.id, name: bill.name, dayOfMonth: bill.day_of_month });
+      setPendingRemoveBillAlert(from, {
+        billAlertId: bill.id,
+        name: bill.name,
+        recurrenceType: bill.recurrence_type,
+        dayOfMonth: bill.day_of_month,
+        intervalDays: bill.interval_days,
+      });
+      const recurrenceLabel = bill.recurrence_type === "interval" ? `a cada ${bill.interval_days} dias` : `todo dia ${bill.day_of_month}`;
       logActivity(from, "remove_bill_alert", `pediu confirmacao pra remover "${bill.name}"`);
-      await sendText(from, `Vou parar de te perguntar sobre "${bill.name}" (todo dia ${bill.day_of_month}). Confirma? Responde "sim" ou "não".`);
+      await sendText(from, `Vou parar de te perguntar sobre "${bill.name}" (${recurrenceLabel}). Confirma? Responde "sim" ou "não".`);
       break;
     }
     case "income": {
@@ -2766,8 +2802,8 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 🔁 *Gastos fixos*
 "Todo dia 10 pago 50 reais de internet" — eu cadastro e lanço esse valor sozinho todo mês, sem você precisar mandar mensagem de novo.
 
-📌 *Alertas de conta fixa*
-"Me lembra de pagar a conta de água todo dia 5" — eu não lanço nada sozinho, só te pergunto todo mês nesse dia se já pagou. Se não tiver pago ainda, é só pedir pra eu lembrar de novo no dia seguinte.
+📌 *Alertas e lembretes recorrentes*
+"Me lembra de pagar a conta de água todo dia 5" (dia fixo do mês) ou "me lembra de comprar ração a cada 45 dias" (intervalo) — eu não lanço nada sozinho, só pergunto na hora certa se já foi feito. Se ainda não, é só pedir pra eu lembrar de novo no dia seguinte.
 
 💵 *Entradas e saldo*
 "Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).

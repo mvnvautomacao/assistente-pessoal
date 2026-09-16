@@ -144,15 +144,24 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
-  -- alertas de conta fixa (agua, luz, internet...): NAO lanca gasto sozinho --
-  -- so manda "ja pagou?" todo mes no dia configurado (ver bills/scheduler.ts).
-  -- confirmed_month ("YYYY-MM") evita perguntar de novo no mesmo mes depois de
-  -- confirmado. snoozed_until ("YYYY-MM-DD") guarda o "me lembra amanha".
+  -- alertas de conta fixa/lembrete recorrente (agua, luz, ou "comprar racao a
+  -- cada 45 dias"): NAO lanca gasto sozinho -- so manda "ja fez?" no momento
+  -- certo (ver bills/scheduler.ts). Duas recorrencias possiveis, mutuamente
+  -- exclusivas (recurrence_type decide qual vale):
+  --   'day_of_month' -- todo mes no dia fixo (day_of_month); confirmed_month
+  --     ("YYYY-MM") evita perguntar de novo no mesmo mes depois de confirmado.
+  --   'interval' -- a cada N dias (interval_days) a partir da ultima
+  --     confirmacao; next_due_date ("YYYY-MM-DD") guarda quando perguntar de
+  --     novo (day_of_month fica com um valor de placeholder, ignorado).
+  -- snoozed_until ("YYYY-MM-DD") guarda o "me lembra amanha", nas duas recorrencias.
   CREATE TABLE IF NOT EXISTS bill_alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_number TEXT NOT NULL,
     name TEXT NOT NULL,
+    recurrence_type TEXT NOT NULL DEFAULT 'day_of_month',
     day_of_month INTEGER NOT NULL,
+    interval_days INTEGER,
+    next_due_date TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     last_asked_date TEXT,
     confirmed_month TEXT,
@@ -211,6 +220,20 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "r
 }
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
+}
+
+// bill_alerts existia antes da recorrencia por intervalo (so tinha dia fixo do
+// mes) -- linhas antigas ficam com recurrence_type default 'day_of_month' via
+// DEFAULT da coluna, continuam funcionando exatamente como antes.
+const billAlertsColumns = db.prepare(`PRAGMA table_info(bill_alerts)`).all() as { name: string }[];
+if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "recurrence_type")) {
+  db.exec(`ALTER TABLE bill_alerts ADD COLUMN recurrence_type TEXT NOT NULL DEFAULT 'day_of_month'`);
+}
+if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "interval_days")) {
+  db.exec(`ALTER TABLE bill_alerts ADD COLUMN interval_days INTEGER`);
+}
+if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "next_due_date")) {
+  db.exec(`ALTER TABLE bill_alerts ADD COLUMN next_due_date TEXT`);
 }
 
 // numero do dono sempre autorizado, senao ele mesmo ficaria bloqueado assim que
