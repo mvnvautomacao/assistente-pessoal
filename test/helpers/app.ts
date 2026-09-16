@@ -60,6 +60,7 @@ export async function startFullAppTestServer() {
   app.use(express.urlencoded({ extended: true }));
   app.use(adminRouter);
   app.use(dashboardRouter);
+  app.get("/health", (_req, res) => res.send("ok"));
 
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));

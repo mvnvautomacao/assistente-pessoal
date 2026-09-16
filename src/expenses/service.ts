@@ -358,6 +358,7 @@ export interface PendingCategorization {
   date: string;
   suggested_category: string | null;
   suggested_payment_method: string | null;
+  created_at: string;
 }
 
 export function addPendingCategorization(params: {
@@ -392,6 +393,13 @@ export function getNextPendingCategorization(fromNumber: string): PendingCategor
 
 export function clearPendingCategorization(id: number) {
   db.prepare(`DELETE FROM pending_categorizations WHERE id = ?`).run(id);
+}
+
+// So pra teste: forca um item da fila a parecer mais antigo do que e, sem
+// precisar esperar o TTL de verdade passar (ver PENDING_CATEGORIZATION_TTL_MS
+// em router.ts).
+export function backdatePendingCategorizationForTests(id: number, ageMs: number) {
+  db.prepare(`UPDATE pending_categorizations SET created_at = ? WHERE id = ?`).run(new Date(Date.now() - ageMs).toISOString(), id);
 }
 
 // --- consultas pro dashboard ---

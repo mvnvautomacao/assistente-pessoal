@@ -14,6 +14,8 @@ import {
   searchExpenses,
   learnKeyword,
   getReportSubscribers,
+  getNextPendingCategorization,
+  backdatePendingCategorizationForTests,
 } from "../../src/expenses/service";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
@@ -208,6 +210,81 @@ test("fila de categorizacao pendente e isolada por numero (outro numero nao inte
 
   const expense = findRecentExpense(P, "gasto na fila");
   assert.equal(expense, null); // ainda pendente, Q nao resolveu nada de P
+});
+
+// Regressao da auditoria: sem TTL, uma pendencia de categoria nunca expirava
+// -- se o cliente ignorasse "qual categoria e isso?", TODA mensagem futura
+// dele (um gasto novo, um "oi", qualquer coisa) seria tratada como resposta
+// de categoria pra sempre. Ver PENDING_CATEGORIZATION_TTL_MS em router.ts.
+test("categorizacao pendente expira depois de 30s: salva sozinho com a categoria sugerida e avisa, sem travar a mensagem seguinte", async (t) => {
+  const T1 = "551100090801";
+  seed(T1);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "expense", amount: 40, category: "CategoriaExpirada", description: "gasto que expira", date: "2026-01-14" }]);
+  await handleIncomingMessage(evolutionMessage(T1, "40 em algo raro"));
+  assert.match(sent[0].text, /[Qq]ual categoria/);
+
+  const pendingBeforeExpiry = getNextPendingCategorization(T1);
+  assert.ok(pendingBeforeExpiry, "devia ter uma pendencia na fila");
+  backdatePendingCategorizationForTests(pendingBeforeExpiry!.id, 31 * 1000);
+
+  // mensagem seguinte NAO e resposta de categoria -- e um gasto novo e
+  // completo, que so deveria ser tratado normalmente se a pendencia expirada
+  // ja tiver sido resolvida sozinha antes de olhar essa mensagem
+  queueReply([{ type: "expense", amount: 12, category: "Transporte", description: "uber depois do timeout", date: "2026-01-14" }]);
+  await handleIncomingMessage(evolutionMessage(T1, "12 de uber"));
+
+  assert.equal(sent.length, 3); // pergunta original, aviso de timeout, confirmacao do gasto novo
+  assert.match(sent[1].text, /⏱️/);
+  assert.match(sent[1].text, /CategoriaExpirada/);
+  assert.match(sent[1].text, /gasto que expira/);
+  assert.match(sent[2].text, /✅/);
+  assert.match(sent[2].text, /uber depois do timeout/);
+
+  const expirado = findRecentExpense(T1, "gasto que expira");
+  assert.equal(expirado?.amount, 40);
+  assert.equal(findCategoryByName(T1, "CategoriaExpirada")?.id, expirado?.category_id);
+
+  assert.equal(getNextPendingCategorization(T1), null); // fila limpa, nao ficou travada
+});
+
+test("categorizacao pendente expirada sem NENHUMA categoria sugerida cai em 'Outros'", async (t) => {
+  const T2 = "551100090802";
+  seed(T2);
+  const { sent, queueReply } = withMocks(t);
+
+  // sem "category" nenhuma na interpretacao -- caso de gasto sem nenhuma pista
+  queueReply([{ type: "expense", amount: 8, description: "gasto sem pista nenhuma", date: "2026-01-14" }]);
+  await handleIncomingMessage(evolutionMessage(T2, "8 reais"));
+  assert.match(sent[0].text, /[Qq]ual categoria/);
+
+  const pending = getNextPendingCategorization(T2)!;
+  backdatePendingCategorizationForTests(pending.id, 31 * 1000);
+
+  queueReply([{ type: "list_categories" }]);
+  await handleIncomingMessage(evolutionMessage(T2, "quais categorias eu tenho"));
+
+  const expense = findRecentExpense(T2, "gasto sem pista nenhuma");
+  assert.equal(findCategoryByName(T2, "Outros")?.id, expense?.category_id);
+});
+
+test("categorizacao pendente ainda DENTRO do prazo continua tratando a resposta normalmente (nao expira cedo demais)", async (t) => {
+  const T3 = "551100090803";
+  seed(T3);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "expense", amount: 22, category: "CategoriaAindaValida", description: "gasto dentro do prazo", date: "2026-01-14" }]);
+  await handleIncomingMessage(evolutionMessage(T3, "22 em algo raro"));
+
+  const pending = getNextPendingCategorization(T3)!;
+  backdatePendingCategorizationForTests(pending.id, 5 * 1000); // 5s < 30s, nao expirou
+
+  await handleIncomingMessage(evolutionMessage(T3, "Saúde"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /Saúde/);
+  const expense = findRecentExpense(T3, "gasto dentro do prazo");
+  assert.equal(findCategoryByName(T3, "Saúde")?.id, expense?.category_id);
 });
 
 test("correct_category: corrige a categoria do gasto mais recente e aprende a palavra-chave", async (t) => {

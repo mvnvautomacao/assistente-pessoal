@@ -468,7 +468,11 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   // Enquanto tiver categorizacao pendente pra esse numero, a proxima mensagem
   // de texto/audio e tratada como resposta a "qual categoria e isso?", nao como pedido novo.
   if (text !== undefined) {
-    const pending = getNextPendingCategorization(from);
+    let pending = getNextPendingCategorization(from);
+    while (pending && isPendingCategorizationExpired(pending)) {
+      await finalizePendingCategorizationByTimeout(from, pending);
+      pending = getNextPendingCategorization(from);
+    }
     if (pending) {
       await resolvePendingCategorization(from, pending, text);
       return;
@@ -651,6 +655,62 @@ async function processInterpretations(from: string, items: Interpretation[]) {
 function resolvePaymentMethod(from: string, mentioned?: string | null) {
   if (mentioned) return getOrCreatePaymentMethod(from, mentioned);
   return getDefaultPaymentMethod(from);
+}
+
+// Tempo maximo esperando "qual categoria e isso?" antes de decidir sozinho.
+// Bem mais curto que os outros caches de conversa (5min) de proposito: essa
+// fila e checada em 1o lugar em TODA mensagem futura do numero (ver
+// handleIncomingMessage), entao se ficar pendente por muito tempo, qualquer
+// coisa que o cliente mandar depois -- um gasto novo, um evento, um "oi" --
+// seria tratada como resposta de categoria, travando o numero pra sempre
+// (bug real encontrado na auditoria: src/expenses/service.ts + prioridade da
+// fila em handleIncomingMessage).
+const PENDING_CATEGORIZATION_TTL_MS = 30 * 1000;
+
+function isPendingCategorizationExpired(pending: PendingCategorization): boolean {
+  return Date.now() - new Date(pending.created_at).getTime() > PENDING_CATEGORIZATION_TTL_MS;
+}
+
+// Passou o prazo sem resposta: em vez de deixar a pergunta pendente pra
+// sempre (ou simplesmente descartar o gasto, perdendo o que o cliente
+// registrou), salva sozinho usando a categoria sugerida (a que veio na
+// mensagem original, se veio) -- ou "Outros" se nao tinha nenhuma -- e AVISA
+// o que foi feito, do mesmo jeito que uma confirmacao normal, pro cliente
+// poder corrigir se a categoria ficou errada.
+async function finalizePendingCategorizationByTimeout(from: string, pending: PendingCategorization) {
+  try {
+    const category = getOrCreateCategory(from, pending.suggested_category ?? "Outros");
+    const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
+    const created = insertExpense({
+      fromNumber: from,
+      amount: pending.amount,
+      description: pending.description,
+      categoryId: category.id,
+      paymentMethodId: paymentMethod?.id ?? null,
+      date: pending.date,
+    });
+    clearPendingCategorization(pending.id);
+
+    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
+    setPendingUndo(from, {
+      kind: "delete_expense",
+      expenseId: created.id,
+      description: `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description}`,
+    });
+    logActivity(
+      from,
+      "expense",
+      `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado automaticamente, sem resposta a tempo)`
+    );
+    await sendText(
+      from,
+      `⏱️ Não recebi a categoria a tempo, então registrei como "${category.name}": R$${pending.amount.toFixed(2)} — ${pending.description}${paymentSuffix}. Se não for essa a categoria certa, é só me falar pra eu corrigir.`
+    );
+  } catch (err) {
+    console.error("Erro ao finalizar categorizacao pendente por timeout:", err);
+    logActivity(from, "error", err instanceof Error ? err.message : String(err));
+    clearPendingCategorization(pending.id);
+  }
 }
 
 function askForCategory(from: string, amount: number, description: string) {

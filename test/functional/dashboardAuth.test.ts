@@ -190,3 +190,22 @@ test("REGRESSAO: /dashboard sem sessao mostra o login do DASHBOARD, nao o do adm
     await server.close();
   }
 });
+
+// Regressao: em producao, o Coolify chamava /health e recebia a tela de
+// login do dashboard (200 OK, mas com HTML em vez de "ok") em vez do
+// healthcheck de verdade. Causa: dashboardRouter.use(requireDashboardSession)
+// sem path aplicava a QUALQUER rota que passasse pelo dashboardRouter
+// (montado sem prefixo em index.ts), inclusive /health, que so e registrada
+// depois dele. Mesma familia de bug do teste acima, so que sem sessao de
+// admin nenhuma no meio -- so precisa do dashboardRouter no caminho.
+test("REGRESSAO: /health responde 'ok' mesmo sem sessao, com o dashboardRouter montado junto", async () => {
+  const server = await startFullAppTestServer();
+  try {
+    const res = await fetch(`${server.baseUrl}/health`);
+    const body = await res.text();
+    assert.equal(res.status, 200);
+    assert.equal(body, "ok");
+  } finally {
+    await server.close();
+  }
+});
