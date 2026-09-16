@@ -114,6 +114,83 @@ test("mensagem de gasto com categoria desconhecida: fica pendente e pergunta, de
   assert.match(sent[1].text, /algo estranho/); // nome do produto/descricao na confirmacao
 });
 
+// Mais de um gasto COMPLETO na mesma mensagem (ex: "gastei 50 no mercado e 30
+// de uber") vira uma unica confirmacao em lote, em vez de uma por gasto -- ver
+// tryCreateExpenseBatch em router.ts.
+test("expense: dois gastos completos na mesma mensagem viram uma unica confirmacao em lote", async (t) => {
+  const BE1 = "551100090701";
+  seed(BE1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "compras da semana", date: "2026-01-10" },
+    { type: "expense", amount: 30, category: "Transporte", description: "uber", date: "2026-01-10" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BE1, "gastei 50 no mercado e 30 de uber"));
+
+  assert.equal(sent.length, 1); // uma so mensagem, nao duas
+  assert.match(sent[0].text, /2 gastos registrados/);
+  assert.match(sent[0].text, /1\..*50.*Mercado.*compras da semana/);
+  assert.match(sent[0].text, /2\..*30.*Transporte.*uber/);
+  assert.equal(searchExpenses(BE1, "compras da semana").length, 1);
+  assert.equal(searchExpenses(BE1, "uber").length, 1);
+});
+
+test("expense: lote permite editar so um dos gastos, sem mexer no outro", async (t) => {
+  const BE2 = "551100090702";
+  seed(BE2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "mercado lote edit", date: "2026-01-10" },
+    { type: "expense", amount: 30, category: "Transporte", description: "uber lote edit", date: "2026-01-10" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BE2, "gastei 50 no mercado e 30 de uber"));
+
+  // "o 2" se refere ao segundo item do lote (uber), igual list_expenses
+  queueReply([{ type: "edit_expense", list_ref: 2, field: "amount", value: "45" }]);
+  await handleIncomingMessage(evolutionMessage(BE2, "muda o valor do 2 pra 45"));
+  await handleIncomingMessage(evolutionMessage(BE2, "sim"));
+
+  const mercado = findRecentExpense(BE2, "mercado lote edit");
+  const uber = findRecentExpense(BE2, "uber lote edit");
+  assert.equal(mercado?.amount, 50); // nao mudou
+  assert.equal(uber?.amount, 45); // so esse mudou
+});
+
+test("expense: desfazer o lote remove os dois gastos de uma vez", async (t) => {
+  const BE3 = "551100090703";
+  seed(BE3);
+  const { queueReply } = withMocks(t);
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "mercado lote undo", date: "2026-01-10" },
+    { type: "expense", amount: 30, category: "Transporte", description: "uber lote undo", date: "2026-01-10" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BE3, "gastei 50 no mercado e 30 de uber"));
+  assert.equal(searchExpenses(BE3, "mercado lote undo").length, 1);
+  assert.equal(searchExpenses(BE3, "uber lote undo").length, 1);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(BE3, "desfaz isso"));
+  assert.equal(searchExpenses(BE3, "mercado lote undo").length, 0);
+  assert.equal(searchExpenses(BE3, "uber lote undo").length, 0);
+});
+
+test("expense: se um dos gastos do lote nao tem categoria resolvivel, nenhum vira lote -- cada um segue o fluxo normal", async (t) => {
+  const BE4 = "551100090704";
+  seed(BE4);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "mercado sem lote", date: "2026-01-10" },
+    { type: "expense", amount: 30, category: "CategoriaInventadaSemLote", description: "algo sem lote", date: "2026-01-10" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BE4, "gastei 50 no mercado e 30 em algo estranho"));
+
+  assert.equal(sent.length, 2); // uma confirmacao pro mercado, uma pergunta de categoria pro outro
+  assert.match(sent[0].text, /✅/);
+  assert.match(sent[1].text, /[Qq]ual categoria/);
+  assert.equal(searchExpenses(BE4, "mercado sem lote").length, 1);
+  assert.equal(searchExpenses(BE4, "algo sem lote").length, 0); // ainda pendente
+});
+
 test("fila de categorizacao pendente e isolada por numero (outro numero nao interfere)", async (t) => {
   // numeros dedicados: fica de proposito uma pendencia sem resolver no final
   // deste teste, entao nao pode reusar A/B (usados por outros testes depois)

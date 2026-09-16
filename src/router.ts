@@ -609,8 +609,33 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   }
 
   // Uma mensagem pode conter varios pedidos (ex: "marca dentista amanha e reuniao sexta");
-  // processa cada acao separadamente, uma falha nao impede as outras.
-  for (const interpretation of interpretations) {
+  // processa cada acao separadamente, uma falha nao impede as outras. Gastos
+  // completos (2+) sao tentados em LOTE primeiro, pra confirmar todos numa
+  // mensagem so em vez de uma por gasto (ver tryCreateExpenseBatch) -- os
+  // demais pedidos da mensagem (nao-gasto) continuam vindo depois, um a um.
+  const expenseActions = interpretations.filter((i): i is Extract<Interpretation, { type: "expense" }> => i.type === "expense");
+  const otherActions = interpretations.filter((i) => i.type !== "expense");
+
+  if (expenseActions.length > 1) {
+    let batched = false;
+    try {
+      batched = await tryCreateExpenseBatch(from, expenseActions);
+    } catch (err) {
+      console.error("Erro ao processar lote de gastos:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+      batched = true; // um erro aqui pode ja ter inserido alguns gastos -- nao tenta de novo um por um pra nao duplicar
+    }
+    if (!batched) await processInterpretations(from, expenseActions);
+    await processInterpretations(from, otherActions);
+    return;
+  }
+
+  await processInterpretations(from, interpretations);
+}
+
+async function processInterpretations(from: string, items: Interpretation[]) {
+  for (const interpretation of items) {
     try {
       await handleInterpretation(from, interpretation);
     } catch (err) {
@@ -685,6 +710,81 @@ async function createExpenseAndNotify(
     logActivity(from, "expense", `pendente de categoria: R$${params.amount.toFixed(2)} — ${params.description}`);
     if (!alreadyWaiting) await askForCategory(from, params.amount, params.description);
   }
+}
+
+// Confirma um lote de 2+ gastos completos vindos da MESMA mensagem numa unica
+// resposta (ex: "gastei 50 no mercado e 30 de uber" -> "✅ 2 gastos
+// registrados: ..."), em vez de uma confirmacao por gasto. So ativa quando
+// TODOS conseguem resolver categoria sozinhos (por nome dito ou palavra-chave
+// ja aprendida) -- se qualquer um precisar perguntar a categoria, desiste do
+// lote (retorna false, sem inserir nada) e cada gasto cai de volta no fluxo
+// normal, um por vez (fila de categorizacao ja existente), pra nao complicar
+// perguntar categoria de varios ao mesmo tempo.
+//
+// Registra o lote como "ultima lista mostrada" (mesmo mecanismo de
+// list_expenses/getLastShownExpenses), entao da pra editar um especifico
+// depois SEM mexer nos outros (ex: "muda o valor do 2 pra 45") -- e se o
+// usuario pedir pra mudar mais de um de uma vez (ex: "muda o 1 pra pix e o 2
+// pra dinheiro"), isso ja funciona sozinho: vira duas acoes edit_expense
+// separadas no mesmo pedido, cada uma seguindo seu proprio fluxo de
+// confirmacao normal. O "desfaz isso" tambem trata o lote inteiro como uma
+// unidade so (kind delete_expenses_batch), removendo todos de uma vez.
+async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation, { type: "expense" }>[]): Promise<boolean> {
+  type ResolvedExpense = {
+    amount: number;
+    description: string;
+    date: string;
+    category: { id: number; name: string };
+    paymentMethod: { id: number; name: string } | null;
+  };
+
+  const resolved: ResolvedExpense[] = [];
+  for (const item of items) {
+    const description = item.description?.trim() || item.category;
+    if (!description) return false; // sem descricao nenhuma, nem da categoria -- nao deveria classificar como expense assim, mas por seguranca cai pro fluxo normal
+    const keywordHints = [item.category, description].filter((hint): hint is string => Boolean(hint));
+    const category = (item.category && findCategoryByName(from, item.category)) || findCategoryByKeyword(from, ...keywordHints);
+    if (!category) return false;
+    resolved.push({
+      amount: item.amount,
+      description,
+      date: item.date || spDateString(),
+      category,
+      paymentMethod: resolvePaymentMethod(from, item.payment_method),
+    });
+  }
+
+  const expenseIds: number[] = [];
+  const budgetAlerts: string[] = [];
+  const lines = resolved.map((r, idx) => {
+    const created = insertExpense({
+      fromNumber: from,
+      amount: r.amount,
+      description: r.description,
+      categoryId: r.category.id,
+      paymentMethodId: r.paymentMethod?.id ?? null,
+      date: r.date,
+    });
+    expenseIds.push(created.id);
+    const paymentSuffix = r.paymentMethod ? ` via ${r.paymentMethod.name}` : "";
+    logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
+    const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
+    if (budgetAlert) budgetAlerts.push(budgetAlert);
+    return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description}${paymentSuffix}`;
+  });
+
+  setLastShownExpenses(from, expenseIds);
+  setPendingUndo(from, {
+    kind: "delete_expenses_batch",
+    expenseIds,
+    description: resolved.map((r) => `R$${r.amount.toFixed(2)} em ${r.category.name}`).join(", "),
+  });
+
+  await sendText(
+    from,
+    `✅ ${resolved.length} gastos registrados:\n${lines.join("\n")}${budgetAlerts.join("")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45".`
+  );
+  return true;
 }
 
 // Cria o evento de verdade. Extraido do case "event" pra ser reaproveitado
@@ -1904,6 +2004,14 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     case "expense": {
       // a IA nem sempre preenche descricao/data em mensagens bem curtas ("gastei 60 no mercado")
       const description = interpretation.description?.trim() || interpretation.category;
+      if (!description) {
+        // nem descricao nem categoria vieram -- nao deveria classificar como
+        // expense assim (deveria virar unknown), mas por seguranca pede o
+        // que falta em vez de registrar um gasto sem nome nenhum
+        const started = await maybeStartPendingCompletion(from, { type: "unknown", likely_intent: "expense", amount: interpretation.amount });
+        if (!started) await sendText(from, unknownFollowUp("expense"));
+        break;
+      }
       await createExpenseAndNotify(from, {
         amount: interpretation.amount,
         description,
@@ -2700,6 +2808,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           for (const expenseId of undo.expenseIds) deleteExpense(from, expenseId);
           logActivity(from, "undo", `compra parcelada removida: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: ${undo.description} removido(a) (${undo.expenseIds.length} parcela(s)).`);
+          break;
+        case "delete_expenses_batch":
+          for (const expenseId of undo.expenseIds) deleteExpense(from, expenseId);
+          logActivity(from, "undo", `lote de gastos removido: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz os ${undo.expenseIds.length} gastos: ${undo.description}.`);
           break;
         case "restore_expense":
           updateExpense(from, undo.expenseId, undo.previous);
