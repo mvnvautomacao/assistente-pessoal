@@ -591,6 +591,42 @@ export async function extractCategoryFromAnswer(answerText: string): Promise<str
   return input.category?.trim() || answerText.trim();
 }
 
+const EXTRACT_PAYMENT_METHOD_TOOL: Anthropic.Tool = {
+  name: "extract_payment_method_answer",
+  description: "Extrai a forma de pagamento que o usuario respondeu, e se ele pediu pra deixar como padrao pras proximas compras.",
+  input_schema: {
+    type: "object",
+    properties: {
+      payment_method: {
+        type: "string",
+        description: "SO o nome da forma de pagamento, curto (ex: 'Pix', 'Dinheiro', 'Cartão Nubank'), sem mais nada da frase.",
+      },
+      set_as_default: {
+        type: "boolean",
+        description:
+          "true SE o usuario pediu explicitamente pra deixar essa forma como padrao pras proximas compras (ex: 'pix, e deixa como padrao', 'sim, fixa assim de agora em diante'). Omita (ou false) se ele so respondeu qual foi a forma, sem mencionar nada sobre virar padrao.",
+      },
+    },
+    required: ["payment_method"],
+  },
+};
+
+// Usado quando o usuario responde "qual foi a forma de pagamento?" com uma frase
+// (em vez de so o nome), possivelmente ja incluindo "deixa como padrao".
+export async function extractPaymentMethodAnswer(answerText: string): Promise<{ paymentMethod: string; setAsDefault: boolean }> {
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 100,
+    tools: [EXTRACT_PAYMENT_METHOD_TOOL],
+    tool_choice: { type: "tool", name: "extract_payment_method_answer" },
+    messages: [{ role: "user", content: answerText }],
+  });
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse || toolUse.type !== "tool_use") return { paymentMethod: answerText.trim(), setAsDefault: false };
+  const input = toolUse.input as { payment_method?: string; set_as_default?: boolean };
+  return { paymentMethod: input.payment_method?.trim() || answerText.trim(), setAsDefault: !!input.set_as_default };
+}
+
 const EXTRACT_DATETIME_TOOL: Anthropic.Tool = {
   name: "extract_datetime",
   description: "Extrai a data e/ou a hora que o usuario quis dizer numa frase livre de ajuste, separadamente.",

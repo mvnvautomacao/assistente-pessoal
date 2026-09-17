@@ -4,6 +4,7 @@ import {
   interpretText,
   interpretReceiptImage,
   extractCategoryFromAnswer,
+  extractPaymentMethodAnswer,
   extractDateTimeFromAnswer,
   extractExpenseInfoFromAnswer,
   extractInstallmentInfoFromAnswer,
@@ -107,6 +108,12 @@ import {
   clearPendingReceiptConfirmation,
   PendingReceiptConfirmation,
 } from "./completion/pendingReceiptConfirmation";
+import {
+  addPendingExpensePaymentMethod,
+  getNextPendingExpensePaymentMethod,
+  clearHeadPendingExpensePaymentMethod,
+  PendingExpensePaymentMethod,
+} from "./expenses/pendingPaymentMethod";
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
@@ -131,6 +138,7 @@ import {
   getOrCreatePaymentMethod,
   getDefaultPaymentMethod,
   setDefaultPaymentMethod,
+  listPaymentMethods,
   setReportDayOfWeek,
   getExpenseSummaryBetween,
   getExpensesBetween,
@@ -468,6 +476,20 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   // Enquanto tiver categorizacao pendente pra esse numero, a proxima mensagem
   // de texto/audio e tratada como resposta a "qual categoria e isso?", nao como pedido novo.
   if (text !== undefined) {
+    // checado ANTES da fila de categorizacao: e a pergunta mais recente feita
+    // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
+    // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
+    // resposta dele deve resolver essa, nao uma categoria mais antiga na fila.
+    let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
+    while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
+      await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
+      pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
+    }
+    if (pendingPaymentMethod) {
+      await resolvePendingExpensePaymentMethod(from, pendingPaymentMethod, text);
+      return;
+    }
+
     let pending = getNextPendingCategorization(from);
     while (pending && isPendingCategorizationExpired(pending)) {
       await finalizePendingCategorizationByTimeout(from, pending);
@@ -650,11 +672,33 @@ async function processInterpretations(from: string, items: Interpretation[]) {
   }
 }
 
-// Se a mensagem mencionou a forma de pagamento, usa ela; senao cai pro padrao do
-// usuario (se tiver configurado); senao fica sem forma de pagamento definida.
-function resolvePaymentMethod(from: string, mentioned?: string | null) {
+// Se a mensagem mencionou a forma de pagamento, usa ela (cria se for nova).
+// Senao, cai pro padrao do usuario, se tiver configurado -- usado em silencio,
+// sem perguntar de novo (pedido explicito). Sem mencao e sem padrao: se sobrar
+// EXATAMENTE 1 forma cadastrada, usa ela sozinha e ja marca como padrao (nunca
+// deveria ter ficado ambigua com 1 opcao so). Com 0 ou 2+ formas restantes,
+// devolve null -- quem chamou decide se pergunta (ver askPaymentMethod).
+function autoResolvePaymentMethod(from: string, mentioned?: string | null) {
   if (mentioned) return getOrCreatePaymentMethod(from, mentioned);
-  return getDefaultPaymentMethod(from);
+  const defaultMethod = getDefaultPaymentMethod(from);
+  if (defaultMethod) return defaultMethod;
+  const methods = listPaymentMethods(from);
+  if (methods.length === 1) {
+    setDefaultPaymentMethod(from, methods[0].id);
+    return methods[0];
+  }
+  return null;
+}
+
+// Pergunta a forma de pagamento de um gasto ja resolvido (valor/descricao/
+// categoria certos, so falta a forma) -- combinada na MESMA mensagem com a
+// oferta de deixar a resposta como padrao pras proximas vezes, pra nao
+// precisar de uma segunda pergunta de confirmacao so pra isso.
+function paymentMethodQuestionText(from: string, amount: number, description: string): string {
+  const methodNames = listPaymentMethods(from)
+    .map((m) => m.name)
+    .join(", ");
+  return `Qual foi a forma de pagamento desse gasto de R$${amount.toFixed(2)} (${description})?\n\nFormas cadastradas: ${methodNames}\n\nPode responder com uma dessas ou dizer uma nova -- e já deixo essa como sua forma padrão pras próximas vezes.`;
 }
 
 // Tempo maximo esperando "qual categoria e isso?" antes de decidir sozinho.
@@ -680,37 +724,83 @@ function isPendingCategorizationExpired(pending: PendingCategorization): boolean
 async function finalizePendingCategorizationByTimeout(from: string, pending: PendingCategorization) {
   try {
     const category = getOrCreateCategory(from, pending.suggested_category ?? "Outros");
-    const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
-    const created = insertExpense({
-      fromNumber: from,
+    const paymentMethod = autoResolvePaymentMethod(from, pending.suggested_payment_method);
+    clearPendingCategorization(pending.id);
+    const { budgetAlert } = recordSimpleExpense(from, {
       amount: pending.amount,
       description: pending.description,
-      categoryId: category.id,
-      paymentMethodId: paymentMethod?.id ?? null,
       date: pending.date,
+      categoryId: category.id,
+      categoryName: category.name,
+      paymentMethod,
+      logNote: "categorizado automaticamente, sem resposta a tempo",
     });
-    clearPendingCategorization(pending.id);
-
-    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-    setPendingUndo(from, {
-      kind: "delete_expense",
-      expenseId: created.id,
-      description: `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description}`,
-    });
-    logActivity(
-      from,
-      "expense",
-      `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado automaticamente, sem resposta a tempo)`
-    );
     await sendText(
       from,
-      `⏱️ Não recebi a categoria a tempo, então registrei como "${category.name}": R$${pending.amount.toFixed(2)} — ${pending.description}${paymentSuffix}. Se não for essa a categoria certa, é só me falar pra eu corrigir.`
+      `⏱️ Não recebi a categoria a tempo, então registrei como "${category.name}": ${formatExpenseConfirmation({
+        amount: pending.amount,
+        description: pending.description,
+        categoryName: category.name,
+        date: pending.date,
+        paymentMethodName: paymentMethod?.name ?? null,
+      })}${budgetAlert}\n\nSe não for essa a categoria certa, é só me falar pra eu corrigir.`
     );
   } catch (err) {
     console.error("Erro ao finalizar categorizacao pendente por timeout:", err);
     logActivity(from, "error", err instanceof Error ? err.message : String(err));
     clearPendingCategorization(pending.id);
   }
+}
+
+// Sempre os mesmos 5 campos, na mesma ordem, em toda confirmacao de gasto
+// avulso -- pedido explicito do usuario (nao importa qual caminho resolveu
+// cada campo: direto, depois de perguntar categoria, depois de perguntar
+// forma de pagamento, ou pelo timeout da fila de categorizacao).
+function formatExpenseConfirmation(params: {
+  amount: number;
+  description: string;
+  categoryName: string;
+  date: string;
+  paymentMethodName: string | null;
+}): string {
+  const paymentLabel = params.paymentMethodName ?? "não definida";
+  return `R$${params.amount.toFixed(2)} — ${params.description}\nCategoria: ${params.categoryName}\nData: ${formatDateOnly(params.date)}\nForma de pagamento: ${paymentLabel}`;
+}
+
+// Grava o gasto de verdade (categoria e forma de pagamento ja resolvidas) e os
+// efeitos colaterais em comum (undo, log, alerta de orcamento) -- SEM mandar
+// mensagem nenhuma, ja que cada caminho que chega aqui usa um texto de
+// confirmacao proprio (ver formatExpenseConfirmation) em volta desse resultado.
+function recordSimpleExpense(
+  from: string,
+  params: {
+    amount: number;
+    description: string;
+    date: string;
+    categoryId: number;
+    categoryName: string;
+    paymentMethod: { id: number; name: string } | null;
+    logNote?: string;
+  }
+) {
+  const created = insertExpense({
+    fromNumber: from,
+    amount: params.amount,
+    description: params.description,
+    categoryId: params.categoryId,
+    paymentMethodId: params.paymentMethod?.id ?? null,
+    date: params.date,
+  });
+  setPendingUndo(from, {
+    kind: "delete_expense",
+    expenseId: created.id,
+    description: `R$${params.amount.toFixed(2)} em ${params.categoryName} — ${params.description}`,
+  });
+  const paymentSuffix = params.paymentMethod ? ` via ${params.paymentMethod.name}` : "";
+  const noteSuffix = params.logNote ? ` (${params.logNote})` : "";
+  logActivity(from, "expense", `R$${params.amount.toFixed(2)} em ${params.categoryName}${paymentSuffix} — ${params.description}${noteSuffix}`);
+  const budgetAlert = checkBudgetAlert(from, params.categoryId, params.categoryName) ?? "";
+  return { created, budgetAlert };
 }
 
 function askForCategory(from: string, amount: number, description: string) {
@@ -724,36 +814,54 @@ function askForCategory(from: string, amount: number, description: string) {
 }
 
 // Cria o gasto de verdade (ou entra na fila de categorizacao se nao souber a
-// categoria). Extraido do case "expense" pra ser reaproveitado tambem quando
-// um gasto parcial (faltando valor ou descricao) termina de ser completado.
+// categoria, ou pergunta a forma de pagamento se ficar ambigua). Extraido do
+// case "expense" pra ser reaproveitado tambem quando um gasto parcial
+// (faltando valor ou descricao) termina de ser completado, e pela leitura de
+// nota fiscal (com skipPaymentMethodPrompt=true, ver finalizeReceiptExpense --
+// aquele fluxo ja tem sua propria pergunta/opcao de pular a forma de pagamento
+// antes de chegar aqui, entao nao faz sentido perguntar de novo).
 async function createExpenseAndNotify(
   from: string,
-  params: { amount: number; description: string; date: string; category?: string; payment_method?: string }
+  params: { amount: number; description: string; date: string; category?: string; payment_method?: string; skipPaymentMethodPrompt?: boolean }
 ) {
   const keywordHints = [params.category, params.description].filter((hint): hint is string => Boolean(hint));
   const category = (params.category && findCategoryByName(from, params.category)) || findCategoryByKeyword(from, ...keywordHints);
 
   if (category) {
-    const paymentMethod = resolvePaymentMethod(from, params.payment_method);
-    const created = insertExpense({
-      fromNumber: from,
+    const paymentMethod = autoResolvePaymentMethod(from, params.payment_method);
+    if (!paymentMethod && !params.skipPaymentMethodPrompt) {
+      const isHead = addPendingExpensePaymentMethod(from, {
+        amount: params.amount,
+        description: params.description,
+        date: params.date,
+        categoryId: category.id,
+        categoryName: category.name,
+      });
+      logActivity(from, "expense", `categoria resolvida (${category.name}), forma de pagamento pendente: R$${params.amount.toFixed(2)} — ${params.description}`);
+      // se ja tem outro gasto esperando forma de pagamento (ex: lote que
+      // desistiu por causa disso, ver tryCreateExpenseBatch), so entra na
+      // fila -- a pergunta em si so sai quando chegar a vez dele (ver
+      // resolvePendingExpensePaymentMethod)
+      if (isHead) await sendText(from, paymentMethodQuestionText(from, params.amount, params.description));
+      return;
+    }
+    const { budgetAlert } = recordSimpleExpense(from, {
       amount: params.amount,
       description: params.description,
-      categoryId: category.id,
-      paymentMethodId: paymentMethod?.id ?? null,
       date: params.date,
+      categoryId: category.id,
+      categoryName: category.name,
+      paymentMethod,
     });
-    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-    setPendingUndo(from, {
-      kind: "delete_expense",
-      expenseId: created.id,
-      description: `R$${params.amount.toFixed(2)} em ${category.name} — ${params.description}`,
-    });
-    logActivity(from, "expense", `R$${params.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${params.description}`);
-    const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
     await sendText(
       from,
-      `✅ Gasto registrado: R$${params.amount.toFixed(2)} em ${category.name} — ${params.description}${paymentSuffix}${budgetAlert}`
+      `✅ Gasto registrado: ${formatExpenseConfirmation({
+        amount: params.amount,
+        description: params.description,
+        categoryName: category.name,
+        date: params.date,
+        paymentMethodName: paymentMethod?.name ?? null,
+      })}${budgetAlert}`
     );
   } else {
     // se ja tem pendencia(s) na fila, so entra na fila; a pergunta em si so
@@ -805,12 +913,14 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
     const keywordHints = [item.category, description].filter((hint): hint is string => Boolean(hint));
     const category = (item.category && findCategoryByName(from, item.category)) || findCategoryByKeyword(from, ...keywordHints);
     if (!category) return false;
+    const paymentMethod = autoResolvePaymentMethod(from, item.payment_method);
+    if (!paymentMethod) return false; // forma de pagamento ambigua -- desiste do lote, cada gasto pergunta a sua individualmente (fluxo normal)
     resolved.push({
       amount: item.amount,
       description,
       date: item.date || spDateString(),
       category,
-      paymentMethod: resolvePaymentMethod(from, item.payment_method),
+      paymentMethod,
     });
   }
 
@@ -830,7 +940,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
     logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
     const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
     if (budgetAlert) budgetAlerts.push(budgetAlert);
-    return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description}${paymentSuffix}`;
+    return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description} (${formatDateOnly(r.date)}${paymentSuffix})`;
   });
 
   setLastShownExpenses(from, expenseIds);
@@ -956,7 +1066,7 @@ async function finalizeInstallmentExpense(
   if (!category) return false;
 
   const amounts = computeInstallmentAmounts(params.totalAmount, params.installmentAmount, params.installments);
-  const paymentMethod = resolvePaymentMethod(from, params.payment_method);
+  const paymentMethod = autoResolvePaymentMethod(from, params.payment_method);
   const expenseIds: number[] = [];
   for (let i = 0; i < params.installments; i++) {
     const created = insertExpense({
@@ -1030,9 +1140,14 @@ function receiptPaymentMethodQuestionText(fields: ReceiptFields): string {
   return `📷 Não consegui ler a forma de pagamento no comprovante${amountLabel ? ` (${amountLabel}, ${fields.description})` : ""}. Foi no Pix, débito, crédito, dinheiro...?`;
 }
 
-function receiptConfirmationSummaryText(fields: ReceiptFields, retry = false): string {
+function receiptConfirmationSummaryText(from: string, fields: ReceiptFields, retry = false): string {
   const amountLabel = receiptAmountLabel(fields);
-  const paymentLabel = fields.paymentMethod ? `, no ${fields.paymentMethod}` : "";
+  // se a forma de pagamento nao veio explicita nessa pendencia, mostra a que
+  // vai ser usada de qualquer jeito ao finalizar (padrao ja definido, ou a
+  // unica forma cadastrada -- ver autoResolvePaymentMethod), pra nao sumir
+  // essa informacao da previa so porque nao precisou perguntar.
+  const resolvedPaymentName = fields.paymentMethod ?? autoResolvePaymentMethod(from)?.name;
+  const paymentLabel = resolvedPaymentName ? `, no ${resolvedPaymentName}` : "";
   const prefix = retry ? "Não entendi — confirma assim: " : "📷 Li assim: ";
   return `${prefix}${amountLabel} em ${fields.description} (${fields.category}${paymentLabel}), dia ${formatDateOnly(fields.date)}. Confirma? Responde "sim"/"não", ou me diga o que corrigir.`;
 }
@@ -1048,6 +1163,10 @@ async function finalizeReceiptExpense(from: string, pending: PendingReceiptConfi
     date: pending.date,
     category: pending.category,
     payment_method: pending.paymentMethod,
+    // esse fluxo ja tem sua propria pergunta de forma de pagamento (com opcao
+    // de "nao sei"/pular, ver handleReceiptImage/resolvePendingReceiptConfirmation)
+    // antes de chegar aqui -- nao faz sentido perguntar de novo se ainda ficar ambiguo.
+    skipPaymentMethodPrompt: true,
   });
 }
 
@@ -1084,7 +1203,12 @@ async function handleReceiptImage(from: string, imageBase64: string, mimeType: s
     await sendText(from, receiptCategoryQuestionText(from, base));
     return;
   }
-  if (!base.paymentMethod) {
+  // so pergunta se ainda ficar ambigua depois do auto-resolve (padrao ja
+  // definido, ou so 1 forma cadastrada) -- mesma logica usada no resto do
+  // sistema, ver autoResolvePaymentMethod. Resolvido sozinho, nem passa por
+  // "payment_method" aqui: createExpenseAndNotify usa o padrao/unica forma
+  // direto ao finalizar (ver finalizeReceiptExpense).
+  if (!base.paymentMethod && !autoResolvePaymentMethod(from)) {
     setPendingReceiptConfirmation(from, { ...base, awaiting: "payment_method" });
     logActivity(from, "receipt", `lido da imagem, forma de pagamento desconhecida -- pedindo (${base.description})`);
     await sendText(from, receiptPaymentMethodQuestionText(base));
@@ -1092,7 +1216,7 @@ async function handleReceiptImage(from: string, imageBase64: string, mimeType: s
   }
   setPendingReceiptConfirmation(from, { ...base, awaiting: "confirm" });
   logActivity(from, "receipt", `lido da imagem, pedindo confirmacao (${base.description})`);
-  await sendText(from, receiptConfirmationSummaryText(base));
+  await sendText(from, receiptConfirmationSummaryText(from, base));
 }
 
 // Resposta a pergunta de categoria/forma de pagamento/confirmacao de um gasto
@@ -1105,7 +1229,7 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
       findCategoryMentionedIn(from, answerText)?.name ?? (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
     const category = getOrCreateCategory(from, categoryName);
     const updated: PendingReceiptConfirmation = { ...pending, category: category.name };
-    if (!updated.paymentMethod) {
+    if (!updated.paymentMethod && !autoResolvePaymentMethod(from)) {
       updated.awaiting = "payment_method";
       setPendingReceiptConfirmation(from, updated);
       logActivity(from, "receipt", `categoria definida (${category.name}), forma de pagamento ainda desconhecida`);
@@ -1115,7 +1239,7 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
     updated.awaiting = "confirm";
     setPendingReceiptConfirmation(from, updated);
     logActivity(from, "receipt", `categoria definida (${category.name}), pedindo confirmacao`);
-    await sendText(from, receiptConfirmationSummaryText(updated));
+    await sendText(from, receiptConfirmationSummaryText(from, updated));
     return;
   }
 
@@ -1125,7 +1249,7 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
     const updated: PendingReceiptConfirmation = { ...pending, paymentMethod: skip ? undefined : answerText.trim(), awaiting: "confirm" };
     setPendingReceiptConfirmation(from, updated);
     logActivity(from, "receipt", "forma de pagamento resolvida, pedindo confirmacao");
-    await sendText(from, receiptConfirmationSummaryText(updated));
+    await sendText(from, receiptConfirmationSummaryText(from, updated));
     return;
   }
 
@@ -1149,7 +1273,7 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
 
   const correction = await extractReceiptCorrectionFromAnswer(answerText);
   if (!correction) {
-    await sendText(from, receiptConfirmationSummaryText(pending, true));
+    await sendText(from, receiptConfirmationSummaryText(from, pending, true));
     return;
   }
   const updated: PendingReceiptConfirmation = {
@@ -1169,7 +1293,7 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
   }
   setPendingReceiptConfirmation(from, updated);
   logActivity(from, "receipt", "ajustado antes de confirmar");
-  await sendText(from, receiptConfirmationSummaryText(updated));
+  await sendText(from, receiptConfirmationSummaryText(from, updated));
 }
 
 // Monta a pergunta (ou o "nao entendi, de novo") pro item da vez na fila de
@@ -1455,36 +1579,51 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       findCategoryMentionedIn(from, answerText)?.name ??
       (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
     const category = getOrCreateCategory(from, categoryName);
-    const paymentMethod = resolvePaymentMethod(from, pending.suggested_payment_method);
-
-    const created = insertExpense({
-      fromNumber: from,
-      amount: pending.amount,
-      description: pending.description,
-      categoryId: category.id,
-      paymentMethodId: paymentMethod?.id ?? null,
-      date: pending.date,
-    });
     if (pending.suggested_category) learnKeyword(from, pending.suggested_category, category.id);
     learnKeyword(from, pending.description, category.id);
-
     clearPendingCategorization(pending.id);
 
-    const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-    setPendingUndo(from, {
-      kind: "delete_expense",
-      expenseId: created.id,
-      description: `R$${pending.amount.toFixed(2)} em ${category.name} — ${pending.description}`,
+    const paymentMethod = autoResolvePaymentMethod(from, pending.suggested_payment_method);
+    if (!paymentMethod) {
+      // categoria resolvida, mas a forma de pagamento ficou ambigua -- pergunta
+      // ela agora (com a oferta de padrao junto) ANTES de perguntar a proxima
+      // categoria da fila, pra nao ter duas perguntas de tipos diferentes no ar
+      // ao mesmo tempo (a proxima categoria so e perguntada depois que essa
+      // forma de pagamento for resolvida, ver resolvePendingExpensePaymentMethod).
+      const isHead = addPendingExpensePaymentMethod(from, {
+        amount: pending.amount,
+        description: pending.description,
+        date: pending.date,
+        categoryId: category.id,
+        categoryName: category.name,
+      });
+      logActivity(
+        from,
+        "expense",
+        `categoria definida (${category.name}) manualmente, forma de pagamento pendente: R$${pending.amount.toFixed(2)} — ${pending.description}`
+      );
+      if (isHead) await sendText(from, paymentMethodQuestionText(from, pending.amount, pending.description));
+      return;
+    }
+
+    const { budgetAlert } = recordSimpleExpense(from, {
+      amount: pending.amount,
+      description: pending.description,
+      date: pending.date,
+      categoryId: category.id,
+      categoryName: category.name,
+      paymentMethod,
+      logNote: "categorizado manualmente",
     });
-    logActivity(
-      from,
-      "expense",
-      `R$${pending.amount.toFixed(2)} em ${category.name}${paymentSuffix} — ${pending.description} (categorizado manualmente)`
-    );
-    const budgetAlert = checkBudgetAlert(from, category.id, category.name) ?? "";
     await sendText(
       from,
-      `✅ Categorizado como "${category.name}". Gasto de R$${pending.amount.toFixed(2)} — ${pending.description}${paymentSuffix} registrado.${budgetAlert}`
+      `✅ Categorizado como "${category.name}". ${formatExpenseConfirmation({
+        amount: pending.amount,
+        description: pending.description,
+        categoryName: category.name,
+        date: pending.date,
+        paymentMethodName: paymentMethod.name,
+      })}${budgetAlert}`
     );
 
     // se tinha mais gastos esperando categoria, pergunta o proximo da fila
@@ -1494,6 +1633,124 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     console.error("Erro ao resolver categorizacao pendente:", err);
     logActivity(from, "error", err instanceof Error ? err.message : String(err));
     await sendText(from, "Deu erro tentando salvar a categoria. Tenta me responder de novo.");
+  }
+}
+
+// Resposta a "qual foi a forma de pagamento?" (ver paymentMethodQuestionText)
+// -- valor/descricao/categoria ja resolvidos, so faltava isso. A resposta
+// tambem serve como consentimento pra deixar essa forma como padrao (a
+// pergunta ja avisa isso na mesma mensagem), entao sempre marca como padrao
+// ao resolver aqui.
+// Finaliza um gasto que estava esperando forma de pagamento (respondida ou
+// resolvida sozinha por um padrao recem-definido) e manda a confirmacao
+// padrao. Depois, se tinha mais algum gasto na fila esperando forma de
+// pagamento tambem (ex: lote que desistiu, ver tryCreateExpenseBatch), tenta
+// resolver ele sozinho com o padrao que acabou de ficar definido -- so
+// pergunta de novo se, por algum motivo, ainda ficar ambiguo.
+async function finalizePendingExpensePayment(from: string, pending: PendingExpensePaymentMethod, paymentMethod: { id: number; name: string }, extraNote?: string) {
+  const { budgetAlert } = recordSimpleExpense(from, {
+    amount: pending.amount,
+    description: pending.description,
+    date: pending.date,
+    categoryId: pending.categoryId,
+    categoryName: pending.categoryName,
+    paymentMethod,
+  });
+  await sendText(
+    from,
+    `✅ Gasto registrado: ${formatExpenseConfirmation({
+      amount: pending.amount,
+      description: pending.description,
+      categoryName: pending.categoryName,
+      date: pending.date,
+      paymentMethodName: paymentMethod.name,
+    })}${budgetAlert}${extraNote ?? ""}`
+  );
+
+  const nextPayment = getNextPendingExpensePaymentMethod(from);
+  if (nextPayment) {
+    const nextMethod = autoResolvePaymentMethod(from);
+    if (nextMethod) {
+      clearHeadPendingExpensePaymentMethod(from);
+      await finalizePendingExpensePayment(from, nextPayment, nextMethod);
+    } else {
+      await sendText(from, paymentMethodQuestionText(from, nextPayment.amount, nextPayment.description));
+    }
+  }
+
+  // se tinha categorizacao pendente esperando (ver resolvePendingCategorization),
+  // so pergunta agora que a forma de pagamento anterior ja foi resolvida
+  const next = getNextPendingCategorization(from);
+  if (next) await askForCategory(from, next.amount, next.description);
+}
+
+async function resolvePendingExpensePaymentMethod(from: string, pending: PendingExpensePaymentMethod, answerText: string) {
+  try {
+    const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
+    const methodName = wordCount <= 3 ? answerText.trim() : (await extractPaymentMethodAnswer(answerText)).paymentMethod;
+    const paymentMethod = getOrCreatePaymentMethod(from, methodName);
+    // a pergunta ja avisa, na mesma mensagem, que a resposta vira a forma
+    // padrao pras proximas vezes -- entao qualquer resposta aqui conta como
+    // esse consentimento, sem precisar de uma segunda confirmacao so pra isso.
+    setDefaultPaymentMethod(from, paymentMethod.id);
+    clearHeadPendingExpensePaymentMethod(from);
+    await finalizePendingExpensePayment(
+      from,
+      pending,
+      paymentMethod,
+      `\n\nDeixei "${paymentMethod.name}" como sua forma de pagamento padrão pras próximas vezes.`
+    );
+  } catch (err) {
+    console.error("Erro ao resolver forma de pagamento pendente:", err);
+    logActivity(from, "error", err instanceof Error ? err.message : String(err));
+    await sendText(from, "Deu erro tentando salvar a forma de pagamento. Tenta me responder de novo.");
+  }
+}
+
+// Passaram 30s sem resposta a "qual foi a forma de pagamento?" -- em vez de
+// deixar essa pergunta pendente pra sempre (o que travaria toda mensagem
+// futura desse numero, mesmo problema que motivou o TTL da fila de
+// categorizacao), considera as informacoes ja exibidas como aceitas: registra
+// o gasto sem forma de pagamento definida (pedido explicito do usuario) e
+// avisa, pra poder corrigir depois se quiser.
+const PENDING_PAYMENT_METHOD_TTL_MS = 30 * 1000;
+
+function isPendingExpensePaymentMethodExpired(pending: PendingExpensePaymentMethod): boolean {
+  return Date.now() - pending.createdAt > PENDING_PAYMENT_METHOD_TTL_MS;
+}
+
+async function finalizePendingExpensePaymentMethodByTimeout(from: string, pending: PendingExpensePaymentMethod) {
+  try {
+    clearHeadPendingExpensePaymentMethod(from);
+    const { budgetAlert } = recordSimpleExpense(from, {
+      amount: pending.amount,
+      description: pending.description,
+      date: pending.date,
+      categoryId: pending.categoryId,
+      categoryName: pending.categoryName,
+      paymentMethod: null,
+      logNote: "sem resposta a tempo pra forma de pagamento, registrado sem definir",
+    });
+    await sendText(
+      from,
+      `⏱️ Não recebi a forma de pagamento a tempo, então registrei assim mesmo: ${formatExpenseConfirmation({
+        amount: pending.amount,
+        description: pending.description,
+        categoryName: pending.categoryName,
+        date: pending.date,
+        paymentMethodName: null,
+      })}${budgetAlert}\n\nSe quiser, me diga qual foi que eu corrijo.`
+    );
+
+    const nextPayment = getNextPendingExpensePaymentMethod(from);
+    if (nextPayment) await sendText(from, paymentMethodQuestionText(from, nextPayment.amount, nextPayment.description));
+
+    const next = getNextPendingCategorization(from);
+    if (next) await askForCategory(from, next.amount, next.description);
+  } catch (err) {
+    console.error("Erro ao finalizar forma de pagamento pendente por timeout:", err);
+    logActivity(from, "error", err instanceof Error ? err.message : String(err));
+    clearHeadPendingExpensePaymentMethod(from);
   }
 }
 
@@ -2682,7 +2939,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
       const category = getOrCreateCategory(from, interpretation.category);
-      const paymentMethod = resolvePaymentMethod(from, interpretation.payment_method);
+      const paymentMethod = autoResolvePaymentMethod(from, interpretation.payment_method);
       createRecurringExpense({
         fromNumber: from,
         description: interpretation.description,

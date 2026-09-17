@@ -1,5 +1,12 @@
 import { Router } from "express";
-import { listPaymentMethods, getOrCreatePaymentMethod, renamePaymentMethod, deletePaymentMethod, getDefaultPaymentMethod } from "../expenses/service";
+import {
+  listPaymentMethods,
+  getOrCreatePaymentMethod,
+  renamePaymentMethod,
+  deletePaymentMethod,
+  getDefaultPaymentMethod,
+  setDefaultPaymentMethod,
+} from "../expenses/service";
 import { renderPage } from "./layout";
 import { normalizeBrazilPhone, escapeHtml, parsePagination, paginate, renderPagination } from "./utils";
 
@@ -28,7 +35,13 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
-        <td data-label="Padrão">${defaultMethod?.id === m.id ? '<span class="tag">Padrão</span>' : "—"}</td>
+        <td data-label="Padrão">${
+          defaultMethod?.id === m.id
+            ? '<span class="tag">Padrão</span>'
+            : `<form class="inline" method="post" action="/dashboard/payment-methods/${m.id}/set-default?${qs}">
+                <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit;color:var(--accent)">Tornar padrão</button>
+              </form>`
+        }</td>
         <td class="row-actions">
           <form class="inline" method="post" action="/dashboard/payment-methods/${m.id}/delete?${qs}" onsubmit="return confirm('Excluir \\'${escapeHtml(m.name)}\\'? Os gastos com ela ficam sem forma de pagamento.')">
             <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
@@ -46,7 +59,7 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
     ${rows || `<tr><td colspan="3" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
   </table></div>
   ${renderPagination({ basePath: "/dashboard/payment-methods", params: { phone }, page, perPage, total: methods.length })}
-  <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">A forma padrão é usada quando você não especifica no WhatsApp. Pra mudar, mande uma mensagem tipo "meu pagamento padrão é pix".</p>
+  <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">A forma padrão é usada automaticamente quando você não especifica no WhatsApp. Pra mudar, clique em "Tornar padrão" na linha desejada, ou mande uma mensagem tipo "meu pagamento padrão é pix".</p>
 
   <h2 style="font-size:0.95rem;margin:28px 0 12px">Nova forma de pagamento</h2>
   <form class="card-form" method="post" action="/dashboard/payment-methods/new?${qs}">
@@ -69,6 +82,12 @@ paymentMethodsRouter.post("/dashboard/payment-methods/:id", (req, res) => {
   const phone = getPhone(req);
   const name = String(req.body.name || "").trim();
   if (name) renamePaymentMethod(phone, Number(req.params.id), name);
+  res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
+});
+
+paymentMethodsRouter.post("/dashboard/payment-methods/:id/set-default", (req, res) => {
+  const phone = getPhone(req);
+  setDefaultPaymentMethod(phone, Number(req.params.id));
   res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
 });
 

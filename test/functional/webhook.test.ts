@@ -16,7 +16,13 @@ import {
   getReportSubscribers,
   getNextPendingCategorization,
   backdatePendingCategorizationForTests,
+  getOrCreatePaymentMethod,
+  setDefaultPaymentMethod,
+  getDefaultPaymentMethod,
+  deletePaymentMethod,
+  listPaymentMethods,
 } from "../../src/expenses/service";
+import { backdatePendingExpensePaymentMethodForTests } from "../../src/expenses/pendingPaymentMethod";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
 import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
@@ -73,9 +79,27 @@ function withMocks(t: TestContext) {
 const today = () => spDateString();
 
 // pre-seeda categorias/formas padrao (pra nenhum teste receber a mensagem de
-// boas-vindas misturada com a resposta que o teste espera) e autoriza o numero
-// na allowlist (senao toda mensagem seria ignorada em silencio, ver access/allowlist.ts)
+// boas-vindas misturada com a resposta que o teste espera), autoriza o numero
+// na allowlist (senao toda mensagem seria ignorada em silencio, ver
+// access/allowlist.ts) E ja deixa uma forma de pagamento padrao definida --
+// simula um usuario que ja passou pela primeira pergunta (ver
+// autoResolvePaymentMethod em router.ts), pra testes sem relacao nenhuma com
+// forma de pagamento nao precisarem responder essa pergunta toda hora. Testes
+// que testam essa pergunta em si usam um numero proprio, sem passar por seed().
 function seed(...numbers: string[]) {
+  numbers.forEach((n) => {
+    ensureUserSeeded(n);
+    allowNumber(n);
+    const pix = getOrCreatePaymentMethod(n, "Pix");
+    setDefaultPaymentMethod(n, pix.id);
+  });
+}
+
+// Mesma coisa, mas SEM forma de pagamento padrao -- usado pelos poucos testes
+// que testam a propria pergunta "qual foi a forma de pagamento?" (fica
+// ambigua de proposito: o usuario comeca com as 4 formas padrao e nenhuma
+// definida como principal, ver autoResolvePaymentMethod em router.ts).
+function seedNoDefaultPayment(...numbers: string[]) {
   numbers.forEach((n) => {
     ensureUserSeeded(n);
     allowNumber(n);
@@ -191,6 +215,152 @@ test("expense: se um dos gastos do lote nao tem categoria resolvivel, nenhum vir
   assert.match(sent[1].text, /[Qq]ual categoria/);
   assert.equal(searchExpenses(BE4, "mercado sem lote").length, 1);
   assert.equal(searchExpenses(BE4, "algo sem lote").length, 0); // ainda pendente
+});
+
+// Pedido explicito do usuario: toda compra registrada resolve a forma de
+// pagamento -- se ficar ambigua (nem mencionada, nem tem padrao definido, e
+// sobra mais de 1 opcao), pergunta ANTES de salvar, combinando na mesma
+// mensagem a oferta de deixar como padrao pras proximas vezes.
+test("gasto completo com forma de pagamento ambigua: pergunta antes de salvar, combinando com a oferta de virar padrao numa mensagem so", async (t) => {
+  const PM1 = "551100090901";
+  seedNoDefaultPayment(PM1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 45, category: "Mercado", description: "compras pagamento pendente", date: "2026-01-20" }]);
+  await handleIncomingMessage(evolutionMessage(PM1, "45 no mercado"));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /forma de pagamento/i);
+  assert.match(sent[0].text, /padrão/i); // oferta de virar padrao, na MESMA mensagem
+  assert.equal(searchExpenses(PM1, "compras pagamento pendente").length, 0); // nao salvou ainda
+
+  await handleIncomingMessage(evolutionMessage(PM1, "Dinheiro"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /✅/);
+  // confirmacao sempre com os 5 campos: valor, descricao, categoria, data, forma de pagamento
+  assert.match(sent[1].text, /45/);
+  assert.match(sent[1].text, /compras pagamento pendente/);
+  assert.match(sent[1].text, /Mercado/);
+  assert.match(sent[1].text, /20\/01\/2026/);
+  assert.match(sent[1].text, /Dinheiro/);
+
+  const expense = findRecentExpense(PM1, "compras pagamento pendente");
+  assert.equal(expense?.amount, 45);
+  assert.equal(getDefaultPaymentMethod(PM1)?.name, "Dinheiro"); // resposta virou padrao automaticamente
+});
+
+test("com forma de pagamento padrao ja definida, usa ela em silencio sem perguntar de novo", async (t) => {
+  const PM2 = "551100090902";
+  seed(PM2); // seed() ja deixa "Pix" como padrao
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 33, category: "Mercado", description: "compras com padrao", date: "2026-01-20" }]);
+  await handleIncomingMessage(evolutionMessage(PM2, "33 no mercado"));
+
+  assert.equal(sent.length, 1); // nenhuma pergunta, direto a confirmacao
+  assert.match(sent[0].text, /✅/);
+  assert.match(sent[0].text, /Pix/);
+});
+
+test("com exatamente 1 forma de pagamento cadastrada (sem padrao definido), usa ela sozinha e ja marca como padrao", async (t) => {
+  const PM3 = "551100090903";
+  seedNoDefaultPayment(PM3);
+  // remove 3 das 4 formas padrao, sobrando so 1 -- deixa de proposito ambiguo
+  // ATE sobrar uma unica opcao (ver autoResolvePaymentMethod)
+  const methods = listPaymentMethods(PM3);
+  for (const m of methods.slice(1)) deletePaymentMethod(PM3, m.id);
+  assert.equal(listPaymentMethods(PM3).length, 1);
+  assert.equal(getDefaultPaymentMethod(PM3), null);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 18, category: "Mercado", description: "compra com unica forma", date: "2026-01-20" }]);
+  await handleIncomingMessage(evolutionMessage(PM3, "18 no mercado"));
+
+  assert.equal(sent.length, 1); // nenhuma pergunta, ja usou a unica forma que tinha
+  assert.match(sent[0].text, /✅/);
+  const soMethod = methods[0];
+  assert.match(sent[0].text, new RegExp(soMethod.name));
+  assert.equal(getDefaultPaymentMethod(PM3)?.id, soMethod.id); // ja aproveitou e marcou como padrao
+});
+
+test("lote com forma de pagamento ambigua: desiste do lote, pergunta so o primeiro (o segundo fica na fila) e o padrao definido ja resolve o segundo sozinho", async (t) => {
+  const PM4 = "551100090904";
+  seedNoDefaultPayment(PM4);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "lote pagamento 1", date: "2026-01-20" },
+    { type: "expense", amount: 30, category: "Transporte", description: "lote pagamento 2", date: "2026-01-20" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(PM4, "gastei 50 no mercado e 30 de uber"));
+
+  // nao vira lote (forma de pagamento ambigua pros dois) -- so pergunta o
+  // primeiro; o segundo fica esperando na fila, sem perguntar ainda (ver
+  // pendingPaymentMethod.ts) pra nao ter 2 perguntas no ar ao mesmo tempo
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /forma de pagamento/i);
+  assert.equal(searchExpenses(PM4, "lote pagamento 1").length, 0);
+  assert.equal(searchExpenses(PM4, "lote pagamento 2").length, 0);
+
+  await handleIncomingMessage(evolutionMessage(PM4, "Dinheiro"));
+  // resolveu o primeiro E, como isso ja definiu "Dinheiro" como padrao, o
+  // segundo da fila resolve sozinho tambem -- sem precisar perguntar de novo
+  assert.equal(sent.length, 3);
+  assert.match(sent[1].text, /✅/);
+  assert.match(sent[1].text, /lote pagamento 1/);
+  assert.match(sent[2].text, /✅/);
+  assert.match(sent[2].text, /lote pagamento 2/);
+  assert.match(sent[2].text, /Dinheiro/);
+
+  assert.equal(searchExpenses(PM4, "lote pagamento 1").length, 1);
+  assert.equal(searchExpenses(PM4, "lote pagamento 2").length, 1);
+});
+
+// Pedido explicito do usuario: se passar 30s sem resposta a "qual foi a forma
+// de pagamento?", considera as informacoes ja exibidas como aceitas -- registra
+// o gasto assim mesmo (sem forma de pagamento definida) em vez de deixar a
+// pergunta pendente pra sempre.
+test("forma de pagamento pendente expira depois de 30s: registra sem definir e avisa, sem travar a mensagem seguinte", async (t) => {
+  const PM5 = "551100090905";
+  seedNoDefaultPayment(PM5);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 60, category: "Mercado", description: "gasto pagamento expira", date: "2026-01-21" }]);
+  await handleIncomingMessage(evolutionMessage(PM5, "60 no mercado"));
+  assert.match(sent[0].text, /forma de pagamento/i);
+  assert.equal(searchExpenses(PM5, "gasto pagamento expira").length, 0);
+
+  backdatePendingExpensePaymentMethodForTests(PM5, 31 * 1000);
+
+  // mensagem seguinte NAO e resposta de forma de pagamento -- e um gasto novo
+  // e completo, que so deveria ser tratado normalmente se a pendencia
+  // expirada ja tiver sido resolvida sozinha antes
+  queueReply([{ type: "expense", amount: 15, category: "Transporte", description: "uber depois do timeout pagamento", date: "2026-01-21" }]);
+  await handleIncomingMessage(evolutionMessage(PM5, "15 de uber"));
+
+  assert.equal(sent.length, 3); // pergunta original, aviso de timeout, e o gasto novo precisa perguntar de novo (ainda ambiguo)
+  assert.match(sent[1].text, /⏱️/);
+  assert.match(sent[1].text, /gasto pagamento expira/);
+  assert.match(sent[1].text, /não definida/);
+  assert.match(sent[2].text, /forma de pagamento/i); // o gasto novo tambem fica ambiguo (nenhum padrao foi definido pelo timeout)
+
+  const expirado = findRecentExpense(PM5, "gasto pagamento expira");
+  assert.equal(expirado?.amount, 60);
+  assert.equal(expirado?.payment_method_id, null);
+  assert.equal(getDefaultPaymentMethod(PM5), null); // timeout nao define padrao nenhum
+});
+
+test("forma de pagamento pendente ainda DENTRO do prazo continua tratando a resposta normalmente (nao expira cedo demais)", async (t) => {
+  const PM6 = "551100090906";
+  seedNoDefaultPayment(PM6);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 25, category: "Mercado", description: "gasto pagamento dentro do prazo", date: "2026-01-21" }]);
+  await handleIncomingMessage(evolutionMessage(PM6, "25 no mercado"));
+
+  backdatePendingExpensePaymentMethodForTests(PM6, 5 * 1000); // 5s < 30s, nao expirou
+
+  await handleIncomingMessage(evolutionMessage(PM6, "Pix"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /✅/);
+  assert.match(sent[1].text, /Pix/);
+  const expense = findRecentExpense(PM6, "gasto pagamento dentro do prazo");
+  assert.equal(expense?.amount, 25);
 });
 
 test("fila de categorizacao pendente e isolada por numero (outro numero nao interfere)", async (t) => {
@@ -593,7 +763,7 @@ test("compra parcelada: undo remove todas as parcelas de uma vez", async (t) => 
 // Categoria/forma de pagamento sao perguntadas por texto so quando faltarem.
 test("imagem de comprovante: categoria identificada pela foto pula a pergunta de categoria, so falta forma de pagamento", async (t) => {
   const RC1 = "551100090401";
-  seed(RC1);
+  seedNoDefaultPayment(RC1);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -620,7 +790,7 @@ test("imagem de comprovante: categoria identificada pela foto pula a pergunta de
 
 test("imagem de comprovante: IA nao identificou categoria nenhuma -- pergunta antes de confirmar", async (t) => {
   const RC1B = "551100090400";
-  seed(RC1B);
+  seedNoDefaultPayment(RC1B);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -641,7 +811,7 @@ test("imagem de comprovante: IA nao identificou categoria nenhuma -- pergunta an
 
 test("imagem de comprovante: local com palavra-chave de categoria ja aprendida pula a pergunta de categoria", async (t) => {
   const RC2 = "551100090402";
-  seed(RC2);
+  seedNoDefaultPayment(RC2);
   const category = getOrCreateCategory(RC2, "Compras");
   learnKeyword(RC2, "loja xpto", category.id);
   const { sent } = withMocks(t);
@@ -664,7 +834,7 @@ test("imagem de comprovante: local com palavra-chave de categoria ja aprendida p
 
 test("imagem de comprovante: responder 'não sei' na forma de pagamento segue sem definir", async (t) => {
   const RC3 = "551100090403";
-  seed(RC3);
+  seedNoDefaultPayment(RC3);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -685,7 +855,7 @@ test("imagem de comprovante: responder 'não sei' na forma de pagamento segue se
 
 test("imagem de comprovante: responder 'nao' cancela sem registrar nada", async (t) => {
   const RC4 = "551100090404";
-  seed(RC4);
+  seedNoDefaultPayment(RC4);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -703,7 +873,7 @@ test("imagem de comprovante: responder 'nao' cancela sem registrar nada", async 
 
 test("imagem de comprovante: correcao em texto livre antes de confirmar ajusta o valor lido", async (t) => {
   const RC5 = "551100090405";
-  seed(RC5);
+  seedNoDefaultPayment(RC5);
   const { sent } = withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -732,7 +902,7 @@ test("imagem de comprovante: correcao em texto livre antes de confirmar ajusta o
 // Confirma que uma foto NUNCA cria mais de um gasto, so o valor total.
 test("imagem de comprovante: nunca cria mais de um gasto a partir de uma foto (so o valor total)", async (t) => {
   const RC6 = "551100090406";
-  seed(RC6);
+  seedNoDefaultPayment(RC6);
   withMocks(t);
   t.mock.method(aiInterpret, "interpretReceiptImage", async () => ({
     isReceipt: true,
@@ -794,14 +964,21 @@ test("numero novo recebe mensagem de boas-vindas antes da resposta normal; numer
   queueReply([{ type: "expense", amount: 20, category: "Mercado", description: "primeira compra", date: "2026-01-14" }]);
   await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "20 no mercado"));
 
+  // usuario novo, sem forma de pagamento padrao ainda: alem das boas-vindas,
+  // a primeira compra tambem pergunta a forma de pagamento (ver
+  // autoResolvePaymentMethod) antes de confirmar
   assert.equal(sent.length, 2);
   assert.match(sent[0].text, /assistente pessoal/i);
-  assert.match(sent[1].text, /✅/); // a confirmacao normal do gasto ainda acontece, so depois
+  assert.match(sent[1].text, /forma de pagamento/i);
+
+  await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "Pix"));
+  assert.equal(sent.length, 3);
+  assert.match(sent[2].text, /✅/); // a confirmacao normal do gasto acontece so depois de resolvida a forma de pagamento
 
   queueReply([{ type: "expense", amount: 30, category: "Mercado", description: "segunda compra", date: "2026-01-15" }]);
   await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "30 no mercado"));
-  assert.equal(sent.length, 3); // nao mandou boas-vindas de novo, so a confirmacao
-  assert.match(sent[2].text, /✅/);
+  assert.equal(sent.length, 4); // nao mandou boas-vindas nem pergunta de pagamento de novo (Pix ja e o padrao), so a confirmacao
+  assert.match(sent[3].text, /✅/);
 });
 
 const nearFuture = () => new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
