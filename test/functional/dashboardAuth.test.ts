@@ -6,6 +6,7 @@ import { allowNumber } from "../../src/access/allowlist";
 import { upsertDashboardPassword } from "../../src/dashboard/accounts";
 import { hashPassword } from "../../src/auth/password";
 import { config } from "../../src/config";
+import { resetLoginGuardForTests } from "../../src/auth/loginGuard";
 
 function mockSendText(t: TestContext) {
   const sent: { to: string; text: string }[] = [];
@@ -98,6 +99,40 @@ test("dashboard: login com senha certa entra, com senha errada nao", async () =>
     const html = await dashboard.text();
     assert.ok(!html.includes("Entre com o número de WhatsApp"));
   } finally {
+    await server.close();
+  }
+});
+
+// Achado da auditoria: o /admin ja tinha trava de forca bruta, o /dashboard
+// nao tinha nenhuma -- cada tentativa roda um bcrypt.compare (mesmo pra
+// numero sem conta, via DUMMY_HASH), entao um flood de tentativas erradas
+// vira negacao de servico por CPU (Node e single-thread). resetLoginGuardForTests
+// no inicio E no fim evita que o contador (por IP, compartilhado entre testes
+// nesse mesmo processo) vaze pra outros testes desse arquivo.
+test("dashboard: 5 senhas erradas seguidas trava o login por um tempo, mesmo com a senha certa depois", async () => {
+  resetLoginGuardForTests();
+  allowNumber(CANONICAL);
+  upsertDashboardPassword(CANONICAL, await hashPassword("Test1234"));
+  const server = await startDashboardTestServer();
+  try {
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`${server.baseUrl}/dashboard/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ phone: DDD_CELL, password: "senha-errada" }),
+      });
+      assert.equal(res.status, 401);
+    }
+
+    const lockedEvenWithRightPassword = await fetch(`${server.baseUrl}/dashboard/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ phone: DDD_CELL, password: "Test1234" }),
+      redirect: "manual",
+    });
+    assert.equal(lockedEvenWithRightPassword.status, 429);
+  } finally {
+    resetLoginGuardForTests();
     await server.close();
   }
 });

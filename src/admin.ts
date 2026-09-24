@@ -62,7 +62,10 @@ ${error ? `<p class="error">${error}</p>` : ""}
 }
 
 adminRouter.post("/admin/login", (req, res) => {
-  const key = req.ip ?? "unknown";
+  // prefixo "admin:" pra nao compartilhar contador com o login do dashboard
+  // (mesmo IP, credenciais completamente diferentes -- um brute-force ali nao
+  // devia travar o outro, ver src/dashboard/auth.ts).
+  const key = `admin:${req.ip ?? "unknown"}`;
   if (isLoginLocked(key)) {
     res.status(429).send(renderAdminLoginPage("Muitas tentativas erradas. Tenta de novo em alguns minutos."));
     return;

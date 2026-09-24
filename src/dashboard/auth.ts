@@ -6,6 +6,7 @@ import { sendText } from "../whatsapp/client";
 import { createSession, getSession, destroySession, DASHBOARD_SESSION_TTL_MS } from "../auth/session";
 import { generatePassword, hashPassword, verifyPassword } from "../auth/password";
 import { getDashboardAccount, upsertDashboardPassword, canSendPasswordNow } from "./accounts";
+import { isLoginLocked, recordFailedLogin, recordSuccessfulLogin } from "../auth/loginGuard";
 
 export const dashboardAuthRouter = Router();
 
@@ -56,6 +57,17 @@ dashboardAuthRouter.post("/dashboard/request-password", async (req, res) => {
 });
 
 dashboardAuthRouter.post("/dashboard/login", async (req, res) => {
+  // achado da auditoria: o /admin ja tinha essa trava, o /dashboard/login nao
+  // tinha nada -- cada tentativa errada roda um bcrypt.compare (inclusive pra
+  // numero sem conta, via DUMMY_HASH), entao um flood de tentativas vira
+  // negacao de servico por esgotamento de CPU (Node e single-thread).
+  // Prefixo "dashboard:" pra nao compartilhar contador com o /admin/login.
+  const key = `dashboard:${req.ip ?? "unknown"}`;
+  if (isLoginLocked(key)) {
+    res.status(429).send(renderLoginPage({ error: "Muitas tentativas erradas. Tenta de novo em alguns minutos." }));
+    return;
+  }
+
   const digits = String(req.body.phone || "").replace(/\D/g, "");
   const password = String(req.body.password || "");
   const phoneNumber = digits.length === 11 ? normalizeBrazilPhone(`55${digits}`) : "";
@@ -63,10 +75,12 @@ dashboardAuthRouter.post("/dashboard/login", async (req, res) => {
   const account = phoneNumber ? getDashboardAccount(phoneNumber) : null;
   const valid = await verifyPassword(password, account?.password_hash ?? DUMMY_HASH);
   if (!account || !valid) {
+    recordFailedLogin(key);
     res.status(401).send(renderLoginPage({ error: "Número ou senha incorretos." }));
     return;
   }
 
+  recordSuccessfulLogin(key);
   const token = createSession({ type: "dashboard", phone: phoneNumber }, DASHBOARD_SESSION_TTL_MS);
   res.cookie(SESSION_COOKIE, token, cookieOptions(req, DASHBOARD_SESSION_TTL_MS));
   res.redirect("/dashboard");

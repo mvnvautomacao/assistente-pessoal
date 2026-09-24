@@ -1,10 +1,16 @@
-import { Router } from "express";
+import { Router, json } from "express";
 import { handleIncomingMessage } from "../router";
 import { config } from "../config";
 
 export const webhookRouter = Router();
 
-webhookRouter.post("/webhook", (req, res) => {
+// limite de 25mb SO nessa rota -- achado da auditoria: antes era global
+// (index.ts), entao /dashboard/login, /admin/login e toda rota do dashboard
+// tambem aceitavam payload de ate 25mb, ampliando a superficie de negacao de
+// servico por banda/memoria nas rotas de autenticacao sem motivo nenhum. Foto
+// de comprovante em base64 vindo da Evolution API e o UNICO motivo real desse
+// limite maior (o padrao do express.json() e 100kb, pouco pra isso).
+webhookRouter.post("/webhook", json({ limit: "25mb" }), (req, res) => {
   // Se WEBHOOK_SECRET estiver configurado, so aceita chamadas que conhecam o
   // segredo (?secret=... na URL cadastrada na Evolution API via
   // `npm run evolution:webhook -- https://sua-url/webhook?secret=...`).

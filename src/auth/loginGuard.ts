@@ -31,3 +31,10 @@ export function recordFailedLogin(key: string) {
 export function recordSuccessfulLogin(key: string) {
   attempts.delete(key);
 }
+
+// So pra teste: limpa todos os contadores (mesmo IP em testes diferentes
+// compartilharia o mesmo contador, ja que attempts e um Map em memoria do
+// modulo, nao por-teste).
+export function resetLoginGuardForTests() {
+  attempts.clear();
+}

@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import cookieParser from "cookie-parser";
+import helmet from "helmet";
 import { config } from "./config";
 import { webhookRouter } from "./whatsapp/webhook";
 import { adminRouter } from "./admin";
@@ -17,16 +18,22 @@ const app = express();
 // atras do proxy reverso do Coolify (Traefik) -- sem isso, o cookie de sessao
 // com secure:true nunca seria aceito pelo navegador em producao.
 app.set("trust proxy", 1);
+// achado da auditoria: sem CSP/HSTS/X-Frame-Options/X-Content-Type-Options
+// nas respostas, e o header X-Powered-By vazando a stack. CSP fica desligado
+// de proposito -- o dashboard usa <style> e atributos onsubmit/onclick
+// inline por todo canto, e a politica padrao do helmet bloquearia tudo isso
+// (quebraria o site inteiro pra ganhar uma protecao que exigiria reescrever
+// o dashboard inteiro pra nonce/hash). As outras protecoes (HSTS, no-sniff,
+// no-frame, esconder X-Powered-By) vem de graca, sem risco de quebrar nada.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cookieParser());
-// limite padrao do express.json() e so 100kb -- muito pouco pro webhook da
-// Evolution API, que manda foto/audio em base64 dentro do proprio JSON (uma
-// foto de nota fiscal legivel facilmente passa disso). Sem esse limite maior,
-// a requisicao e rejeitada com 413 ANTES de chegar no nosso codigo -- webhook
-// nunca roda, sem nenhum log nem resposta (foi exatamente o que aconteceu em
-// producao: foto enviada, Evolution API confirmou no log dela "Request failed
-// with status code 413", nosso app nunca processou nada).
-app.use(express.json({ limit: "25mb" }));
-app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+// limite padrao (100kb) serve bem pros formularios do dashboard/admin -- o
+// limite maior de 25mb (pra foto/audio em base64 vindo da Evolution API) fica
+// SO na rota do webhook (ver whatsapp/webhook.ts), nao mais global. Antes,
+// /dashboard/login, /admin/login e toda rota do dashboard tambem aceitavam
+// payload de ate 25mb sem motivo, ampliando a superficie de negacao de
+// servico por banda/memoria justamente nas rotas de autenticacao.
+app.use(express.urlencoded({ extended: true }));
 // manifest.json, icones e o service worker do dashboard-como-PWA. process.cwd()
 // e a raiz do projeto tanto local (npm run dev) quanto no container (WORKDIR
 // /app no Dockerfile) -- a pasta public/ nunca passa pelo build do tsc, so e
