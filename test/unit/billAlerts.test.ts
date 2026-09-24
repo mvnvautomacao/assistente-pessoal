@@ -52,7 +52,7 @@ test("getDueBillAlerts: so pergunta o que bate com o dia de hoje e ainda nao foi
   assert.ok(due.some((b) => b.id === dueToday.id));
   assert.ok(!due.some((b) => b.name === "vence outro dia"));
 
-  confirmBillAlertPaid(dueToday.id, "2026-03-12");
+  confirmBillAlertPaid(A, dueToday.id, "2026-03-12");
   const dueAgainSameMonth = getDueBillAlerts("2026-03-12");
   assert.ok(!dueAgainSameMonth.some((b) => b.id === dueToday.id)); // ja confirmado esse mes
 
@@ -73,7 +73,7 @@ test("getDueBillAlerts: day_of_month 31 pergunta no ultimo dia de um mes mais cu
 
 test("getDueBillAlerts: nao pergunta 2x no mesmo dia mesmo se o cron rodar de novo", () => {
   const bill = createBillAlert({ fromNumber: A, name: "so uma vez por dia", dayOfMonth: 7 });
-  markBillAlertAsked(bill.id, "2026-05-07");
+  markBillAlertAsked(A, bill.id, "2026-05-07");
 
   const dueAgain = getDueBillAlerts("2026-05-07");
   assert.ok(!dueAgain.some((b) => b.id === bill.id));
@@ -81,8 +81,8 @@ test("getDueBillAlerts: nao pergunta 2x no mesmo dia mesmo se o cron rodar de no
 
 test("getDueBillAlerts: soneca de 'lembra amanha' faz perguntar so na data adiada, nao antes", () => {
   const bill = createBillAlert({ fromNumber: A, name: "conta adiada", dayOfMonth: 9 });
-  markBillAlertAsked(bill.id, "2026-06-09");
-  snoozeBillAlert(bill.id, "2026-06-10");
+  markBillAlertAsked(A, bill.id, "2026-06-09");
+  snoozeBillAlert(A, bill.id, "2026-06-10");
 
   const stillNotDue = getDueBillAlerts("2026-06-09");
   assert.ok(!stillNotDue.some((b) => b.id === bill.id)); // mesmo dia que ja perguntou, nao de novo
@@ -107,7 +107,7 @@ test("createBillAlert por intervalo: next_due_date comeca hoje + interval_days",
 test("getDueBillAlerts: alerta por intervalo so pergunta quando next_due_date chega", () => {
   const bill = createBillAlert({ fromNumber: A, name: "trocar filtro", intervalDays: 30 });
   // forca uma data de vencimento conhecida pro teste, sem depender do "hoje" real
-  confirmBillAlertPaid(bill.id, "2026-01-01"); // reseta next_due_date pra 2026-01-01 + 30 = 2026-01-31
+  confirmBillAlertPaid(A, bill.id, "2026-01-01"); // reseta next_due_date pra 2026-01-01 + 30 = 2026-01-31
 
   const notDueYet = getDueBillAlerts("2026-01-30");
   assert.ok(!notDueYet.some((b) => b.id === bill.id));
@@ -121,7 +121,7 @@ test("getDueBillAlerts: alerta por intervalo so pergunta quando next_due_date ch
 
 test("confirmBillAlertPaid por intervalo: reinicia a contagem a partir de HOJE, nao do vencimento original", () => {
   const bill = createBillAlert({ fromNumber: A, name: "ração confirmar", intervalDays: 45 });
-  confirmBillAlertPaid(bill.id, "2026-07-01"); // reseta next_due_date pra 2026-07-01 + 45 = 2026-08-15
+  confirmBillAlertPaid(A, bill.id, "2026-07-01"); // reseta next_due_date pra 2026-07-01 + 45 = 2026-08-15
 
   const updated = getBillAlertById(A, bill.id)!;
   assert.equal(updated.next_due_date, "2026-08-15");
@@ -130,10 +130,24 @@ test("confirmBillAlertPaid por intervalo: reinicia a contagem a partir de HOJE, 
 
 test("snoozeBillAlert funciona igual pra alerta por intervalo", () => {
   const bill = createBillAlert({ fromNumber: A, name: "ração soneca", intervalDays: 10 });
-  confirmBillAlertPaid(bill.id, "2026-09-01"); // next_due_date = 2026-09-11
-  markBillAlertAsked(bill.id, "2026-09-11");
-  snoozeBillAlert(bill.id, "2026-09-12");
+  confirmBillAlertPaid(A, bill.id, "2026-09-01"); // next_due_date = 2026-09-11
+  markBillAlertAsked(A, bill.id, "2026-09-11");
+  snoozeBillAlert(A, bill.id, "2026-09-12");
 
   assert.ok(!getDueBillAlerts("2026-09-11").some((b) => b.id === bill.id));
   assert.ok(getDueBillAlerts("2026-09-12").some((b) => b.id === bill.id));
+});
+
+// Achado da auditoria: essas 3 funcoes mexiam so por id, sem checar o dono.
+test("SEGURANCA: markBillAlertAsked/confirmBillAlertPaid/snoozeBillAlert nunca alcancam alerta de outro numero", () => {
+  const bill = createBillAlert({ fromNumber: A, name: "protegida de B", dayOfMonth: 15 });
+
+  markBillAlertAsked(B, bill.id, "2026-01-15");
+  confirmBillAlertPaid(B, bill.id, "2026-01-15");
+  snoozeBillAlert(B, bill.id, "2026-01-16");
+
+  const stillOriginal = getBillAlertById(A, bill.id)!;
+  assert.equal(stillOriginal.last_asked_date, null);
+  assert.equal(stillOriginal.confirmed_month, null);
+  assert.equal(stillOriginal.snoozed_until, null);
 });

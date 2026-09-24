@@ -13,8 +13,8 @@ export function getDueReminders() {
     .all() as { id: number; to_number: string; message: string }[];
 }
 
-export function markReminderSent(id: number) {
-  db.prepare(`UPDATE reminders SET sent = 1 WHERE id = ?`).run(id);
+export function markReminderSent(toNumber: string, id: number) {
+  db.prepare(`UPDATE reminders SET sent = 1 WHERE id = ? AND to_number = ?`).run(id, toNumber);
 }
 
 // SEGURANCA: sempre filtra por to_number -- sem isso, o relatorio de agenda de

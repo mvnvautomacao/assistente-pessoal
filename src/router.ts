@@ -754,7 +754,7 @@ async function finalizePendingCategorizationByTimeout(from: string, pending: Pen
   try {
     const category = getOrCreateCategory(from, pending.suggested_category ?? "Outros");
     const paymentMethod = autoResolvePaymentMethod(from, pending.suggested_payment_method);
-    clearPendingCategorization(pending.id);
+    clearPendingCategorization(from, pending.id);
     const { budgetAlert } = recordSimpleExpense(from, {
       amount: pending.amount,
       description: pending.description,
@@ -777,7 +777,7 @@ async function finalizePendingCategorizationByTimeout(from: string, pending: Pen
   } catch (err) {
     console.error("Erro ao finalizar categorizacao pendente por timeout:", err);
     logActivity(from, "error", err instanceof Error ? err.message : String(err));
-    clearPendingCategorization(pending.id);
+    clearPendingCategorization(from, pending.id);
   }
 }
 
@@ -1610,7 +1610,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
     const category = getOrCreateCategory(from, categoryName);
     if (pending.suggested_category) learnKeyword(from, pending.suggested_category, category.id);
     learnKeyword(from, pending.description, category.id);
-    clearPendingCategorization(pending.id);
+    clearPendingCategorization(from, pending.id);
 
     const paymentMethod = autoResolvePaymentMethod(from, pending.suggested_payment_method);
     if (!paymentMethod) {
@@ -2096,7 +2096,7 @@ async function resolveCorrectCategoryConfirmation(from: string, pending: Pending
 
   if (yes) {
     clearPendingCorrectCategory(from);
-    updateExpenseCategory(pending.expenseId, pending.proposedCategoryId);
+    updateExpenseCategory(from, pending.expenseId, pending.proposedCategoryId);
     learnKeyword(from, pending.description, pending.proposedCategoryId);
     if (pending.previousCategoryId != null) {
       setPendingUndo(from, {
@@ -2327,14 +2327,14 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
   clearPendingBillCheckin(from);
   const today = spDateString();
   if (paid) {
-    confirmBillAlertPaid(pending.billAlertId, today);
+    confirmBillAlertPaid(from, pending.billAlertId, today);
     logActivity(from, "bill_alert", `confirmado: ${pending.name}`);
     const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
     await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" ${nextLabel}.`);
     return;
   }
 
-  snoozeBillAlert(pending.billAlertId, addDaysToDateString(today, 1));
+  snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
   logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
   await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
 }
@@ -3166,7 +3166,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           await sendText(from, `↩️ Prontinho, desfiz a última alteração em "${undo.description}".`);
           break;
         case "restore_category":
-          updateExpenseCategory(undo.expenseId, undo.previousCategoryId);
+          updateExpenseCategory(from, undo.expenseId, undo.previousCategoryId);
           logActivity(from, "undo", `categoria revertida: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: categoria de "${undo.description}" voltou como estava.`);
           break;
@@ -3196,7 +3196,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           await sendText(from, `↩️ Prontinho, desfiz: entrada de ${undo.description} removida.`);
           break;
         case "bulk_restore_category":
-          for (const change of undo.changes) updateExpenseCategory(change.expenseId, change.previousCategoryId);
+          for (const change of undo.changes) updateExpenseCategory(from, change.expenseId, change.previousCategoryId);
           logActivity(from, "undo", `recategorizacao em lote desfeita: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz a mudança de categoria de ${undo.changes.length} gasto(s).`);
           break;
@@ -3204,7 +3204,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           // a categoria de origem foi apagada no merge -- recria pelo nome (fica
           // com um id novo, mas mesma funcao pro usuario) e move os gastos de volta
           const recreated = getOrCreateCategory(from, undo.sourceCategoryName);
-          for (const expenseId of undo.expenseIds) updateExpenseCategory(expenseId, recreated.id);
+          for (const expenseId of undo.expenseIds) updateExpenseCategory(from, expenseId, recreated.id);
           logActivity(from, "undo", `merge de categorias desfeito: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, recriei "${undo.sourceCategoryName}" e devolvi ${undo.expenseIds.length} gasto(s) pra ela.`);
           break;

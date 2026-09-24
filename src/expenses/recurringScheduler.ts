@@ -26,7 +26,7 @@ export function startRecurringExpenseScheduler() {
             paymentMethodId: recurring.payment_method_id,
             date: today,
           });
-          markRecurringExpenseRunForMonth(recurring.id, today.slice(0, 7));
+          markRecurringExpenseRunForMonth(recurring.from_number, recurring.id, today.slice(0, 7));
 
           const categorySuffix = category ? ` em ${category.name}` : "";
           const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";

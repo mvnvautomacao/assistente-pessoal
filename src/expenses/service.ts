@@ -308,8 +308,8 @@ export function findRecentExpense(fromNumber: string, query?: string): ExpenseRe
 
 // categoryId aceita null pra permitir desfazer uma recategorizacao em lote que
 // tirou um gasto de "sem categoria" (ver bulk_recategorize / undo em router.ts)
-export function updateExpenseCategory(expenseId: number, categoryId: number | null) {
-  db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ?`).run(categoryId, expenseId);
+export function updateExpenseCategory(fromNumber: string, expenseId: number, categoryId: number | null) {
+  db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ? AND from_number = ?`).run(categoryId, expenseId, fromNumber);
 }
 
 // os N gastos mais recentes de um numero, pra recategorizacao em lote ("muda os
@@ -394,8 +394,8 @@ export function getNextPendingCategorization(fromNumber: string): PendingCategor
   return row ?? null;
 }
 
-export function clearPendingCategorization(id: number) {
-  db.prepare(`DELETE FROM pending_categorizations WHERE id = ?`).run(id);
+export function clearPendingCategorization(fromNumber: string, id: number) {
+  db.prepare(`DELETE FROM pending_categorizations WHERE id = ? AND from_number = ?`).run(id, fromNumber);
 }
 
 // So pra teste: forca um item da fila a parecer mais antigo do que e, sem

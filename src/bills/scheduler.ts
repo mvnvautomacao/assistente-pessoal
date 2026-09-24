@@ -25,7 +25,7 @@ export function startBillAlertScheduler() {
               ? `📌 Hora de: ${bill.name}. Já resolveu, ou quer que eu te lembre amanhã?`
               : `📌 Hoje é dia de pagar: ${bill.name}. Já pagou, ou quer que eu te lembre amanhã?`;
           await sendText(bill.from_number, question);
-          markBillAlertAsked(bill.id, today);
+          markBillAlertAsked(bill.from_number, bill.id, today);
           setPendingBillCheckin(bill.from_number, {
             billAlertId: bill.id,
             name: bill.name,

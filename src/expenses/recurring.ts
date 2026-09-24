@@ -57,8 +57,8 @@ export function findActiveRecurringExpenseByDescription(fromNumber: string, quer
   return row ?? null;
 }
 
-export function markRecurringExpenseRunForMonth(id: number, yearMonth: string) {
-  db.prepare(`UPDATE recurring_expenses SET last_run_month = ? WHERE id = ?`).run(yearMonth, id);
+export function markRecurringExpenseRunForMonth(fromNumber: string, id: number, yearMonth: string) {
+  db.prepare(`UPDATE recurring_expenses SET last_run_month = ? WHERE id = ? AND from_number = ?`).run(yearMonth, id, fromNumber);
 }
 
 // gastos fixos ativos cujo dia bate com "hoje" (SP) e que ainda nao foram lancados

@@ -50,12 +50,26 @@ test("getDueRecurringExpenses: so traz o que bate com o dia de hoje e ainda nao 
   assert.ok(due.some((r) => r.id === dueToday.id));
   assert.ok(!due.some((r) => r.description === "vence outro dia"));
 
-  markRecurringExpenseRunForMonth(dueToday.id, "2026-03");
+  markRecurringExpenseRunForMonth(A, dueToday.id, "2026-03");
   const dueAgainSameMonth = getDueRecurringExpenses("2026-03-12");
   assert.ok(!dueAgainSameMonth.some((r) => r.id === dueToday.id)); // ja rodou nesse mes
 
   const dueNextMonth = getDueRecurringExpenses("2026-04-12");
   assert.ok(dueNextMonth.some((r) => r.id === dueToday.id)); // mes seguinte, roda de novo
+});
+
+test("SEGURANCA: markRecurringExpenseRunForMonth nunca alcanca gasto fixo de outro numero", () => {
+  const recurring = createRecurringExpense({
+    fromNumber: A,
+    description: "protegido de B",
+    amount: 15,
+    categoryId: null,
+    paymentMethodId: null,
+    dayOfMonth: 12,
+  });
+  markRecurringExpenseRunForMonth(B, recurring.id, "2026-03");
+  const dueAgain = getDueRecurringExpenses("2026-03-12");
+  assert.ok(dueAgain.some((r) => r.id === recurring.id)); // continua pendente, B nao conseguiu marcar
 });
 
 test("getDueRecurringExpenses: dia_of_month 31 lanca no ultimo dia de um mes mais curto", () => {

@@ -175,8 +175,18 @@ test("updateExpenseCategory troca so a categoria, mantendo o resto", () => {
   const cat2 = getOrCreateCategory(A, "CatNova");
   insertExpense({ fromNumber: A, amount: 44, description: "corrige categoria", categoryId: cat1.id, paymentMethodId: null, date: "2026-03-05" });
   const expense = findRecentExpense(A, "corrige categoria")!;
-  updateExpenseCategory(expense.id, cat2.id);
+  updateExpenseCategory(A, expense.id, cat2.id);
   assert.equal(getExpenseById(A, expense.id)!.category_id, cat2.id);
+});
+
+test("SEGURANCA: updateExpenseCategory nunca alcanca gasto de outro numero", () => {
+  const cat1 = getOrCreateCategory(A, "CatSegOriginal");
+  const catB = getOrCreateCategory(B, "CatSegHackeada");
+  insertExpense({ fromNumber: A, amount: 12, description: "protegido de B", categoryId: cat1.id, paymentMethodId: null, date: "2026-03-06" });
+  const expense = findRecentExpense(A, "protegido de B")!;
+
+  updateExpenseCategory(B, expense.id, catB.id);
+  assert.equal(getExpenseById(A, expense.id)!.category_id, cat1.id); // nao mudou
 });
 
 test("fila de categorizacao pendente resolve na ordem certa (mais antigo primeiro) e e isolada por numero", () => {
@@ -186,11 +196,11 @@ test("fila de categorizacao pendente resolve na ordem certa (mais antigo primeir
 
   const first = getNextPendingCategorization(A)!;
   assert.equal(first.description, "p1");
-  clearPendingCategorization(first.id);
+  clearPendingCategorization(A, first.id);
 
   const second = getNextPendingCategorization(A)!;
   assert.equal(second.description, "p2");
-  clearPendingCategorization(second.id);
+  clearPendingCategorization(A, second.id);
 
   assert.equal(getNextPendingCategorization(A), null);
   assert.equal(getNextPendingCategorization(B)?.description, "de outro numero");

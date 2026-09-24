@@ -9,7 +9,7 @@ export function startReminderScheduler() {
     for (const reminder of due) {
       try {
         await sendText(reminder.to_number, `\u{1F514} Lembrete: ${reminder.message}`);
-        markReminderSent(reminder.id);
+        markReminderSent(reminder.to_number, reminder.id);
       } catch (err) {
         console.error(`Erro ao enviar lembrete ${reminder.id}:`, err);
       }

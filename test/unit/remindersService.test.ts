@@ -35,7 +35,7 @@ test("markReminderSent tira o lembrete da lista de pendentes", () => {
   createReminder(A, "marcar como enviado", "2020-06-01T00:00:00Z");
   const due = getDueReminders();
   const target = due.find((r) => r.message === "marcar como enviado")!;
-  markReminderSent(target.id);
+  markReminderSent(A, target.id);
   const dueAgain = getDueReminders();
   assert.ok(!dueAgain.some((r) => r.id === target.id));
 });
@@ -76,7 +76,7 @@ test("getReminderById/updateReminder/deleteExpense respeitam o dono (nao mexe em
 test("updateReminder reseta sent=0 (edita um ja enviado -> volta a avisar)", () => {
   createReminder(A, "editar apos enviado", "2020-01-01T00:00:00Z");
   const target = listReminders(A).find((r) => r.message === "editar apos enviado")!;
-  markReminderSent(target.id);
+  markReminderSent(A, target.id);
   assert.equal(getReminderById(A, target.id)!.sent, 1);
 
   updateReminder(A, target.id, { message: "editar apos enviado", dueAt: "2099-01-01T00:00:00Z" });
@@ -93,6 +93,13 @@ test("getRemindersForMonth: so traz lembretes nao enviados daquele mes, isolado 
   assert.equal(novembroA[0].message, "lembrete de novembro");
 
   const created = createReminder(A, "ja enviado em novembro", "2026-11-05T10:00:00-03:00");
-  markReminderSent(created);
+  markReminderSent(A, created);
   assert.ok(!getRemindersForMonth(A, "2026-11").some((r) => r.message === "ja enviado em novembro"));
+});
+
+test("SEGURANCA: markReminderSent nunca alcanca lembrete de outro numero", () => {
+  createReminder(A, "protegido de B", "2020-01-01T00:00:00Z");
+  const target = getDueReminders().find((r) => r.message === "protegido de B")!;
+  markReminderSent(B, target.id);
+  assert.ok(getDueReminders().some((r) => r.id === target.id)); // continua pendente, B nao conseguiu marcar
 });

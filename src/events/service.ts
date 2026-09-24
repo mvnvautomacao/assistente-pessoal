@@ -122,6 +122,6 @@ export function getDueEventReminders(): EventRow[] {
     .all() as unknown as EventRow[];
 }
 
-export function markEventReminderSent(id: number) {
-  db.prepare(`UPDATE events SET reminder_sent = 1 WHERE id = ?`).run(id);
+export function markEventReminderSent(fromNumber: string, id: number) {
+  db.prepare(`UPDATE events SET reminder_sent = 1 WHERE id = ? AND from_number = ?`).run(id, fromNumber);
 }

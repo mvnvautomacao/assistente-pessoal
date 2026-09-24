@@ -62,30 +62,34 @@ export function findActiveBillAlertByName(fromNumber: string, query: string): Bi
   return row ?? null;
 }
 
-export function markBillAlertAsked(id: number, todayDate: string) {
-  db.prepare(`UPDATE bill_alerts SET last_asked_date = ? WHERE id = ?`).run(todayDate, id);
+export function markBillAlertAsked(fromNumber: string, id: number, todayDate: string) {
+  db.prepare(`UPDATE bill_alerts SET last_asked_date = ? WHERE id = ? AND from_number = ?`).run(todayDate, id, fromNumber);
 }
 
 // usuario respondeu que ja fez: por dia fixo do mes, fecha o ciclo desse mes
 // (confirmed_month) -- por intervalo, reinicia a contagem a partir de HOJE
 // (next_due_date = hoje + interval_days), nao da data que era o vencimento
 // original. Nas duas recorrencias, limpa qualquer soneca pendente.
-export function confirmBillAlertPaid(id: number, todayDate: string) {
-  const bill = db.prepare(`SELECT * FROM bill_alerts WHERE id = ?`).get(id) as BillAlert | undefined;
+export function confirmBillAlertPaid(fromNumber: string, id: number, todayDate: string) {
+  const bill = db.prepare(`SELECT * FROM bill_alerts WHERE id = ? AND from_number = ?`).get(id, fromNumber) as BillAlert | undefined;
   if (!bill) return;
   if (bill.recurrence_type === "interval") {
     const nextDueDate = addDaysToDateString(todayDate, bill.interval_days ?? 0);
-    db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL WHERE id = ?`).run(nextDueDate, id);
+    db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(nextDueDate, id, fromNumber);
     return;
   }
-  db.prepare(`UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL WHERE id = ?`).run(todayDate.slice(0, 7), id);
+  db.prepare(`UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(
+    todayDate.slice(0, 7),
+    id,
+    fromNumber
+  );
 }
 
 // usuario pediu pra lembrar de novo amanha -- guarda ate quando adiar, sem mexer
 // em last_asked_date (assim nao pergunta 2x no mesmo dia mesmo se o cron rodar de novo).
 // Vale igual pras duas recorrencias.
-export function snoozeBillAlert(id: number, untilDate: string) {
-  db.prepare(`UPDATE bill_alerts SET snoozed_until = ? WHERE id = ?`).run(untilDate, id);
+export function snoozeBillAlert(fromNumber: string, id: number, untilDate: string) {
+  db.prepare(`UPDATE bill_alerts SET snoozed_until = ? WHERE id = ? AND from_number = ?`).run(untilDate, id, fromNumber);
 }
 
 // alertas ativos que precisam perguntar "ja fez?" hoje: pra dia fixo do mes,

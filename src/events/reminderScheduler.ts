@@ -18,7 +18,7 @@ export function startEventReminderScheduler() {
       try {
         const when = spTimeFormatter.format(new Date(event.start));
         await sendText(event.from_number, `🔔 Daqui a ${event.reminder_minutes} min: ${event.title} (${when})`);
-        markEventReminderSent(event.id);
+        markEventReminderSent(event.from_number, event.id);
       } catch (err) {
         console.error(`Erro ao enviar aviso do evento ${event.id}:`, err);
       }

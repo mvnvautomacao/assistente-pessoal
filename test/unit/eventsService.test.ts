@@ -59,10 +59,17 @@ test("getEventById/updateEvent/deleteEvent respeitam o dono", () => {
   assert.equal(getEventById(A, event.id), undefined);
 });
 
+test("SEGURANCA: markEventReminderSent nunca alcanca evento de outro numero", () => {
+  const event = createEvent({ fromNumber: A, title: "Protegido de B", start: "2020-01-01T00:00:00-03:00", reminderMinutes: 1 });
+  const due = getDueEventReminders().find((e) => e.id === event.id)!;
+  markEventReminderSent(B, due.id);
+  assert.equal(getEventById(A, event.id)!.reminder_sent, 0); // continua sem marcar
+});
+
 test("updateEvent reseta reminder_sent=0 (reagenda o aviso se o evento mudou de horario)", () => {
   const event = createEvent({ fromNumber: A, title: "Reagendar", start: "2020-01-01T00:00:00-03:00", reminderMinutes: 1 });
   const due = getDueEventReminders().find((e) => e.id === event.id)!;
-  markEventReminderSent(due.id);
+  markEventReminderSent(A, due.id);
   assert.equal(getEventById(A, event.id)!.reminder_sent, 1);
 
   updateEvent(A, event.id, { title: "Reagendar", start: "2099-01-01T00:00:00-03:00", reminderMinutes: 1 });
