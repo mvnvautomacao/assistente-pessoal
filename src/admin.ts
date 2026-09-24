@@ -6,12 +6,14 @@ import { normalizeBrazilPhone } from "./dashboard/utils";
 import { config } from "./config";
 import { createSession, getSession, destroySession, ADMIN_SESSION_TTL_MS } from "./auth/session";
 import { isLoginLocked, recordFailedLogin, recordSuccessfulLogin } from "./auth/loginGuard";
-import { listDashboardAccounts } from "./dashboard/accounts";
+import { listDashboardAccounts, deleteDashboardAccount } from "./dashboard/accounts";
 import { maybeSendNewPassword } from "./dashboard/auth";
+import { PAGE_SIZES, paginate } from "./dashboard/utils";
+import { destroyDashboardSessionsForPhone } from "./auth/session";
 
 export const adminRouter = Router();
 
-const ADMIN_SESSION_COOKIE = "organizai_admin_session";
+export const ADMIN_SESSION_COOKIE = "organizai_admin_session";
 
 function timingSafeStringEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -112,6 +114,48 @@ function formatDate(value: string): string {
   return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
+// Paginacao achado da auditoria ("/admin sem paginação: atividade recente e
+// tentativas bloqueadas mostram sempre os últimos 50"). Reaproveita PAGE_SIZES
+// e paginate() do dashboard, mas com nomes de parametro PREFIXADOS (ex:
+// "activity_page") -- as duas listas ficam na MESMA pagina, entao paginar uma
+// nao pode resetar a outra, e cada form de paginacao carrega o estado atual
+// da OUTRA lista como campo escondido pra preservar ao trocar de pagina.
+function parsePrefixedPagination(query: Record<string, unknown>, prefix: string): { page: number; perPage: number } {
+  const rawPerPage = Number(query[`${prefix}_per_page`]);
+  const perPage = PAGE_SIZES.includes(rawPerPage) ? rawPerPage : 10;
+  const rawPage = Number(query[`${prefix}_page`]);
+  const page = Number.isInteger(rawPage) && rawPage >= 1 ? rawPage : 1;
+  return { page, perPage };
+}
+
+function renderAdminPagination(opts: { prefix: string; page: number; perPage: number; total: number; preserve: Record<string, string> }): string {
+  if (opts.total <= 10) return "";
+  const totalPages = Math.max(1, Math.ceil(opts.total / opts.perPage));
+  const page = Math.min(Math.max(1, opts.page), totalPages);
+  const linkFor = (p: number) =>
+    `/admin?${new URLSearchParams({ ...opts.preserve, [`${opts.prefix}_page`]: String(p), [`${opts.prefix}_per_page`]: String(opts.perPage) })}#${opts.prefix}`;
+  const hiddenInputs = Object.entries(opts.preserve)
+    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
+    .join("");
+  const sizeOptions = PAGE_SIZES.map((n) => `<option value="${n}" ${n === opts.perPage ? "selected" : ""}>${n}</option>`).join("");
+
+  return `
+  <div style="display:flex;align-items:center;gap:12px;margin-top:8px;font-size:0.85rem;color:#555;flex-wrap:wrap">
+    <form method="get" action="/admin#${opts.prefix}" class="inline" style="display:inline-flex;align-items:center;gap:6px">
+      ${hiddenInputs}
+      <input type="hidden" name="${opts.prefix}_page" value="1">
+      <label for="${opts.prefix}_per_page">Mostrar</label>
+      <select name="${opts.prefix}_per_page" id="${opts.prefix}_per_page" onchange="this.form.submit()">${sizeOptions}</select>
+      <span>por página</span>
+    </form>
+    <span>
+      ${page <= 1 ? `<span style="opacity:.4">‹ Anterior</span>` : `<a href="${linkFor(page - 1)}">‹ Anterior</a>`}
+      &nbsp;·&nbsp;Página ${page} de ${totalPages} (${opts.total})&nbsp;·&nbsp;
+      ${page >= totalPages ? `<span style="opacity:.4">Próxima ›</span>` : `<a href="${linkFor(page + 1)}">Próxima ›</a>`}
+    </span>
+  </div>`;
+}
+
 const TYPE_LABEL: Record<string, string> = {
   expense: "💰 Gasto",
   event: "📅 Evento",
@@ -148,12 +192,20 @@ const TYPE_LABEL: Record<string, string> = {
   blocked: "🚫 Bloqueado (número não autorizado)",
 };
 
-adminRouter.get("/admin", (_req, res) => {
-  const activity = getRecentActivity(50);
+adminRouter.get("/admin", (req, res) => {
+  // busca um lote generoso (nao so os ultimos 50) e pagina em memoria, mesmo
+  // padrao ja usado nas listas do dashboard -- as duas secoes tem paginacao
+  // INDEPENDENTE (parametros prefixados), ja que ficam na mesma pagina.
+  const activityPagination = parsePrefixedPagination(req.query, "activity");
+  const blockedPagination = parsePrefixedPagination(req.query, "blocked");
+
+  const allActivity = getRecentActivity(500);
+  const activity = paginate(allActivity, activityPagination.page, activityPagination.perPage);
   const pendingReminders = getPendingReminders(50);
   const allowed = listAllowedNumbers();
   const allowedSet = new Set(allowed.map((a) => a.from_number));
-  const blockedAttempts = getRecentBlockedAttempts(50).filter((b) => !allowedSet.has(b.from_number));
+  const allBlockedAttempts = getRecentBlockedAttempts(500).filter((b) => !allowedSet.has(b.from_number));
+  const blockedAttempts = paginate(allBlockedAttempts, blockedPagination.page, blockedPagination.perPage);
   const dashboardAccounts = listDashboardAccounts();
 
   const activityRows = activity
@@ -214,6 +266,10 @@ adminRouter.get("/admin", (_req, res) => {
             <input type="hidden" name="phone_number" value="${escapeHtml(a.phone_number)}">
             <button type="submit" class="link-btn">Redefinir senha</button>
           </form>
+          <form class="inline" method="post" action="/admin/dashboard-accounts/revoke" onsubmit="return confirm('Tirar o acesso desse número ao painel? Ele continua podendo falar com o assistente pelo WhatsApp normalmente -- so o login do painel para de funcionar, ate pedir senha de novo.')">
+            <input type="hidden" name="phone_number" value="${escapeHtml(a.phone_number)}">
+            <button type="submit" class="link-btn danger">Tirar acesso</button>
+          </form>
         </td>
       </tr>`
     )
@@ -262,14 +318,28 @@ ${allowed.length ? `<table><tr><th>Número</th><th>Nota</th><th>Autorizado em</t
   <button type="submit">+ Autorizar número</button>
 </form>
 
-<h2>Tentativas bloqueadas recentemente (${blockedAttempts.length})</h2>
-${blockedAttempts.length ? `<table><tr><th>Quando</th><th>Número</th><th>Mensagem</th><th></th></tr>${blockedRows}</table>` : `<p class="empty">Nenhuma tentativa bloqueada recentemente.</p>`}
+<h2 id="blocked">Tentativas bloqueadas recentemente (${allBlockedAttempts.length})</h2>
+${allBlockedAttempts.length ? `<table><tr><th>Quando</th><th>Número</th><th>Mensagem</th><th></th></tr>${blockedRows}</table>` : `<p class="empty">Nenhuma tentativa bloqueada recentemente.</p>`}
+${renderAdminPagination({
+  prefix: "blocked",
+  page: blockedPagination.page,
+  perPage: blockedPagination.perPage,
+  total: allBlockedAttempts.length,
+  preserve: { activity_page: String(activityPagination.page), activity_per_page: String(activityPagination.perPage) },
+})}
 
 <h2>Lembretes pendentes (${pendingReminders.length})</h2>
 ${pendingReminders.length ? `<table><tr><th>Quando</th><th>Para</th><th>Mensagem</th></tr>${reminderRows}</table>` : `<p class="empty">Nenhum lembrete pendente.</p>`}
 
-<h2>Atividade recente (${activity.length})</h2>
-${activity.length ? `<table><tr><th>Quando</th><th>Tipo</th><th>De</th><th>Resumo</th></tr>${activityRows}</table>` : `<p class="empty">Nenhuma atividade registrada ainda.</p>`}
+<h2 id="activity">Atividade recente (${allActivity.length})</h2>
+${allActivity.length ? `<table><tr><th>Quando</th><th>Tipo</th><th>De</th><th>Resumo</th></tr>${activityRows}</table>` : `<p class="empty">Nenhuma atividade registrada ainda.</p>`}
+${renderAdminPagination({
+  prefix: "activity",
+  page: activityPagination.page,
+  perPage: activityPagination.perPage,
+  total: allActivity.length,
+  preserve: { blocked_page: String(blockedPagination.page), blocked_per_page: String(blockedPagination.perPage) },
+})}
 
 </body>
 </html>`);
@@ -299,5 +369,14 @@ adminRouter.post("/admin/allowlist/remove", (req, res) => {
 adminRouter.post("/admin/dashboard-accounts/reset", async (req, res) => {
   const phoneNumber = String(req.body.phone_number || "");
   if (phoneNumber) await maybeSendNewPassword(phoneNumber, { bypassCooldown: true });
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/dashboard-accounts/revoke", (req, res) => {
+  const phoneNumber = String(req.body.phone_number || "");
+  if (phoneNumber) {
+    deleteDashboardAccount(phoneNumber);
+    destroyDashboardSessionsForPhone(phoneNumber);
+  }
   res.redirect("/admin");
 });

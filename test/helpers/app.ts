@@ -2,8 +2,8 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import type { AddressInfo } from "node:net";
 import { dashboardRouter } from "../../src/dashboard";
-import { adminRouter } from "../../src/admin";
-import { createSession, DASHBOARD_SESSION_TTL_MS } from "../../src/auth/session";
+import { adminRouter, ADMIN_SESSION_COOKIE } from "../../src/admin";
+import { createSession, DASHBOARD_SESSION_TTL_MS, ADMIN_SESSION_TTL_MS } from "../../src/auth/session";
 import { SESSION_COOKIE } from "../../src/dashboard/auth";
 
 // Sobe um servidor real (porta efemera) so com o dashboard montado, igual em
@@ -45,6 +45,10 @@ export async function startAdminTestServer() {
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    authHeaders: (): Record<string, string> => {
+      const token = createSession({ type: "admin" }, ADMIN_SESSION_TTL_MS);
+      return { Cookie: `${ADMIN_SESSION_COOKIE}=${token}` };
+    },
   };
 }
 

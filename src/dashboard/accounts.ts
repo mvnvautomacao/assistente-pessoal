@@ -38,3 +38,12 @@ export function canSendPasswordNow(phoneNumber: string): boolean {
 export function listDashboardAccounts(): DashboardAccount[] {
   return db.prepare(`SELECT * FROM dashboard_accounts ORDER BY created_at DESC`).all() as unknown as DashboardAccount[];
 }
+
+// Revoga o acesso ao PAINEL sem mexer na allowlist do bot (numero continua
+// podendo falar com o assistente pelo WhatsApp normalmente) -- achado da
+// auditoria: so existia "redefinir senha", nao "tirar o acesso". Se pedir
+// senha de novo depois, upsertDashboardPassword cria a conta do zero.
+export function deleteDashboardAccount(phoneNumber: string): boolean {
+  const result = db.prepare(`DELETE FROM dashboard_accounts WHERE phone_number = ?`).run(phoneNumber);
+  return result.changes > 0;
+}
