@@ -78,6 +78,12 @@ function withMocks(t: TestContext) {
 
 const today = () => spDateString();
 
+// Data-calendario (sem hora) uns dias no futuro -- pra testes de evento, que
+// usam findUpcomingEvents (so traz start >= agora), nao pararem de passar
+// sozinhos conforme os dias passam. Achado real da auditoria: datas fixas tipo
+// "2026-09-10" ficavam no passado depois de um tempo e quebravam o teste.
+const nearFutureDateString = () => addDaysToDateString(spDateString(), 10);
+
 // pre-seeda categorias/formas padrao (pra nenhum teste receber a mensagem de
 // boas-vindas misturada com a resposta que o teste espera), autoriza o numero
 // na allowlist (senao toda mensagem seria ignorada em silencio, ver
@@ -560,8 +566,9 @@ test("unknown com likely_intent: pede os detalhes especificos em vez da mensagem
 test("unknown (evento parcial): sabe o dia mas falta a hora -- pergunta so a hora, preservando titulo e data, e cria ao responder", async (t) => {
   const EVU1 = "551100090201";
   seed(EVU1);
+  const d = nearFutureDateString();
   const { sent, queueReply } = withMocks(t);
-  queueReply([{ type: "unknown", likely_intent: "event", title: "revisão do carro", date: "2026-09-10" }]);
+  queueReply([{ type: "unknown", likely_intent: "event", title: "revisão do carro", date: d }]);
   await handleIncomingMessage(evolutionMessage(EVU1, "quarta feira agendar revisão do carro"));
   assert.match(sent[0].text, /revis[ãa]o do carro/i);
   assert.match(sent[0].text, /hora/i);
@@ -570,13 +577,14 @@ test("unknown (evento parcial): sabe o dia mas falta a hora -- pergunta so a hor
   await handleIncomingMessage(evolutionMessage(EVU1, "10h"));
   const [event] = findUpcomingEvents(EVU1, "revis");
   assert.ok(event);
-  assert.equal(event.start, "2026-09-10T10:00:00-03:00");
+  assert.equal(event.start, `${d}T10:00:00-03:00`);
   assert.match(sent[1].text, /criado/i);
 });
 
 test("unknown (evento parcial): so sabe o titulo -- pergunta dia E hora juntos, preservando o titulo, e cria ao responder os dois", async (t) => {
   const EVU2 = "551100090207";
   seed(EVU2);
+  const d = nearFutureDateString();
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "unknown", likely_intent: "event", title: "médico dr gustavo ted" }]);
   await handleIncomingMessage(evolutionMessage(EVU2, "agendar o médico dr gustavo ted"));
@@ -584,11 +592,11 @@ test("unknown (evento parcial): so sabe o titulo -- pergunta dia E hora juntos, 
   assert.match(sent[0].text, /dia/i);
   assert.match(sent[0].text, /hor[áa]rio/i);
 
-  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: "2026-09-16", newTime: "14:00" }));
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: d, newTime: "14:00" }));
   await handleIncomingMessage(evolutionMessage(EVU2, "quarta as 14h"));
   const [event] = findUpcomingEvents(EVU2, "gustavo");
   assert.ok(event);
-  assert.equal(event.start, "2026-09-16T14:00:00-03:00");
+  assert.equal(event.start, `${d}T14:00:00-03:00`);
 });
 
 test("unknown (lembrete parcial): sabe o dia mas falta a hora -- pergunta so a hora, preservando a mensagem e a data", async (t) => {
@@ -641,9 +649,10 @@ test("unknown (gasto parcial): sabe do que foi mas falta o valor -- pergunta so 
 test("unknown (fila de completude): duas mensagens incompletas na mesma vez -- pergunta uma de cada vez, na ordem", async (t) => {
   const EVU3 = "551100090204";
   seed(EVU3);
+  const d = nearFutureDateString();
   const { sent, queueReply } = withMocks(t);
   queueReply([
-    { type: "unknown", likely_intent: "event", title: "revisão do carro", date: "2026-09-10" },
+    { type: "unknown", likely_intent: "event", title: "revisão do carro", date: d },
     { type: "unknown", likely_intent: "event", title: "médico dr gustavo ted" },
   ]);
   await handleIncomingMessage(evolutionMessage(EVU3, "quarta feira agendar revisão do carro, e agendar o médico dr gustavo ted"));
@@ -656,7 +665,7 @@ test("unknown (fila de completude): duas mensagens incompletas na mesma vez -- p
   assert.match(sent[1].text, /criado/i);
   assert.match(sent[2].text, /gustavo ted/i);
 
-  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: "2026-09-11", newTime: "14:00" }));
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newDate: addDaysToDateString(d, 1), newTime: "14:00" }));
   await handleIncomingMessage(evolutionMessage(EVU3, "sexta as 14h"));
   assert.equal(sent.length, 4);
   assert.match(sent[3].text, /criado/i);
@@ -1519,15 +1528,16 @@ test("rate limit: mais de 20 mensagens em 5 min pausa o numero, avisa ele uma ve
 test("evento criado com horario sem offset explicito (como a IA as vezes devolve) guarda o horario certo, nao adiantado", async (t) => {
   const TZ1 = "551100090060";
   seed(TZ1);
+  const d = nearFutureDateString();
   const { queueReply } = withMocks(t);
   // 15h sem "-03:00" no final, exatamente como o bug relatado
-  queueReply([{ type: "event", title: "atender Carol", start: "2026-09-10T15:00:00" }]);
+  queueReply([{ type: "event", title: "atender Carol", start: `${d}T15:00:00` }]);
   await handleIncomingMessage(evolutionMessage(TZ1, "atender carol as quinze horas"));
 
   const matches = findUpcomingEvents(TZ1, "atender Carol");
   assert.equal(matches.length, 1);
   // 15h em Brasilia = 18h UTC, nao importa o fuso da maquina rodando o teste
-  assert.equal(new Date(matches[0].start).toISOString(), "2026-09-10T18:00:00.000Z");
+  assert.equal(new Date(matches[0].start).toISOString(), `${d}T18:00:00.000Z`);
 });
 
 test("lembrete criado com horario sem offset explicito guarda o horario certo, nao adiantado", async (t) => {
@@ -1854,15 +1864,16 @@ test("event: mensagem de criacao mostra a data/hora marcada", async (t) => {
 test("event: mensagem so com data (sem hora) ainda cria o evento corretamente", async (t) => {
   const EV2 = "551100090102";
   seed(EV2);
+  const d = nearFutureDateString();
   const { sent, queueReply } = withMocks(t);
-  queueReply([{ type: "event", title: "consulta sem hora", start: "2026-09-20" }]);
+  queueReply([{ type: "event", title: "consulta sem hora", start: d }]);
   await handleIncomingMessage(evolutionMessage(EV2, "adicionar consulta sem hora dia 20"));
   assert.match(sent[0].text, /📅/);
   assert.doesNotMatch(sent[0].text, /erro/i);
 
   const matches = findUpcomingEvents(EV2, "consulta sem hora");
   assert.equal(matches.length, 1);
-  assert.equal(new Date(matches[0].start).toISOString(), "2026-09-20T03:00:00.000Z"); // meia-noite BRT = 03:00 UTC
+  assert.equal(new Date(matches[0].start).toISOString(), `${d}T03:00:00.000Z`); // meia-noite BRT = 03:00 UTC
 });
 
 // Pedido do usuario: alem de gasto/categoria, editar DATA de evento e lembrete
@@ -2063,8 +2074,9 @@ test("delete_reminder: nenhum lembrete encontrado avisa em vez de pedir confirma
 test("reminder com 'avise X min antes': pergunta em vez de criar; 'evento' cria EVENTO com o aviso certo", async (t) => {
   const RA1 = "551100090122";
   seed(RA1);
+  const d = nearFutureDateString();
   const { sent, queueReply } = withMocks(t);
-  queueReply([{ type: "reminder", message: "consulta", due_at: "2026-09-20T15:00:00-03:00", advance_minutes: 20 }]);
+  queueReply([{ type: "reminder", message: "consulta", due_at: `${d}T15:00:00-03:00`, advance_minutes: 20 }]);
   await handleIncomingMessage(evolutionMessage(RA1, "me lembra da consulta dia 20 as 15h, me avisa 20 minutos antes"));
   assert.match(sent[0].text, /evento/i);
   assert.equal(listReminders(RA1).length, 0); // nao criou lembrete nenhum ainda
@@ -2072,7 +2084,7 @@ test("reminder com 'avise X min antes': pergunta em vez de criar; 'evento' cria 
   await handleIncomingMessage(evolutionMessage(RA1, "cria como evento"));
   const [event] = findUpcomingEvents(RA1, "consulta");
   assert.ok(event);
-  assert.equal(event.start, "2026-09-20T15:00:00-03:00");
+  assert.equal(event.start, `${d}T15:00:00-03:00`);
   assert.equal(event.reminder_minutes, 20);
   assert.equal(listReminders(RA1).length, 0); // nunca virou lembrete
 });
