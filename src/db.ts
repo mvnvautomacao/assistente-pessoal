@@ -273,3 +273,20 @@ if (!keywordColumns.some((c) => c.name === "from_number")) {
   db.exec(`ALTER TABLE category_keywords ADD COLUMN from_number TEXT`);
   db.prepare(`UPDATE category_keywords SET from_number = ? WHERE from_number IS NULL`).run(config.myWhatsappNumber);
 }
+
+// node:sqlite (DatabaseSync) nao tem um helper de transacao pronto tipo o do
+// better-sqlite3 -- achado da auditoria: insercao de N parcelas ou de um lote
+// de gastos rodava fora de transacao, entao uma falha no meio do loop deixava
+// algumas linhas gravadas e outras nao, sem limpeza automatica. Envolve
+// qualquer sequencia de escritas nessa funcao: se `fn` lancar, desfaz tudo.
+export function withTransaction<T>(fn: () => T): T {
+  db.exec("BEGIN");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}

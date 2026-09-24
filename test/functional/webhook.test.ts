@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as whatsappClient from "../../src/whatsapp/client";
 import * as aiInterpret from "../../src/ai/interpret";
 import * as aiTranscribe from "../../src/ai/transcribe";
+import * as expensesService from "../../src/expenses/service";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
 import {
@@ -176,6 +177,30 @@ test("expense: dois gastos completos na mesma mensagem viram uma unica confirmac
   assert.match(sent[0].text, /2\..*30.*Transporte.*uber/);
   assert.equal(searchExpenses(BE1, "compras da semana").length, 1);
   assert.equal(searchExpenses(BE1, "uber").length, 1);
+});
+
+// Mesmo achado da auditoria, dessa vez no lote: forca o 2o insertExpense do
+// lote a falhar e confirma que NENHUM dos gastos do lote sobra gravado.
+test("expense: falha no meio da criacao do lote nao deixa gasto nenhum gravado (transacao)", async (t) => {
+  const BE9 = "551100090709";
+  seed(BE9);
+  const { sent, queueReply } = withMocks(t);
+  let calls = 0;
+  const original = expensesService.insertExpense;
+  t.mock.method(expensesService, "insertExpense", (...args: Parameters<typeof original>) => {
+    calls++;
+    if (calls === 2) throw new Error("falha simulada no banco");
+    return original(...args);
+  });
+  queueReply([
+    { type: "expense", amount: 50, category: "Mercado", description: "lote transacao 1", date: "2026-01-10" },
+    { type: "expense", amount: 30, category: "Transporte", description: "lote transacao 2", date: "2026-01-10" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(BE9, "gastei 50 no mercado e 30 de uber"));
+
+  assert.match(sent[0].text, /[Dd]eu erro/);
+  assert.equal(searchExpenses(BE9, "lote transacao 1").length, 0);
+  assert.equal(searchExpenses(BE9, "lote transacao 2").length, 0);
 });
 
 test("expense: lote permite editar so um dos gastos, sem mexer no outro", async (t) => {
@@ -715,6 +740,28 @@ test("compra parcelada: com tudo informado, cria as N parcelas direto, uma por m
   assert.equal(Math.round(total * 100) / 100, 1000);
   const dates = items.map((i) => i.date.slice(0, 10)).sort();
   assert.equal(dates[0], today());
+});
+
+// Achado da auditoria: a insercao das N parcelas rodava fora de transacao --
+// se o banco falhasse no meio do loop, algumas parcelas ficavam gravadas e
+// outras nao. Forca a 2a chamada de insertExpense a falhar e confirma que
+// NENHUMA parcela sobra gravada (tudo ou nada, ver withTransaction em db.ts).
+test("compra parcelada: falha no meio da criacao das parcelas nao deixa parcela nenhuma gravada (transacao)", async (t) => {
+  const IN9 = "551100090309";
+  seed(IN9);
+  const { sent, queueReply } = withMocks(t);
+  let calls = 0;
+  const original = expensesService.insertExpense;
+  t.mock.method(expensesService, "insertExpense", (...args: Parameters<typeof original>) => {
+    calls++;
+    if (calls === 2) throw new Error("falha simulada no banco");
+    return original(...args);
+  });
+  queueReply([{ type: "installment_expense", description: "Notebook", category: "Compras", total_amount: 900, installments: 3 }]);
+  await handleIncomingMessage(evolutionMessage(IN9, "comprei um notebook de 900 parcelado em 3x"));
+
+  assert.match(sent[0].text, /[Dd]eu erro/);
+  assert.equal(searchExpenses(IN9, "Notebook").length, 0); // nenhuma parcela sobrou gravada
 });
 
 test("compra parcelada: sabe o valor e a descricao mas falta quantas vezes -- pergunta e cria ao responder", async (t) => {

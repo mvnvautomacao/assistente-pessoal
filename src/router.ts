@@ -1,4 +1,5 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
+import { withTransaction } from "./db";
 import { transcribeAudio } from "./ai/transcribe";
 import {
   interpretText,
@@ -955,22 +956,26 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
 
   const expenseIds: number[] = [];
   const budgetAlerts: string[] = [];
-  const lines = resolved.map((r, idx) => {
-    const created = insertExpense({
-      fromNumber: from,
-      amount: r.amount,
-      description: r.description,
-      categoryId: r.category.id,
-      paymentMethodId: r.paymentMethod?.id ?? null,
-      date: r.date,
-    });
-    expenseIds.push(created.id);
-    const paymentSuffix = r.paymentMethod ? ` via ${r.paymentMethod.name}` : "";
-    logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
-    const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
-    if (budgetAlert) budgetAlerts.push(budgetAlert);
-    return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description} (${formatDateOnly(r.date)}${paymentSuffix})`;
-  });
+  // achado da auditoria: sem transacao, uma falha no meio do loop deixava
+  // alguns gastos do lote gravados e outros nao, sem limpeza automatica.
+  const lines = withTransaction(() =>
+    resolved.map((r, idx) => {
+      const created = insertExpense({
+        fromNumber: from,
+        amount: r.amount,
+        description: r.description,
+        categoryId: r.category.id,
+        paymentMethodId: r.paymentMethod?.id ?? null,
+        date: r.date,
+      });
+      expenseIds.push(created.id);
+      const paymentSuffix = r.paymentMethod ? ` via ${r.paymentMethod.name}` : "";
+      logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
+      const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
+      if (budgetAlert) budgetAlerts.push(budgetAlert);
+      return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description} (${formatDateOnly(r.date)}${paymentSuffix})`;
+    })
+  );
 
   setLastShownExpenses(from, expenseIds);
   setPendingUndo(from, {
@@ -1096,18 +1101,21 @@ async function finalizeInstallmentExpense(
 
   const amounts = computeInstallmentAmounts(params.totalAmount, params.installmentAmount, params.installments);
   const paymentMethod = autoResolvePaymentMethod(from, params.payment_method);
-  const expenseIds: number[] = [];
-  for (let i = 0; i < params.installments; i++) {
-    const created = insertExpense({
-      fromNumber: from,
-      amount: amounts[i],
-      description: `${params.description} (parcela ${i + 1}/${params.installments})`,
-      categoryId: category.id,
-      paymentMethodId: paymentMethod?.id ?? null,
-      date: addMonthsToDateString(params.date, i),
-    });
-    expenseIds.push(created.id);
-  }
+  // achado da auditoria: sem transacao, uma falha no meio do loop deixava
+  // algumas parcelas gravadas e outras nao, sem limpeza automatica.
+  const expenseIds = withTransaction(() =>
+    amounts.map(
+      (amount, i) =>
+        insertExpense({
+          fromNumber: from,
+          amount,
+          description: `${params.description} (parcela ${i + 1}/${params.installments})`,
+          categoryId: category.id,
+          paymentMethodId: paymentMethod?.id ?? null,
+          date: addMonthsToDateString(params.date, i),
+        }).id
+    )
+  );
 
   const total = amounts.reduce((sum, a) => sum + a, 0);
   const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
