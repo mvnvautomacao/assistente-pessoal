@@ -238,6 +238,34 @@ test("searchExpenses busca por descricao em qualquer mes, ignorando maiuscula, e
   assert.ok(!results.some((e) => e.description === "farmacia do B")); // isolado por numero
 });
 
+// Achado da auditoria: so dava pra filtrar por texto, sem faixa de valor.
+test("searchExpenses filtra por faixa de valor (min/max), sozinha ou combinada com o texto", () => {
+  // numero dedicado (nao A/B, reusados por dezenas de outros testes desse
+  // arquivo) -- com query vazia, o filtro de valor sozinho pegaria QUALQUER
+  // gasto ja inserido pra esse numero em outros testes.
+  const VAL = "551100010092";
+  const cat = getOrCreateCategory(VAL, "Busca-valor");
+  insertExpense({ fromNumber: VAL, amount: 10, description: "compra barata", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" });
+  insertExpense({ fromNumber: VAL, amount: 50, description: "compra media", categoryId: cat.id, paymentMethodId: null, date: "2026-02-02" });
+  insertExpense({ fromNumber: VAL, amount: 500, description: "compra cara", categoryId: cat.id, paymentMethodId: null, date: "2026-02-03" });
+
+  const soMax = searchExpenses(VAL, "", { maxAmount: 50 });
+  assert.equal(soMax.length, 2);
+  assert.ok(!soMax.some((e) => e.description === "compra cara"));
+
+  const soMin = searchExpenses(VAL, "", { minAmount: 50 });
+  assert.equal(soMin.length, 2);
+  assert.ok(!soMin.some((e) => e.description === "compra barata"));
+
+  const faixa = searchExpenses(VAL, "", { minAmount: 20, maxAmount: 100 });
+  assert.equal(faixa.length, 1);
+  assert.equal(faixa[0].description, "compra media");
+
+  const textoEValor = searchExpenses(VAL, "compra", { minAmount: 100 });
+  assert.equal(textoEValor.length, 1);
+  assert.equal(textoEValor[0].description, "compra cara");
+});
+
 test("getAllExpenses traz todo o historico (sem limite de mes), isolado por numero", () => {
   const F = "551100010099";
   const G = "551100010098";

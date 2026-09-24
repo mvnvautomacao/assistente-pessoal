@@ -159,13 +159,16 @@ function bulkRecategorizeBar(phone: string) {
 // campo de busca no topo da pagina de gastos: navegacao normal e so mes a mes,
 // entao pra achar um gasto antigo sem lembrar o mes exato precisa de uma busca
 // por texto que olhe todos os meses de uma vez (ver searchExpenses).
-function searchBox(phone: string, q: string) {
+function searchBox(phone: string, q: string, minAmount?: number, maxAmount?: number) {
+  const hasFilter = q || minAmount !== undefined || maxAmount !== undefined;
   return `
   <form class="search-row" method="get" action="/dashboard">
     <input type="hidden" name="phone" value="${escapeHtml(phone)}">
     <input type="text" name="q" placeholder="Buscar gasto por descrição (todos os meses)..." value="${escapeHtml(q)}">
+    <input type="number" step="0.01" min="0" name="min" placeholder="Valor mín." value="${minAmount ?? ""}" style="width:110px">
+    <input type="number" step="0.01" min="0" name="max" placeholder="Valor máx." value="${maxAmount ?? ""}" style="width:110px">
     <button type="submit" class="btn secondary">Buscar</button>
-    ${q ? `<a href="/dashboard?phone=${encodeURIComponent(phone)}" class="btn secondary">Limpar</a>` : ""}
+    ${hasFilter ? `<a href="/dashboard?phone=${encodeURIComponent(phone)}" class="btn secondary">Limpar</a>` : ""}
   </form>`;
 }
 
@@ -193,33 +196,41 @@ expensesRouter.get("/dashboard", (req, res) => {
   const phone = getPhone(req);
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const minAmount = typeof req.query.min === "string" && req.query.min !== "" ? Number(req.query.min) : undefined;
+  const maxAmount = typeof req.query.max === "string" && req.query.max !== "" ? Number(req.query.max) : undefined;
   const { page, perPage } = parsePagination(req.query);
 
-  if (q) {
-    const results = searchExpenses(phone, q);
+  if (q || minAmount !== undefined || maxAmount !== undefined) {
+    const results = searchExpenses(phone, q, { minAmount, maxAmount });
     const pageItems = paginate(results, page, perPage);
     const rows = pageItems.length
       ? pageItems.map((e) => expenseRow(phone, e)).join("")
-      : `<tr><td colspan="7" class="empty">Nenhum gasto encontrado pra "${escapeHtml(q)}".</td></tr>`;
+      : `<tr><td colspan="7" class="empty">Nenhum gasto encontrado.</td></tr>`;
+
+    const searchParams: Record<string, string> = { phone };
+    if (q) searchParams.q = q;
+    if (minAmount !== undefined) searchParams.min = String(minAmount);
+    if (maxAmount !== undefined) searchParams.max = String(maxAmount);
+    const titleLabel = q ? `Busca: "${q}"` : "Busca por valor";
 
     const body = `
     <header>
-      <h1>Busca: "${escapeHtml(q)}"</h1>
+      <h1>${escapeHtml(titleLabel)}</h1>
       <div class="header-actions">
         <a class="btn secondary" href="/dashboard/expenses/export.csv?phone=${encodeURIComponent(phone)}">Exportar CSV</a>
         <a class="btn" href="/dashboard/expenses/new?phone=${encodeURIComponent(phone)}">+ Novo gasto</a>
       </div>
     </header>
-    ${searchBox(phone, q)}
+    ${searchBox(phone, q, minAmount, maxAmount)}
     <p class="empty" style="text-align:left;padding:0 0 16px">${results.length} gasto(s) encontrado(s), de todos os meses.</p>
     ${results.length ? bulkRecategorizeBar(phone) : ""}
     <div class="table-wrap"><table class="mobile-cards">
       <tr><th></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th style="text-align:right">Valor</th><th></th></tr>
       ${rows}
     </table></div>
-    ${renderPagination({ basePath: "/dashboard", params: { phone, q }, page, perPage, total: results.length })}`;
+    ${renderPagination({ basePath: "/dashboard", params: searchParams, page, perPage, total: results.length })}`;
 
-    res.send(renderPage({ title: `Busca: ${q}`, phone, active: "expenses", body }));
+    res.send(renderPage({ title: titleLabel, phone, active: "expenses", body }));
     return;
   }
 

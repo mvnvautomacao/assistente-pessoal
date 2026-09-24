@@ -464,7 +464,11 @@ export function getAllExpenses(fromNumber: string): ExpenseListItem[] {
 // Filtra em JS com normalize() (ignora acento/maiuscula, igual findRecentExpense)
 // em vez de LIKE puro no SQL, que nao ignoraria acento ("farmacia" nao acharia
 // "Farmácia").
-export function searchExpenses(fromNumber: string, query: string): ExpenseListItem[] {
+// achado da auditoria: so dava pra filtrar por texto, sem faixa de valor.
+// minAmount/maxAmount sao opcionais e combinam em "E" com o texto (que
+// tambem e opcional agora -- da pra buscar so por faixa de valor, sem digitar
+// nada na descricao).
+export function searchExpenses(fromNumber: string, query: string, options?: { minAmount?: number; maxAmount?: number }): ExpenseListItem[] {
   const target = normalize(query);
   const all = db
     .prepare(
@@ -476,7 +480,11 @@ export function searchExpenses(fromNumber: string, query: string): ExpenseListIt
        ORDER BY e.date DESC, e.id DESC`
     )
     .all(fromNumber) as unknown as ExpenseListItem[];
-  return all.filter((e) => normalize(e.description).includes(target)).slice(0, 200);
+  return all
+    .filter((e) => !target || normalize(e.description).includes(target))
+    .filter((e) => options?.minAmount === undefined || e.amount >= options.minAmount)
+    .filter((e) => options?.maxAmount === undefined || e.amount <= options.maxAmount)
+    .slice(0, 200);
 }
 
 export interface NamedTotal {

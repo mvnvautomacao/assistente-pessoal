@@ -148,3 +148,33 @@ test("normaliza o numero com o 9 extra: acessar com o formato completo acha os m
     assert.ok(html.includes("achavel pelos dois formatos"));
   });
 });
+
+// Achado da auditoria: dava pra buscar so por texto, sem filtrar por faixa de
+// valor. Confirma que a rota GET aceita min/max (sozinhos ou combinados com q).
+test("busca no dashboard filtra por faixa de valor (min/max)", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const C = "551100050099";
+    ensureUserSeeded(C);
+    for (const [desc, amount] of [
+      ["filtro barato", "10.00"],
+      ["filtro medio", "50.00"],
+      ["filtro caro", "500.00"],
+    ] as const) {
+      await fetch(`${baseUrl}/dashboard/expenses/new`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(C) },
+        body: new URLSearchParams({ amount, description: desc }),
+      });
+    }
+
+    const soAcimaDe100 = await (await fetch(`${baseUrl}/dashboard?min=100`, { headers: authHeaders(C) })).text();
+    assert.ok(soAcimaDe100.includes("filtro caro"));
+    assert.ok(!soAcimaDe100.includes("filtro barato"));
+    assert.ok(!soAcimaDe100.includes("filtro medio"));
+
+    const faixa = await (await fetch(`${baseUrl}/dashboard?min=20&max=100`, { headers: authHeaders(C) })).text();
+    assert.ok(faixa.includes("filtro medio"));
+    assert.ok(!faixa.includes("filtro barato"));
+    assert.ok(!faixa.includes("filtro caro"));
+  });
+});
