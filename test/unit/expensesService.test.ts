@@ -131,6 +131,24 @@ test("insertExpense/getExpenseById/updateExpense/deleteExpense fazem o ciclo com
   assert.equal(getExpenseById(A, created.id), null);
 });
 
+// Achado da auditoria: nada impedia gravar um valor negativo, zero, ou
+// absurdamente alto -- so dependia da IA "se comportar". insertExpense e
+// updateExpense agora rejeitam isso direto (ver src/validation.ts).
+test("insertExpense/updateExpense rejeitam valor negativo, zero ou absurdamente alto", () => {
+  const cat = getOrCreateCategory(A, "ValidacaoValor");
+  assert.throws(() => insertExpense({ fromNumber: A, amount: -10, description: "negativo", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" }));
+  assert.throws(() => insertExpense({ fromNumber: A, amount: 0, description: "zero", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" }));
+  assert.throws(() =>
+    insertExpense({ fromNumber: A, amount: 50_000_000, description: "absurdo", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" })
+  );
+  assert.throws(() => insertExpense({ fromNumber: A, amount: NaN, description: "nan", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" }));
+
+  insertExpense({ fromNumber: A, amount: 50, description: "valido pra editar", categoryId: cat.id, paymentMethodId: null, date: "2026-02-01" });
+  const created = findRecentExpense(A, "valido pra editar")!;
+  assert.throws(() => updateExpense(A, created.id, { amount: -5, description: "invalido", date: "2026-02-01", categoryId: cat.id, paymentMethodId: null }));
+  assert.equal(getExpenseById(A, created.id)?.amount, 50); // nao mudou apos a tentativa invalida
+});
+
 test("updateExpense/deleteExpense/getExpenseById nunca alcancam gasto de outro numero", () => {
   insertExpense({ fromNumber: A, amount: 33, description: "so do A", categoryId: null, paymentMethodId: null, date: "2026-02-03" });
   const expense = findRecentExpense(A, "so do A")!;

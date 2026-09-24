@@ -469,13 +469,32 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   if (data.messageType === "conversation" || data.messageType === "extendedTextMessage") {
     text = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
   } else if (data.messageType === "audioMessage") {
-    const audioBase64 = await resolveMediaBase64(data);
-    if (audioBase64) text = await transcribeAudio(Buffer.from(audioBase64, "base64"));
+    // sem esse try/catch, uma falha aqui (ex: Groq fora do ar) era engolida em
+    // silencio pelo .catch() generico do webhook.ts -- mesma classe de bug ja
+    // corrigida pra imagem (ver handleReceiptImage), agora tambem coberta aqui.
+    try {
+      const audioBase64 = await resolveMediaBase64(data);
+      if (audioBase64) text = await transcribeAudio(Buffer.from(audioBase64, "base64"));
+    } catch (err) {
+      console.error("Erro ao transcrever audio:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando ouvir esse áudio. Tenta de novo em instantes, ou manda por texto?");
+      return;
+    }
   }
 
   // Enquanto tiver categorizacao pendente pra esse numero, a proxima mensagem
   // de texto/audio e tratada como resposta a "qual categoria e isso?", nao como pedido novo.
   if (text !== undefined) {
+    // Cada resolvePendingX (17 tipos de pendencia diferentes) cuida do erro
+    // dele mesmo quando faz sentido (msgs mais especificas), mas a maioria nao
+    // tinha try/catch nenhum -- um erro ali (ex: um valor invalido chegando em
+    // parseEditFieldValue/updateExpense, ver assertValidAmount) subia direto
+    // pro .catch() generico do webhook.ts, sem log no /admin nem resposta pro
+    // cliente. Essa rede de seguranca cobre todos de uma vez; quem ja tem
+    // tratamento proprio (categorizacao, forma de pagamento, comprovante)
+    // nunca chega a lancar ate aqui.
+    try {
     // checado ANTES da fila de categorizacao: e a pergunta mais recente feita
     // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
     // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
@@ -592,13 +611,13 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
     const pendingReceipt = getPendingReceiptConfirmation(from);
     if (pendingReceipt) {
-      try {
-        await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
-      } catch (err) {
-        console.error("Erro ao resolver confirmacao de comprovante:", err);
-        logActivity(from, "error", err instanceof Error ? err.message : String(err));
-        await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
-      }
+      await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
+      return;
+    }
+    } catch (err) {
+      console.error("Erro ao resolver pendencia:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
       return;
     }
   }
@@ -627,7 +646,17 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
   let interpretations: Interpretation[];
   if (text !== undefined) {
-    interpretations = await interpretText(from, text);
+    // mesma logica do audio/imagem: sem isso, uma falha na classificacao (ex:
+    // Anthropic fora do ar) era engolida em silencio pelo .catch() generico do
+    // webhook.ts, sem log nenhum no /admin e sem resposta pro cliente.
+    try {
+      interpretations = await interpretText(from, text);
+    } catch (err) {
+      console.error("Erro ao interpretar mensagem:", err);
+      logActivity(from, "error", err instanceof Error ? err.message : String(err));
+      await sendText(from, "Deu erro aqui do meu lado tentando entender essa mensagem. Tenta de novo em instantes.");
+      return;
+    }
   } else {
     logActivity(from, "unsupported_type", `messageType=${data.messageType}`);
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");

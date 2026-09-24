@@ -15,6 +15,16 @@ export function startBillAlertScheduler() {
       const due = getDueBillAlerts(today);
       for (const bill of due) {
         try {
+          // manda ANTES de marcar/armar a pendencia -- se o envio falhar (ex:
+          // Evolution API fora do ar), nada fica registrado como "perguntado".
+          // Na ordem antiga, uma falha aqui deixava o sistema achando que
+          // perguntou (e esperando a resposta) sem o cliente nunca ter visto
+          // a pergunta -- a proxima mensagem dele recebia "ja resolveu X?" do nada.
+          const question =
+            bill.recurrence_type === "interval"
+              ? `📌 Hora de: ${bill.name}. Já resolveu, ou quer que eu te lembre amanhã?`
+              : `📌 Hoje é dia de pagar: ${bill.name}. Já pagou, ou quer que eu te lembre amanhã?`;
+          await sendText(bill.from_number, question);
           markBillAlertAsked(bill.id, today);
           setPendingBillCheckin(bill.from_number, {
             billAlertId: bill.id,
@@ -23,11 +33,6 @@ export function startBillAlertScheduler() {
             intervalDays: bill.interval_days,
           });
           logActivity(bill.from_number, "bill_alert", `pergunta enviada: ${bill.name}`);
-          const question =
-            bill.recurrence_type === "interval"
-              ? `📌 Hora de: ${bill.name}. Já resolveu, ou quer que eu te lembre amanhã?`
-              : `📌 Hoje é dia de pagar: ${bill.name}. Já pagou, ou quer que eu te lembre amanhã?`;
-          await sendText(bill.from_number, question);
         } catch (err) {
           console.error(`Erro ao avisar alerta de conta fixa ${bill.id}:`, err);
         }

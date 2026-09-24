@@ -28,6 +28,16 @@ test("insertIncome/getIncomeById/updateIncome/deleteIncome fazem o ciclo complet
   assert.equal(getIncomeById(A, created.id), null);
 });
 
+test("insertIncome/updateIncome rejeitam valor negativo, zero ou absurdamente alto", () => {
+  assert.throws(() => insertIncome({ fromNumber: A, amount: -100, description: "negativo", date: "2026-01-10" }));
+  assert.throws(() => insertIncome({ fromNumber: A, amount: 0, description: "zero", date: "2026-01-10" }));
+  assert.throws(() => insertIncome({ fromNumber: A, amount: 50_000_000, description: "absurdo", date: "2026-01-10" }));
+
+  const created = insertIncome({ fromNumber: A, amount: 500, description: "valida pra editar", date: "2026-01-10" });
+  assert.throws(() => updateIncome(A, created.id, { amount: -1, description: "invalido", date: "2026-01-10" }));
+  assert.equal(getIncomeById(A, created.id)?.amount, 500);
+});
+
 test("updateIncome/deleteIncome/getIncomeById nunca alcancam entrada de outro numero", () => {
   const created = insertIncome({ fromNumber: A, amount: 500, description: "freela", date: "2026-01-10" });
   assert.equal(getIncomeById(B, created.id), null);

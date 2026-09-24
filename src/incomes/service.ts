@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { assertValidAmount } from "../validation";
 
 function normalize(text: string): string {
   return text
@@ -17,6 +18,7 @@ export interface IncomeRecord {
 }
 
 export function insertIncome(params: { fromNumber: string; amount: number; description: string; date: string }): IncomeRecord {
+  assertValidAmount(params.amount);
   const result = db
     .prepare(`INSERT INTO incomes (from_number, amount, description, date, created_at) VALUES (?, ?, ?, ?, ?)`)
     .run(params.fromNumber, params.amount, params.description, params.date, new Date().toISOString());
@@ -29,6 +31,7 @@ export function getIncomeById(fromNumber: string, id: number): IncomeRecord | nu
 }
 
 export function updateIncome(fromNumber: string, id: number, params: { amount: number; description: string; date: string }): boolean {
+  assertValidAmount(params.amount);
   const result = db
     .prepare(`UPDATE incomes SET amount = ?, description = ?, date = ? WHERE id = ? AND from_number = ?`)
     .run(params.amount, params.description, params.date, id, fromNumber);

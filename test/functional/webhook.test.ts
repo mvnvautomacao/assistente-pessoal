@@ -2,6 +2,7 @@ import { test, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import * as whatsappClient from "../../src/whatsapp/client";
 import * as aiInterpret from "../../src/ai/interpret";
+import * as aiTranscribe from "../../src/ai/transcribe";
 import { handleIncomingMessage } from "../../src/router";
 import { Interpretation } from "../../src/ai/interpret";
 import {
@@ -52,6 +53,16 @@ function evolutionImageMessage(from: string, mimetype = "image/jpeg") {
     key: { remoteJid: `${from}@s.whatsapp.net`, id: `test-${Math.random().toString(36).slice(2)}`, fromMe: false },
     messageType: "imageMessage" as const,
     message: { imageMessage: { mimetype }, base64: "ZmFrZS1pbWFnZS1kYXRh" },
+  };
+}
+
+// mesma ideia da imagem: base64 inline, conteudo fake (quem "ouve" o audio nos
+// testes e sempre o mock de transcribeAudio).
+function evolutionAudioMessage(from: string) {
+  return {
+    key: { remoteJid: `${from}@s.whatsapp.net`, id: `test-${Math.random().toString(36).slice(2)}`, fromMe: false },
+    messageType: "audioMessage" as const,
+    message: { base64: "ZmFrZS1hdWRpby1kYXRh" },
   };
 }
 
@@ -955,6 +966,38 @@ test("imagem de comprovante: erro na leitura da imagem responde algo pro usuario
   assert.match(sent[0].text, /[Dd]eu erro/);
 });
 
+// Mesma classe de bug da imagem (achado da auditoria): erro na transcricao de
+// audio (Groq fora do ar, por exemplo) nao pode sumir em silencio total --
+// tinha SO um console.error generico no webhook.ts, sem log no /admin nem
+// resposta pro cliente.
+test("audio: erro na transcricao responde algo pro usuario, nao fica em silencio", async (t) => {
+  const AU1 = "551100090501";
+  seed(AU1);
+  const { sent } = withMocks(t);
+  t.mock.method(aiTranscribe, "transcribeAudio", async () => {
+    throw new Error("falha simulada na transcricao");
+  });
+  await handleIncomingMessage(evolutionAudioMessage(AU1));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /[Dd]eu erro/);
+  assert.ok(getRecentActivity(20).find((a) => a.from_number === AU1 && a.type === "error"));
+});
+
+// Mesma classe de bug, dessa vez na classificacao do texto em si (Anthropic
+// fora do ar): antes tambem sumia em silencio, so com console.error.
+test("texto: erro ao interpretar a mensagem responde algo pro usuario, nao fica em silencio", async (t) => {
+  const TX1 = "551100090502";
+  seed(TX1);
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "interpretText", async () => {
+    throw new Error("falha simulada na classificacao");
+  });
+  await handleIncomingMessage(evolutionMessage(TX1, "50 no mercado"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /[Dd]eu erro/);
+  assert.ok(getRecentActivity(20).find((a) => a.from_number === TX1 && a.type === "error"));
+});
+
 test("SEGURANCA/ISOLAMENTO: gastos e categorias de A nunca aparecem numa consulta de B pelo webhook", async (t) => {
   const cat = getOrCreateCategory(A, "SoDeA-webhook");
   insertExpense({ fromNumber: A, amount: 999, description: "nao pode vazar pra B", categoryId: cat.id, paymentMethodId: null, date: today() });
@@ -1782,6 +1825,31 @@ test("edit_expense: pede confirmacao antes de mudar, e permite ajustar o valor a
 
   await handleIncomingMessage(evolutionMessage(EE1, "sim"));
   assert.equal(findRecentExpense(EE1, "gasto edit confirm")?.amount, 46.5);
+});
+
+// Achado da auditoria: 13 dos 17 tipos de pendencia checados aqui nao tinham
+// try/catch nenhum -- um erro em qualquer um deles sumia em silencio total
+// (so console.error, sem log no /admin nem resposta pro cliente). Agora o
+// bloco inteiro tem uma rede de seguranca por fora. Esse teste usa um valor
+// absurdamente alto (rejeitado por insertExpense/updateExpense, ver
+// src/validation.ts) pra forcar um throw dentro de resolveEditExpenseConfirmation,
+// que nao tinha tratamento proprio.
+test("edit_expense: valor absurdamente alto na confirmacao responde erro em vez de sumir em silencio", async (t) => {
+  const EEV = "551100090097";
+  seed(EEV);
+  const cat = getOrCreateCategory(EEV, "Edit-valor-absurdo");
+  insertExpense({ fromNumber: EEV, amount: 40, description: "gasto edit absurdo", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "gasto edit absurdo", field: "amount", value: "99999999" }]);
+  await handleIncomingMessage(evolutionMessage(EEV, "muda o gasto edit absurdo pra 99999999"));
+  assert.match(sent[0].text, /[Cc]onfirma/); // pergunta normal, valor em si nao e validado aqui ainda
+
+  await handleIncomingMessage(evolutionMessage(EEV, "sim"));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /[Dd]eu erro/);
+  assert.equal(findRecentExpense(EEV, "gasto edit absurdo")?.amount, 40); // nao mudou
+  assert.ok(getRecentActivity(20).find((a) => a.from_number === EEV && a.type === "error"));
 });
 
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {

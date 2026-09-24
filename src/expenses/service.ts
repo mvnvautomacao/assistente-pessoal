@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { assertValidAmount } from "../validation";
 
 export interface Category {
   id: number;
@@ -237,6 +238,7 @@ export function insertExpense(params: {
   paymentMethodId: number | null;
   date: string;
 }): ExpenseRecord {
+  assertValidAmount(params.amount);
   const result = db
     .prepare(
       `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -273,6 +275,7 @@ export function updateExpense(
   id: number,
   params: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null }
 ): boolean {
+  assertValidAmount(params.amount);
   const result = db
     .prepare(
       `UPDATE expenses SET amount = ?, description = ?, date = ?, category_id = ?, payment_method_id = ?
