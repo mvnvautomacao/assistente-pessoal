@@ -5,6 +5,7 @@ import { categoriesRouter } from "./categories";
 import { paymentMethodsRouter } from "./paymentMethods";
 import { eventsRouter } from "./events";
 import { remindersRouter } from "./reminders";
+import { billsRouter } from "./bills";
 import { dashboardAuthRouter, requireDashboardSession } from "./auth";
 
 export const dashboardRouter = Router();
@@ -24,3 +25,4 @@ dashboardRouter.use(categoriesRouter);
 dashboardRouter.use(paymentMethodsRouter);
 dashboardRouter.use(eventsRouter);
 dashboardRouter.use(remindersRouter);
+dashboardRouter.use(billsRouter);

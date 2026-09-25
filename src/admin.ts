@@ -174,6 +174,7 @@ const TYPE_LABEL: Record<string, string> = {
   create_category: "🏷️ Categoria criada",
   bulk_recategorize: "🏷️ Recategorização em lote",
   merge_categories: "🏷️ Categorias unidas",
+  delete_category: "🏷️ Categoria apagada",
   welcome: "👋 Boas-vindas (número novo)",
   help: "🤖 Explicou funcionalidades",
   list_expenses: "🧾 Lista de gastos",

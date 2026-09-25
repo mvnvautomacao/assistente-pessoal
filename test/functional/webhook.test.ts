@@ -1894,9 +1894,69 @@ test("edit_expense: valor absurdamente alto na confirmacao responde erro em vez 
 
   await handleIncomingMessage(evolutionMessage(EEV, "sim"));
   assert.equal(sent.length, 2);
-  assert.match(sent[1].text, /[Dd]eu erro/);
+  assert.match(sent[1].text, /limite/);
   assert.equal(findRecentExpense(EEV, "gasto edit absurdo")?.amount, 40); // nao mudou
   assert.ok(getRecentActivity(20).find((a) => a.from_number === EEV && a.type === "error"));
+});
+
+// Pedido do usuario: excluir categoria pelo WhatsApp (nao existia), com
+// confirmacao antes, gastos ficando sem categoria e desfaz recriando ela.
+test("delete_category: pede confirmacao, so apaga com sim, gastos ficam sem categoria e desfaz restaura", async (t) => {
+  const DC1 = "551100090801";
+  seed(DC1);
+  const cat = getOrCreateCategory(DC1, "Categoria a apagar");
+  insertExpense({ fromNumber: DC1, amount: 20, description: "gasto da cat apagar", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_category", category: "Categoria a apagar" }]);
+  await handleIncomingMessage(evolutionMessage(DC1, "exclui a categoria Categoria a apagar"));
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.ok(findCategoryByName(DC1, "Categoria a apagar")); // ainda existe, so perguntou
+
+  await handleIncomingMessage(evolutionMessage(DC1, "sim"));
+  assert.match(sent[1].text, /apagada/);
+  assert.equal(findCategoryByName(DC1, "Categoria a apagar"), null);
+  assert.equal(findRecentExpense(DC1, "gasto da cat apagar")?.category_id, null); // gasto nao foi apagado
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(DC1, "desfaz isso"));
+  const restored = findCategoryByName(DC1, "Categoria a apagar");
+  assert.ok(restored);
+  assert.equal(findRecentExpense(DC1, "gasto da cat apagar")?.category_id, restored!.id);
+});
+
+test("delete_category: responder nao cancela, e categoria inexistente avisa", async (t) => {
+  const DC2 = "551100090802";
+  seed(DC2);
+  getOrCreateCategory(DC2, "Fica intacta");
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_category", category: "Fica intacta" }]);
+  await handleIncomingMessage(evolutionMessage(DC2, "apaga a categoria Fica intacta"));
+  await handleIncomingMessage(evolutionMessage(DC2, "nao"));
+  assert.match(sent[1].text, /não mexi/);
+  assert.ok(findCategoryByName(DC2, "Fica intacta"));
+
+  queueReply([{ type: "delete_category", category: "CategoriaQueNaoExisteXYZ" }]);
+  await handleIncomingMessage(evolutionMessage(DC2, "apaga a categoria CategoriaQueNaoExisteXYZ"));
+  assert.match(sent[2].text, /Não achei/);
+});
+
+// Pedido do usuario: gasto de R$0 dava a mensagem generica de erro; agora
+// explica que o valor precisa ser maior que zero, ANTES de perguntar categoria.
+test("gasto com valor zero ou negativo responde o motivo (valor precisa ser maior que zero) e nao registra", async (t) => {
+  const ZV = "551100090803";
+  seed(ZV);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 0, category: "Mercado", description: "compra de valor zero", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(ZV, "gastei 0 no mercado"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /maior que R[$] 0,00/);
+  assert.doesNotMatch(sent[0].text, /Deu erro/);
+  assert.equal(searchExpenses(ZV, "compra de valor zero").length, 0);
+
+  queueReply([{ type: "expense", amount: -5, category: "CategoriaNovaValorNegativo", description: "compra negativa", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(ZV, "gastei -5"));
+  assert.match(sent[1].text, /maior que R[$] 0,00/); // nem chega a perguntar categoria
 });
 
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {

@@ -432,7 +432,7 @@ function formatPhoneForDisplay(phone: string): string {
 export function renderPage(opts: {
   title: string;
   phone: string;
-  active: "expenses" | "incomes" | "categories" | "payments" | "events" | "reminders";
+  active: "expenses" | "incomes" | "categories" | "payments" | "events" | "reminders" | "bills";
   body: string;
 }): string {
   const tab = (href: string, key: string, label: string) => `<a href="${href}" class="${opts.active === key ? "active" : ""}">${label}</a>`;
@@ -465,6 +465,7 @@ ${pwaHeadTags()}
       ${tab("/dashboard/payment-methods", "payments", "Formas de pagamento")}
       ${tab("/dashboard/events", "events", "Agenda")}
       ${tab("/dashboard/reminders", "reminders", "Lembretes")}
+      ${tab("/dashboard/bills", "bills", "Contas fixas")}
     </nav>
   </div>
 </header>

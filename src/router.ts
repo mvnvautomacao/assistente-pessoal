@@ -1,5 +1,17 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { withTransaction } from "./db";
+import { InvalidAmountError, MAX_REASONABLE_AMOUNT, assertValidAmount } from "./validation";
+
+// Texto de erro pro cliente: valor invalido (zero, negativo ou absurdo) explica
+// o motivo de verdade; qualquer outro erro continua no generico.
+function userFacingErrorText(err: unknown, fallback = "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes."): string {
+  if (err instanceof InvalidAmountError) {
+    return err.reason === "not_positive"
+      ? "Não consegui registrar: o valor precisa ser maior que R$ 0,00. Me manda de novo com o valor certo."
+      : `Não consegui registrar: esse valor passa do limite de R$ ${MAX_REASONABLE_AMOUNT.toLocaleString("pt-BR")}. Confere o valor e me manda de novo.`;
+  }
+  return fallback;
+}
 import { transcribeAudio } from "./ai/transcribe";
 import {
   interpretText,
@@ -71,6 +83,12 @@ import {
   clearPendingMergeCategories,
   PendingMergeCategories,
 } from "./expenses/pendingMergeCategories";
+import {
+  setPendingDeleteCategory,
+  getPendingDeleteCategory,
+  clearPendingDeleteCategory,
+  PendingDeleteCategory,
+} from "./expenses/pendingDeleteCategory";
 import {
   setPendingEditExpense,
   getPendingEditExpense,
@@ -550,6 +568,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingDeleteCategory = getPendingDeleteCategory(from);
+    if (pendingDeleteCategory) {
+      await resolveDeleteCategoryConfirmation(from, pendingDeleteCategory, text);
+      return;
+    }
+
     const pendingEditExpense = getPendingEditExpense(from);
     if (pendingEditExpense) {
       await resolveEditExpenseConfirmation(from, pendingEditExpense, text);
@@ -618,7 +642,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     } catch (err) {
       console.error("Erro ao resolver pendencia:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
-      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+      await sendText(from, userFacingErrorText(err));
       return;
     }
   }
@@ -679,7 +703,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     } catch (err) {
       console.error("Erro ao processar lote de gastos:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
-      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+      await sendText(from, userFacingErrorText(err));
       batched = true; // um erro aqui pode ja ter inserido alguns gastos -- nao tenta de novo um por um pra nao duplicar
     }
     if (!batched) await processInterpretations(from, expenseActions);
@@ -697,7 +721,7 @@ async function processInterpretations(from: string, items: Interpretation[]) {
     } catch (err) {
       console.error("Erro ao processar interpretacao:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
-      await sendText(from, "Deu erro aqui do meu lado tentando processar isso. Tenta de novo em instantes.");
+      await sendText(from, userFacingErrorText(err));
     }
   }
 }
@@ -854,6 +878,9 @@ async function createExpenseAndNotify(
   from: string,
   params: { amount: number; description: string; date: string; category?: string; payment_method?: string; skipPaymentMethodPrompt?: boolean }
 ) {
+  // valida ANTES de perguntar categoria/forma de pagamento -- senao um gasto de
+  // R$0 passava por 2 perguntas pro usuario so pra falhar no final
+  assertValidAmount(params.amount);
   const keywordHints = [params.category, params.description].filter((hint): hint is string => Boolean(hint));
   const category = (params.category && findCategoryByName(from, params.category)) || findCategoryByKeyword(from, ...keywordHints);
 
@@ -938,6 +965,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
 
   const resolved: ResolvedExpense[] = [];
   for (const item of items) {
+    assertValidAmount(item.amount);
     const description = item.description?.trim() || item.category;
     if (!description) return false; // sem descricao nenhuma, nem da categoria -- nao deveria classificar como expense assim, mas por seguranca cai pro fluxo normal
     const keywordHints = [item.category, description].filter((hint): hint is string => Boolean(hint));
@@ -2029,6 +2057,40 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
   );
 }
 
+// resposta a "confirma que quer apagar a categoria X?" -- so apaga de verdade
+// com um "sim" claro. Os gastos ficam sem categoria (nunca sao apagados) e o
+// "desfaz isso" recria a categoria e devolve eles (mesmo undo do merge).
+async function resolveDeleteCategoryConfirmation(from: string, pending: PendingDeleteCategory, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer apagar a categoria "${pending.categoryName}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingDeleteCategory(from);
+  if (no) {
+    logActivity(from, "delete_category", `"${pending.categoryName}" nao confirmado`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  deleteCategory(from, pending.categoryId);
+  setPendingUndo(from, {
+    kind: "undo_merge_categories",
+    expenseIds: pending.expenseIds,
+    sourceCategoryName: pending.categoryName,
+    description: `categoria "${pending.categoryName}" apagada`,
+  });
+  logActivity(from, "delete_category", `confirmado: "${pending.categoryName}" apagada (${pending.expenseIds.length} gasto(s) sem categoria)`);
+  await sendText(
+    from,
+    `✅ Categoria "${pending.categoryName}" apagada.${pending.expenseIds.length ? ` ${pending.expenseIds.length} gasto(s) dela ficaram sem categoria.` : ""} Se foi sem querer, é só dizer "desfaz isso".`
+  );
+}
+
 // calcula o novo valor de um campo de gasto (usado tanto no pedido inicial de
 // edicao quanto quando o usuario ajusta o valor proposto antes de confirmar)
 function parseEditFieldValue(
@@ -2040,7 +2102,8 @@ function parseEditFieldValue(
   const params = { ...baseParams };
   if (field === "amount") {
     const amount = Number(rawValue.replace(",", "."));
-    if (!Number.isFinite(amount) || amount <= 0) return { error: `Não entendi o valor "${rawValue}".` };
+    if (Number.isFinite(amount) && amount <= 0) return { error: `O valor precisa ser maior que R$ 0,00.` };
+    if (!Number.isFinite(amount)) return { error: `Não entendi o valor "${rawValue}".` };
     params.amount = amount;
     return { params, changeText: `valor agora é R$${amount.toFixed(2)}` };
   }
@@ -2786,6 +2849,22 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(
         from,
         `Encontrei ${items.length} gasto(s) em "${sourceCategory.name}". Confirma que quer juntar essa categoria em "${targetCategory.name}"? "${sourceCategory.name}" vai deixar de existir. Responde "sim" ou "não".`
+      );
+      break;
+    }
+    case "delete_category": {
+      const category = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
+      if (!category) {
+        logActivity(from, "delete_category", `categoria "${interpretation.category}" nao encontrada`);
+        await sendText(from, `Não achei uma categoria parecida com "${interpretation.category}".`);
+        break;
+      }
+      const items = getExpensesByCategoryId(from, category.id);
+      setPendingDeleteCategory(from, { categoryId: category.id, categoryName: category.name, expenseIds: items.map((i) => i.id) });
+      logActivity(from, "delete_category", `pediu confirmacao: "${category.name}" (${items.length} gasto(s))`);
+      await sendText(
+        from,
+        `Confirma que quer apagar a categoria "${category.name}"? ${items.length ? `Os ${items.length} gasto(s) dela ficam sem categoria (não são apagados). ` : ""}Responde "sim" ou "não".`
       );
       break;
     }

@@ -6,11 +6,23 @@
 // mas vale a defesa em profundidade direto na camada de dados.
 export const MAX_REASONABLE_AMOUNT = 1_000_000;
 
+// Erro proprio pra o router poder responder o MOTIVO ao cliente (em vez do
+// "deu erro do meu lado" generico) -- ver userFacingErrorText em router.ts.
+export class InvalidAmountError extends Error {
+  constructor(
+    public readonly amount: number,
+    public readonly reason: "not_positive" | "too_high"
+  ) {
+    super(
+      reason === "not_positive"
+        ? `Valor de gasto/entrada invalido: ${amount}. Precisa ser um numero maior que zero.`
+        : `Valor de gasto/entrada absurdamente alto: ${amount}. Limite atual: ${MAX_REASONABLE_AMOUNT}.`
+    );
+    this.name = "InvalidAmountError";
+  }
+}
+
 export function assertValidAmount(amount: number): void {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(`Valor de gasto/entrada invalido: ${amount}. Precisa ser um numero maior que zero.`);
-  }
-  if (amount > MAX_REASONABLE_AMOUNT) {
-    throw new Error(`Valor de gasto/entrada absurdamente alto: ${amount}. Limite atual: ${MAX_REASONABLE_AMOUNT}.`);
-  }
+  if (!Number.isFinite(amount) || amount <= 0) throw new InvalidAmountError(amount, "not_positive");
+  if (amount > MAX_REASONABLE_AMOUNT) throw new InvalidAmountError(amount, "too_high");
 }
