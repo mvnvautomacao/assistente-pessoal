@@ -2136,6 +2136,59 @@ test("delete_expense: 'nao' cancela, por texto acha o gasto certo, e sem gasto n
   assert.equal(searchExpenses(DE2, "padaria apagar texto").length, 1);
 });
 
+// Relato do usuario: "excluir um gasto" (sem dizer qual) nao mostrava opcao
+// nenhuma, e "cancelar" sem nada pendente caia no "e gasto, evento ou lembrete?".
+test("delete_expense sem dizer qual: confirma o ultimo e, se for 'nao', lista os ultimos pra escolher pelo numero", async (t) => {
+  const DE3 = "551100090844";
+  seed(DE3);
+  insertExpense({ fromNumber: DE3, amount: 11, description: "escolher um", categoryId: null, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: DE3, amount: 22, description: "escolher dois", categoryId: null, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: DE3, amount: 33, description: "escolher tres", categoryId: null, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "delete_expense" }]);
+  await handleIncomingMessage(evolutionMessage(DE3, "excluir um gasto"));
+  assert.match(sent[0].text, /escolher tres/); // sugere o mais recente
+  assert.match(sent[0].text, /te mostro os últimos/);
+
+  await handleIncomingMessage(evolutionMessage(DE3, "nao"));
+  assert.match(sent[1].text, /Qual desses/);
+  assert.match(sent[1].text, /1\..*escolher tres/);
+  assert.match(sent[1].text, /3\..*escolher um/);
+
+  await handleIncomingMessage(evolutionMessage(DE3, "3"));
+  assert.match(sent[2].text, /apagado/);
+  assert.equal(searchExpenses(DE3, "escolher um").length, 0);
+  assert.equal(searchExpenses(DE3, "escolher dois").length, 1);
+  assert.equal(searchExpenses(DE3, "escolher tres").length, 1);
+});
+
+test("delete_expense: numero invalido na escolha pergunta de novo, e 'cancelar' sai", async (t) => {
+  const DE4 = "551100090845";
+  seed(DE4);
+  insertExpense({ fromNumber: DE4, amount: 1, description: "escolha invalida", categoryId: null, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_expense" }]);
+  await handleIncomingMessage(evolutionMessage(DE4, "apagar um gasto"));
+  await handleIncomingMessage(evolutionMessage(DE4, "nao"));
+  await handleIncomingMessage(evolutionMessage(DE4, "9"));
+  assert.match(sent[2].text, /Não entendi/);
+  await handleIncomingMessage(evolutionMessage(DE4, "cancelar"));
+  assert.match(sent[3].text, /cancelei/);
+  assert.equal(searchExpenses(DE4, "escolha invalida").length, 1);
+});
+
+test("'cancelar' sem nada pendente responde que nao ha nada a cancelar (nao cai no 'e gasto, evento ou lembrete?')", async (t) => {
+  const CN3 = "551100090846";
+  seed(CN3);
+  const { sent } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(CN3, "cancelar"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /nada pendente/);
+  assert.match(sent[0].text, /desfaz isso/);
+  assert.doesNotMatch(sent[0].text, /lembrete/);
+});
+
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {
   const EE2 = "551100090096";
   seed(EE2);

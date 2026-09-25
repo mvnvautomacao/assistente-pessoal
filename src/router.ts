@@ -536,6 +536,13 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
         await sendText(from, "Beleza, cancelei o que estava pendente — nada disso foi registrado. Pode mandar uma nova mensagem. 🙂");
         return;
       }
+      // nada pendente: em vez de cair no "nao entendi se e gasto, evento ou lembrete"
+      logActivity(from, "cancel", "nada pendente pra cancelar");
+      await sendText(
+        from,
+        'Não tem nada pendente pra cancelar agora. 🙂 Se você quer desfazer a última coisa que eu fiz, diga "desfaz isso".'
+      );
+      return;
     }
 
     let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
@@ -2141,8 +2148,77 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
 
 // resposta a "confirma que quer apagar o gasto X?" -- so apaga com um "sim"
 // claro; "desfaz isso" recria o gasto com os mesmos dados
+async function performDeleteExpense(
+  from: string,
+  expense: { id: number; amount: number; description: string; date: string; category_id: number | null; payment_method_id: number | null }
+) {
+  const removed = deleteExpense(from, expense.id);
+  if (!removed) {
+    await sendText(from, "Esse gasto já não existe mais.");
+    return;
+  }
+  setPendingUndo(from, {
+    kind: "recreate_expense",
+    params: {
+      fromNumber: from,
+      amount: expense.amount,
+      description: expense.description,
+      categoryId: expense.category_id,
+      paymentMethodId: expense.payment_method_id,
+      date: expense.date,
+    },
+    description: `R$${expense.amount.toFixed(2)} — ${expense.description}`,
+  });
+  logActivity(from, "delete_expense", `apagado: R$${expense.amount.toFixed(2)} — ${expense.description}`);
+  await sendText(from, `🗑️ Gasto apagado: R$${expense.amount.toFixed(2)} — ${expense.description}. Se foi sem querer, é só dizer "desfaz isso".`);
+}
+
+// mostra os ultimos gastos numerados pra o usuario escolher qual apagar
+async function offerDeleteChoices(from: string) {
+  const items = getRecentExpensesList(from, 8);
+  if (!items.length) {
+    await sendText(from, "Você não tem nenhum gasto registrado pra apagar.");
+    return;
+  }
+  setPendingDeleteExpense(from, {
+    expenseId: 0,
+    amount: 0,
+    description: "",
+    date: "",
+    categoryId: null,
+    categoryName: null,
+    paymentMethodId: null,
+    choices: items.map((i) => i.id),
+  });
+  const lines = items.map((item, idx) => `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${item.category ?? "sem categoria"}) — ${formatDateOnly(item.date)}`);
+  await sendText(from, `Qual desses você quer apagar? Responde com o número (ou "cancelar").\n\n${lines.join("\n")}`);
+}
+
 async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDeleteExpense, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
+
+  if (pending.choices) {
+    const pick = Number(normalized.replace(/[^0-9]/g, ""));
+    const id = /^\D*\d+\D*$/.test(normalized) ? pending.choices[pick - 1] : undefined;
+    if (id) {
+      clearPendingDeleteExpense(from);
+      const expense = getExpenseById(from, id);
+      if (!expense) {
+        await sendText(from, "Esse gasto já não existe mais.");
+        return;
+      }
+      await performDeleteExpense(from, expense);
+      return;
+    }
+    if (/^(n[aã]o|n|deixa|espera)\b/.test(normalized)) {
+      clearPendingDeleteExpense(from);
+      await sendText(from, "Beleza, não apaguei nada.");
+      return;
+    }
+    await sendText(from, `Não entendi — responde com o número do gasto (1 a ${pending.choices.length}), ou "cancelar".`);
+    return;
+  }
+
   const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
   const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
 
@@ -2154,29 +2230,21 @@ async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDe
   clearPendingDeleteExpense(from);
   if (no) {
     logActivity(from, "delete_expense", `apagar #${pending.expenseId} nao confirmado`);
+    if (pending.offerChoices) {
+      // nao disse qual gasto e o mais recente nao era esse: mostra os ultimos pra escolher
+      await offerDeleteChoices(from);
+      return;
+    }
     await sendText(from, "Beleza, não apaguei nada.");
     return;
   }
 
-  const removed = deleteExpense(from, pending.expenseId);
-  if (!removed) {
+  const expense = getExpenseById(from, pending.expenseId);
+  if (!expense) {
     await sendText(from, "Esse gasto já não existe mais.");
     return;
   }
-  setPendingUndo(from, {
-    kind: "recreate_expense",
-    params: {
-      fromNumber: from,
-      amount: pending.amount,
-      description: pending.description,
-      categoryId: pending.categoryId,
-      paymentMethodId: pending.paymentMethodId,
-      date: pending.date,
-    },
-    description: `R$${pending.amount.toFixed(2)} — ${pending.description}`,
-  });
-  logActivity(from, "delete_expense", `apagado: R$${pending.amount.toFixed(2)} — ${pending.description}`);
-  await sendText(from, `🗑️ Gasto apagado: R$${pending.amount.toFixed(2)} — ${pending.description}. Se foi sem querer, é só dizer "desfaz isso".`);
+  await performDeleteExpense(from, expense);
 }
 
 // resposta a "confirma que quer apagar a categoria X?" -- so apaga de verdade
@@ -3159,11 +3227,14 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         categoryId: expense.category_id,
         categoryName: category?.name ?? null,
         paymentMethodId: expense.payment_method_id,
+        offerChoices: !interpretation.list_ref && !interpretation.query,
       });
       logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} R$${expense.amount.toFixed(2)} — ${expense.description}`);
       await sendText(
         from,
-        `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). Responde "sim" ou "não".`
+        `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). ${
+          interpretation.list_ref || interpretation.query ? 'Responde "sim" ou "não".' : 'Responde "sim", ou "não" se for outro (aí te mostro os últimos pra você escolher).'
+        }`
       );
       break;
     }

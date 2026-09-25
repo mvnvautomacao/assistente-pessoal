@@ -11,6 +11,12 @@ export interface PendingDeleteExpense {
   categoryId: number | null;
   categoryName: string | null;
   paymentMethodId: number | null;
+  // true quando o usuario NAO disse qual gasto (pegou o mais recente por padrao):
+  // se responder "nao", mostra os ultimos pra ele escolher em vez de desistir
+  offerChoices?: boolean;
+  // modo "escolher": lista numerada dos ultimos gastos (ids na ordem mostrada);
+  // a resposta e o numero do gasto a apagar. Os campos do gasto acima ficam vazios.
+  choices?: number[];
   createdAt: number;
 }
 
