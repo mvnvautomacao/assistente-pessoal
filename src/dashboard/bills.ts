@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { listBillAlerts, createBillAlert, deactivateBillAlert } from "../bills/service";
+import { listBillAlerts, createBillAlert, deactivateBillAlert, getBillAlertById, updateBillAlert } from "../bills/service";
 import { renderPage } from "./layout";
 import { normalizeBrazilPhone, escapeHtml, parsePagination, paginate, renderPagination } from "./utils";
 
@@ -34,6 +34,7 @@ billsRouter.get("/dashboard/bills", (req, res) => {
         <td data-label="Recorrência">${escapeHtml(recurrence)}</td>
         <td data-label="Próximo aviso">${next}</td>
         <td class="row-actions">
+          <a class="link-action" href="/dashboard/bills/${b.id}/edit?${qs}">Editar</a>
           <form class="inline" method="post" action="/dashboard/bills/${b.id}/delete?${qs}" onsubmit="return confirm('Excluir esse alerta?')">
             <button type="submit" class="link-action" style="background:none;border:none;cursor:pointer;padding:0;font:inherit">Excluir</button>
           </form>
@@ -58,20 +59,7 @@ billsRouter.get("/dashboard/bills", (req, res) => {
     <label>Nome</label>
     <input type="text" name="name" required placeholder="Ex: Conta de água">
 
-    <label>Repetir</label>
-    <select name="recurrence" id="bill-recurrence" onchange="document.getElementById('bill-day').hidden=this.value!=='day_of_month';document.getElementById('bill-interval').hidden=this.value!=='interval'">
-      <option value="day_of_month">Todo mês, num dia fixo</option>
-      <option value="interval">A cada X dias</option>
-    </select>
-
-    <div id="bill-day">
-      <label>Dia do mês (1 a 31)</label>
-      <input type="number" name="day_of_month" min="1" max="31" value="10">
-    </div>
-    <div id="bill-interval" hidden>
-      <label>A cada quantos dias</label>
-      <input type="number" name="interval_days" min="1" max="3650" value="30">
-    </div>
+    ${recurrenceFields()}
 
     <div class="actions"><button type="submit" class="btn">Adicionar</button></div>
   </form>`;
@@ -97,5 +85,72 @@ billsRouter.post("/dashboard/bills/new", (req, res) => {
 billsRouter.post("/dashboard/bills/:id/delete", (req, res) => {
   const phone = getPhone(req);
   deactivateBillAlert(phone, Number(req.params.id));
+  res.redirect(`/dashboard/bills?phone=${encodeURIComponent(phone)}`);
+});
+
+// formulario de recorrencia, igual pro novo alerta e pra edicao (`current` preenche os valores atuais)
+function recurrenceFields(current?: { type: "day_of_month" | "interval"; day: number; interval: number | null }) {
+  const isInterval = current?.type === "interval";
+  return `
+    <label>Repetir</label>
+    <select name="recurrence" id="bill-recurrence" onchange="document.getElementById('bill-day').hidden=this.value!=='day_of_month';document.getElementById('bill-interval').hidden=this.value!=='interval'">
+      <option value="day_of_month" ${isInterval ? "" : "selected"}>Todo mês, num dia fixo</option>
+      <option value="interval" ${isInterval ? "selected" : ""}>A cada X dias</option>
+    </select>
+
+    <div id="bill-day" ${isInterval ? "hidden" : ""}>
+      <label>Dia do mês (1 a 31)</label>
+      <input type="number" name="day_of_month" min="1" max="31" value="${current && !isInterval ? current.day : 10}">
+    </div>
+    <div id="bill-interval" ${isInterval ? "" : "hidden"}>
+      <label>A cada quantos dias</label>
+      <input type="number" name="interval_days" min="1" max="3650" value="${current?.interval ?? 30}">
+    </div>`;
+}
+
+billsRouter.get("/dashboard/bills/:id/edit", (req, res) => {
+  const phone = getPhone(req);
+  const bill = getBillAlertById(phone, Number(req.params.id));
+  if (!bill || !bill.active) {
+    res.redirect(`/dashboard/bills?phone=${encodeURIComponent(phone)}`);
+    return;
+  }
+  const qs = `phone=${encodeURIComponent(phone)}`;
+  const body = `
+  <h1>Editar alerta</h1>
+  <form class="card-form" method="post" action="/dashboard/bills/${bill.id}?${qs}">
+    <label>Nome</label>
+    <input type="text" name="name" required value="${escapeHtml(bill.name)}">
+    ${recurrenceFields({ type: bill.recurrence_type, day: bill.day_of_month, interval: bill.interval_days })}
+    <div class="actions">
+      <button type="submit" class="btn">Salvar</button>
+      <a href="/dashboard/bills?${qs}" class="btn secondary">Cancelar</a>
+    </div>
+  </form>`;
+  res.send(renderPage({ title: "Editar alerta", phone, active: "bills", body }));
+});
+
+billsRouter.post("/dashboard/bills/:id", (req, res) => {
+  const phone = getPhone(req);
+  const id = Number(req.params.id);
+  const bill = getBillAlertById(phone, id);
+  if (bill && bill.active) {
+    const name = String(req.body.name || "").trim();
+    const changes: { name?: string; dayOfMonth?: number; intervalDays?: number } = {};
+    if (name) changes.name = name;
+    if (req.body.recurrence === "interval") {
+      const intervalDays = Math.floor(Number(req.body.interval_days));
+      if (Number.isFinite(intervalDays) && intervalDays >= 1 && intervalDays <= 3650) {
+        // so reinicia a contagem se a recorrencia de fato mudou (senao editar so o nome zeraria o prazo)
+        if (bill.recurrence_type !== "interval" || bill.interval_days !== intervalDays) changes.intervalDays = intervalDays;
+      }
+    } else {
+      const dayOfMonth = Math.floor(Number(req.body.day_of_month));
+      if (Number.isFinite(dayOfMonth) && dayOfMonth >= 1 && dayOfMonth <= 31) {
+        if (bill.recurrence_type !== "day_of_month" || bill.day_of_month !== dayOfMonth) changes.dayOfMonth = dayOfMonth;
+      }
+    }
+    updateBillAlert(phone, id, changes);
+  }
   res.redirect(`/dashboard/bills?phone=${encodeURIComponent(phone)}`);
 });

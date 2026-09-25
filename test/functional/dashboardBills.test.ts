@@ -70,3 +70,48 @@ test("SEGURANCA: numero B nao ve nem exclui alerta de conta de A", async () => {
     assert.ok(listBillAlerts(A).some((b) => b.id === bill.id));
   });
 });
+
+test("dashboard: editar alerta muda nome e recorrencia (dia fixo -> intervalo), e editar so o nome nao zera o prazo", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const E = "551100070103";
+    const bill = createBillAlert({ fromNumber: E, name: "Luz editar", dayOfMonth: 10 });
+
+    const editHtml = await (await fetch(`${baseUrl}/dashboard/bills/${bill.id}/edit`, { headers: authHeaders(E) })).text();
+    assert.ok(editHtml.includes("Luz editar"));
+
+    await fetch(`${baseUrl}/dashboard/bills/${bill.id}`, {
+      method: "POST",
+      headers: { ...form, ...authHeaders(E) },
+      body: new URLSearchParams({ name: "Energia editada", recurrence: "interval", interval_days: "20" }),
+    });
+    let updated = listBillAlerts(E).find((b) => b.id === bill.id)!;
+    assert.equal(updated.name, "Energia editada");
+    assert.equal(updated.recurrence_type, "interval");
+    assert.equal(updated.interval_days, 20);
+    const nextDue = updated.next_due_date;
+
+    // so o nome: recorrencia igual, next_due_date preservado
+    await fetch(`${baseUrl}/dashboard/bills/${bill.id}`, {
+      method: "POST",
+      headers: { ...form, ...authHeaders(E) },
+      body: new URLSearchParams({ name: "Energia so nome", recurrence: "interval", interval_days: "20" }),
+    });
+    updated = listBillAlerts(E).find((b) => b.id === bill.id)!;
+    assert.equal(updated.name, "Energia so nome");
+    assert.equal(updated.next_due_date, nextDue);
+  });
+});
+
+test("SEGURANCA: numero B nao consegue editar alerta de conta de A", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const bill = createBillAlert({ fromNumber: A, name: "so do A editar", dayOfMonth: 3 });
+    await fetch(`${baseUrl}/dashboard/bills/${bill.id}`, {
+      method: "POST",
+      headers: { ...form, ...authHeaders(B) },
+      body: new URLSearchParams({ name: "hackeado", recurrence: "day_of_month", day_of_month: "20" }),
+    });
+    const still = listBillAlerts(A).find((b) => b.id === bill.id)!;
+    assert.equal(still.name, "so do A editar");
+    assert.equal(still.day_of_month, 3);
+  });
+});

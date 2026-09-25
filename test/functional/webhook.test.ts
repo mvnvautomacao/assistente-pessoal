@@ -1998,6 +1998,34 @@ test("total_last_list sem nenhuma lista recente orienta em vez de inventar um va
   assert.match(sent[0].text, /lista de gastos recente/);
 });
 
+// Pedido do usuario: editar alerta de conta fixa tambem pelo WhatsApp.
+test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia; alerta inexistente avisa", async (t) => {
+  const EB = "551100090820";
+  seed(EB);
+  const bill = createBillAlert({ fromNumber: EB, name: "Agua editar wpp", dayOfMonth: 5 });
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "edit_bill_alert", query: "agua editar", day_of_month: 8 }]);
+  await handleIncomingMessage(evolutionMessage(EB, "muda o alerta da agua pro dia 8"));
+  assert.match(sent[0].text, /todo dia 8/);
+  assert.equal(getBillAlertById(EB, bill.id)!.day_of_month, 8);
+
+  queueReply([{ type: "edit_bill_alert", query: "agua editar", interval_days: 30, new_name: "Agua a cada 30" }]);
+  await handleIncomingMessage(evolutionMessage(EB, "o alerta da agua agora e a cada 30 dias e renomeia"));
+  const updated = getBillAlertById(EB, bill.id)!;
+  assert.equal(updated.recurrence_type, "interval");
+  assert.equal(updated.interval_days, 30);
+  assert.equal(updated.name, "Agua a cada 30");
+
+  queueReply([{ type: "edit_bill_alert", query: "alerta que nao existe zzz", day_of_month: 3 }]);
+  await handleIncomingMessage(evolutionMessage(EB, "muda o alerta zzz pro dia 3"));
+  assert.match(sent[2].text, /Não achei/);
+
+  queueReply([{ type: "edit_bill_alert", query: "Agua a cada 30", day_of_month: 40 }]);
+  await handleIncomingMessage(evolutionMessage(EB, "muda pro dia 40"));
+  assert.match(sent[3].text, /1 a 31/);
+});
+
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {
   const EE2 = "551100090096";
   seed(EE2);

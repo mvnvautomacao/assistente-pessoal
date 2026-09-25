@@ -108,7 +108,7 @@ import {
   findActiveRecurringExpenseByDescription,
   deactivateRecurringExpense,
 } from "./expenses/recurring";
-import { createBillAlert, listBillAlerts, findActiveBillAlertByName, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
+import { createBillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
 import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
@@ -3188,6 +3188,38 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         .map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`)
         .join("\n");
       await sendText(from, `📌 Seus alertas:\n\n${lines}\n\nPra cancelar um, é só dizer, ex: "cancela o alerta da água".`);
+      break;
+    }
+    case "edit_bill_alert": {
+      const bill = findActiveBillAlertByName(from, interpretation.query);
+      if (!bill) {
+        logActivity(from, "edit_bill_alert", `nenhum alerta encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não achei nenhum alerta parecido com "${interpretation.query}".`);
+        break;
+      }
+      const newName = interpretation.new_name?.trim() || undefined;
+      const dayOfMonth = interpretation.day_of_month;
+      const intervalDays = interpretation.interval_days;
+      if (dayOfMonth !== undefined && (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31)) {
+        await sendText(from, "O dia do mês precisa ser um número de 1 a 31.");
+        break;
+      }
+      if (intervalDays !== undefined && (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 3650)) {
+        await sendText(from, "O intervalo precisa ser um número de dias entre 1 e 3650.");
+        break;
+      }
+      if (!newName && dayOfMonth === undefined && intervalDays === undefined) {
+        await sendText(from, `O que você quer mudar em "${bill.name}"? Pode ser o nome, o dia do mês ou o intervalo de dias, ex: "muda o alerta da água pro dia 8".`);
+        break;
+      }
+      const updated = updateBillAlert(from, bill.id, { name: newName, dayOfMonth, intervalDays });
+      if (!updated) {
+        await sendText(from, `Não consegui editar "${bill.name}".`);
+        break;
+      }
+      const recurrenceLabel = updated.recurrence_type === "interval" ? `a cada ${updated.interval_days} dias` : `todo dia ${updated.day_of_month}`;
+      logActivity(from, "edit_bill_alert", `"${bill.name}" -> "${updated.name}", ${recurrenceLabel}`);
+      await sendText(from, `✏️ Alerta atualizado: "${updated.name}" — ${recurrenceLabel}.`);
       break;
     }
     case "remove_bill_alert": {

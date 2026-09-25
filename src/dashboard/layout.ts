@@ -239,23 +239,27 @@ const STYLE = `
   .calendar-cell .ev:hover { background: var(--accent); color: #fff; }
   .calendar-cell .ev-more { font-size: 0.66rem; color: var(--muted); padding: 0 5px; }
 
+  /* as 7 abas + numero + Sair nao cabem numa barra so ate ~1180px (antes o
+     menu ficava cortado) -- ate essa largura vira botao de menu (hamburguer)
+     que abre as abas como gaveta dropdown, em vez de rolar de lado */
+  @media (max-width: 1180px) {
+    .topbar-inner { flex-wrap: nowrap; position: relative; }
+    .menu-toggle { display: inline-flex; }
+    .topbar nav.tabs {
+      display: none; flex: none; position: absolute; left: 0; right: 0; top: 100%;
+      flex-direction: column; gap: 4px; background: var(--card); border-bottom: 1px solid var(--border);
+      padding: 10px 24px 14px; box-shadow: var(--shadow); overflow: visible;
+    }
+    .topbar nav.tabs.open { display: flex; }
+    .topbar nav.tabs a { width: 100%; text-align: left; }
+  }
+
   @media (max-width: 600px) {
     body { padding: 0 0 56px; }
     .wrap { padding: 20px 14px 0; }
     .topbar-inner { padding: 10px 14px; gap: 10px; flex-wrap: nowrap; position: relative; }
     .topbar .brand { font-size: 0.94rem; }
     .topbar-user .user-phone { font-size: 0.72rem; }
-    /* tela estreita: as 6 abas nao cabem numa barra so -- vira um botao de
-       menu (hamburguer) que abre as abas como uma gaveta dropdown, em vez de
-       rolar de lado (dificil de descobrir que da pra arrastar) */
-    .menu-toggle { display: inline-flex; }
-    .topbar nav.tabs {
-      display: none; flex: none; position: absolute; left: 0; right: 0; top: 100%;
-      flex-direction: column; gap: 4px; background: var(--card); border-bottom: 1px solid var(--border);
-      padding: 10px 14px 14px; box-shadow: var(--shadow); overflow: visible;
-    }
-    .topbar nav.tabs.open { display: flex; }
-    .topbar nav.tabs a { width: 100%; text-align: left; }
     h1 { font-size: 1.25rem; }
     .card .value { font-size: 1.3rem; }
     form.card-form { padding: 18px; }

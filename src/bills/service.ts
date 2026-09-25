@@ -55,6 +55,32 @@ export function deactivateBillAlert(fromNumber: string, id: number): boolean {
   return result.changes > 0;
 }
 
+// Edita um alerta: nome e/ou recorrencia (dia fixo do mes OU intervalo de dias --
+// trocar de um tipo pro outro tambem vale). Mexer na recorrencia limpa soneca e
+// "ja perguntei hoje", pra o novo agendamento valer desde ja; intervalo
+// recomeca a contar de hoje. Filtra por dono, igual o resto do servico.
+export function updateBillAlert(
+  fromNumber: string,
+  id: number,
+  changes: { name?: string; dayOfMonth?: number; intervalDays?: number }
+): BillAlert | null {
+  const bill = getBillAlertById(fromNumber, id);
+  if (!bill || !bill.active) return null;
+  if (changes.name !== undefined) {
+    db.prepare(`UPDATE bill_alerts SET name = ? WHERE id = ? AND from_number = ?`).run(changes.name, id, fromNumber);
+  }
+  if (changes.intervalDays !== undefined) {
+    db.prepare(
+      `UPDATE bill_alerts SET recurrence_type = 'interval', interval_days = ?, next_due_date = ?, snoozed_until = NULL, last_asked_date = NULL WHERE id = ? AND from_number = ?`
+    ).run(changes.intervalDays, addDaysToDateString(spDateString(), changes.intervalDays), id, fromNumber);
+  } else if (changes.dayOfMonth !== undefined) {
+    db.prepare(
+      `UPDATE bill_alerts SET recurrence_type = 'day_of_month', day_of_month = ?, interval_days = NULL, next_due_date = NULL, snoozed_until = NULL, last_asked_date = NULL, confirmed_month = NULL WHERE id = ? AND from_number = ?`
+    ).run(changes.dayOfMonth, id, fromNumber);
+  }
+  return getBillAlertById(fromNumber, id);
+}
+
 export function findActiveBillAlertByName(fromNumber: string, query: string): BillAlert | null {
   const row = db
     .prepare(`SELECT * FROM bill_alerts WHERE from_number = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY id DESC LIMIT 1`)
