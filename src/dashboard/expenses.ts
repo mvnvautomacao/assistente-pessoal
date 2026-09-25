@@ -33,6 +33,7 @@ import {
   renderPagination,
 } from "./utils";
 
+import { getMonthBalance } from "../expenses/balance";
 export const expensesRouter = Router();
 
 function getPhone(req: { query: Record<string, unknown> }): string {
@@ -243,6 +244,21 @@ expensesRouter.get("/dashboard", (req, res) => {
   const paymentTotals = getPaymentMethodTotalsForMonth(phone, month);
   const monthTotal = expenses.reduce((sum, e) => sum + e.amount, 0);
   const topCategory = categoryTotals[0]?.name ?? "—";
+  const balance = getMonthBalance(phone, month);
+  // saldo so aparece se o mes tem entradas (senao seria so "menos os gastos",
+  // que nao diz nada); limite so aparece pros cartoes em que o usuario informou
+  // um -- sem informacao, nao mostra nada.
+  const balanceCards = balance.incomeTotal > 0
+    ? `
+    <div class="card"><div class="label">Entradas do mês</div><div class="value">${formatMoney(balance.incomeTotal)}</div></div>
+    <div class="card"><div class="label">Saldo (entradas − Pix/dinheiro)</div><div class="value" style="color:var(--${balance.balance >= 0 ? "good" : "danger"}, inherit)">${formatMoney(balance.balance)}</div></div>`
+    : "";
+  const cardLimitCards = balance.cards
+    .map(
+      (c) => `
+    <div class="card"><div class="label">Limite disponível — ${escapeHtml(c.name)}</div><div class="value" style="color:var(--${c.available >= 0 ? "good" : "danger"}, inherit)">${formatMoney(c.available)}</div><div class="label" style="margin-top:4px">de ${formatMoney(c.limit)} · usado ${formatMoney(c.spent)}</div></div>`
+    )
+    .join("");
 
   const monthOptions = months.length
     ? months.map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`).join("")
@@ -275,6 +291,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     <div class="card"><div class="label">Total do mês</div><div class="value">${formatMoney(monthTotal)}</div></div>
     <div class="card"><div class="label">Maior categoria</div><div class="value">${escapeHtml(topCategory)}</div></div>
     <div class="card"><div class="label">Nº de gastos</div><div class="value">${expenses.length}</div></div>
+    ${balanceCards}${cardLimitCards}
   </div>
 
   <div class="panels">

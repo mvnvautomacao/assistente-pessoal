@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { isCardMethodName, setPaymentMethodLimit } from "../expenses/balance";
+import { db } from "../db";
 import {
   listPaymentMethods,
   getOrCreatePaymentMethod,
@@ -25,6 +27,12 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   const { page, perPage } = parsePagination(req.query);
   const pageItems = paginate(methods, page, perPage);
 
+  const limits = new Map(
+    (db.prepare(`SELECT id, credit_limit FROM payment_methods WHERE from_number = ?`).all(phone) as unknown as { id: number; credit_limit: number | null }[]).map(
+      (r) => [r.id, r.credit_limit]
+    )
+  );
+
   const rows = pageItems
     .map(
       (m) => `
@@ -35,6 +43,14 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
             <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
           </form>
         </td>
+        <td class="cell-form" data-label="Limite do cartão">${
+          isCardMethodName(m.name) || limits.get(m.id) != null
+            ? `<form class="inline" method="post" action="/dashboard/payment-methods/${m.id}/limit?${qs}">
+                <input type="number" step="0.01" min="0" name="limit" placeholder="Opcional" value="${limits.get(m.id) ?? ""}" style="width:130px">
+                <button type="submit" class="btn secondary" style="padding:6px 10px">Salvar</button>
+              </form>`
+            : "—"
+        }</td>
         <td data-label="Padrão">${
           defaultMethod?.id === m.id
             ? '<span class="tag">Padrão</span>'
@@ -55,8 +71,8 @@ paymentMethodsRouter.get("/dashboard/payment-methods", (req, res) => {
   <header><h1>Formas de pagamento</h1></header>
 
   <div class="table-wrap"><table class="mobile-cards">
-    <tr><th>Nome</th><th></th><th></th></tr>
-    ${rows || `<tr><td colspan="3" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
+    <tr><th>Nome</th><th>Limite do cartão</th><th>Padrão</th><th></th></tr>
+    ${rows || `<tr><td colspan="4" class="empty">Nenhuma forma de pagamento ainda.</td></tr>`}
   </table></div>
   ${renderPagination({ basePath: "/dashboard/payment-methods", params: { phone }, page, perPage, total: methods.length })}
   <p style="color:var(--muted);font-size:0.82rem;margin-top:8px">A forma padrão é usada automaticamente quando você não especifica no WhatsApp. Pra mudar, clique em "Tornar padrão" na linha desejada, ou mande uma mensagem tipo "meu pagamento padrão é pix".</p>
@@ -82,6 +98,17 @@ paymentMethodsRouter.post("/dashboard/payment-methods/:id", (req, res) => {
   const phone = getPhone(req);
   const name = String(req.body.name || "").trim();
   if (name) renamePaymentMethod(phone, Number(req.params.id), name);
+  res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
+});
+
+// limite do cartao: opcional -- campo vazio (ou 0/invalido) remove o limite, e
+// sem limite nada e exibido no painel inicial
+paymentMethodsRouter.post("/dashboard/payment-methods/:id/limit", (req, res) => {
+  const phone = getPhone(req);
+  const raw = String(req.body.limit ?? "").trim().replace(",", ".");
+  const value = raw === "" ? null : Number(raw);
+  const limit = value !== null && Number.isFinite(value) && value > 0 && value <= 100_000_000 ? value : null;
+  setPaymentMethodLimit(phone, Number(req.params.id), limit);
   res.redirect(`/dashboard/payment-methods?phone=${encodeURIComponent(phone)}`);
 });
 

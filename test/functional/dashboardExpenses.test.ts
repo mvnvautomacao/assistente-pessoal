@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startDashboardTestServer } from "../helpers/app";
-import { ensureUserSeeded, findRecentExpense, getExpenseById } from "../../src/expenses/service";
+import { ensureUserSeeded, findRecentExpense, getExpenseById, getOrCreatePaymentMethod, insertExpense } from "../../src/expenses/service";
+import { insertIncome } from "../../src/incomes/service";
 import { spDateString } from "../../src/timeSP";
 
 const A = "551100050001";
@@ -176,5 +177,57 @@ test("busca no dashboard filtra por faixa de valor (min/max)", async () => {
     assert.ok(faixa.includes("filtro medio"));
     assert.ok(!faixa.includes("filtro barato"));
     assert.ok(!faixa.includes("filtro caro"));
+  });
+});
+
+// Pedido do usuario: entradas precisam aparecer no painel inicial, abatendo os
+// gastos de Pix/dinheiro; cartao so abate do limite (opcional -- sem limite,
+// nada e exibido).
+test("painel inicial: mostra entradas e saldo (Pix/dinheiro), e limite do cartao SO quando informado", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const S = "551100050201";
+    ensureUserSeeded(S);
+    const pix = getOrCreatePaymentMethod(S, "Pix");
+    const card = getOrCreatePaymentMethod(S, "Cartão de crédito");
+    const hoje = spDateString();
+    insertIncome({ fromNumber: S, amount: 3000, description: "salario painel", date: hoje });
+    insertExpense({ fromNumber: S, amount: 200, description: "gasto pix painel", categoryId: null, paymentMethodId: pix.id, date: hoje });
+    insertExpense({ fromNumber: S, amount: 700, description: "gasto cartao painel", categoryId: null, paymentMethodId: card.id, date: hoje });
+
+    let html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(S) })).text();
+    assert.ok(html.includes("Entradas do mês"));
+    assert.ok(html.includes("Saldo (entradas"));
+    assert.ok(html.includes("2.800,00")); // 3000 - 200 (o cartao NAO abate)
+    assert.ok(!html.includes("Limite disponível")); // sem limite informado, nada
+
+    await fetch(`${baseUrl}/dashboard/payment-methods/${card.id}/limit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(S) },
+      body: new URLSearchParams({ limit: "2000" }),
+    });
+    html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(S) })).text();
+    assert.ok(html.includes("Limite disponível — Cartão de crédito"));
+    assert.ok(html.includes("1.300,00")); // 2000 - 700
+    assert.ok(html.includes("2.800,00")); // saldo inalterado
+
+    // campo vazio remove o limite
+    await fetch(`${baseUrl}/dashboard/payment-methods/${card.id}/limit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(S) },
+      body: new URLSearchParams({ limit: "" }),
+    });
+    html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(S) })).text();
+    assert.ok(!html.includes("Limite disponível"));
+  });
+});
+
+test("painel inicial: sem nenhuma entrada no mes, nao mostra card de saldo", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const S2 = "551100050202";
+    ensureUserSeeded(S2);
+    const pix = getOrCreatePaymentMethod(S2, "Pix");
+    insertExpense({ fromNumber: S2, amount: 10, description: "sem entrada", categoryId: null, paymentMethodId: pix.id, date: spDateString() });
+    const html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(S2) })).text();
+    assert.ok(!html.includes("Entradas do mês"));
   });
 });

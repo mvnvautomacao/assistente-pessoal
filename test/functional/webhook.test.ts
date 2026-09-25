@@ -31,6 +31,8 @@ import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
 import { getRecentBlockedAttempts, getRecentActivity } from "../../src/activity/service";
 import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
+import { setPaymentMethodLimit } from "../../src/expenses/balance";
+import { insertIncome } from "../../src/incomes/service";
 import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
@@ -2024,6 +2026,28 @@ test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia; alerta i
   queueReply([{ type: "edit_bill_alert", query: "Agua a cada 30", day_of_month: 40 }]);
   await handleIncomingMessage(evolutionMessage(EB, "muda pro dia 40"));
   assert.match(sent[3].text, /1 a 31/);
+});
+
+test("balance: cartao nao abate do saldo, so mostra o gasto no cartao e o limite disponivel quando informado", async (t) => {
+  const BL = "551100090830";
+  seed(BL);
+  const pix = getOrCreatePaymentMethod(BL, "Pix");
+  const card = getOrCreatePaymentMethod(BL, "Cartão teste saldo");
+  insertIncome({ fromNumber: BL, amount: 1000, description: "entrada saldo", date: today() });
+  insertExpense({ fromNumber: BL, amount: 100, description: "pix saldo", categoryId: null, paymentMethodId: pix.id, date: today() });
+  insertExpense({ fromNumber: BL, amount: 300, description: "cartao saldo", categoryId: null, paymentMethodId: card.id, date: today() });
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "balance", period: "month" }]);
+  await handleIncomingMessage(evolutionMessage(BL, "qual meu saldo"));
+  assert.match(sent[0].text, /Saldo: R[$]900\.00/);
+  assert.match(sent[0].text, /No cartão: R[$]300\.00/);
+  assert.doesNotMatch(sent[0].text, /limite disponível/);
+
+  setPaymentMethodLimit(BL, card.id, 1000);
+  queueReply([{ type: "balance", period: "month" }]);
+  await handleIncomingMessage(evolutionMessage(BL, "qual meu saldo"));
+  assert.match(sent[1].text, /limite disponível R[$]700\.00 de R[$]1000\.00/);
 });
 
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {

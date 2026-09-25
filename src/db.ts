@@ -274,6 +274,12 @@ if (!keywordColumns.some((c) => c.name === "from_number")) {
   db.prepare(`UPDATE category_keywords SET from_number = ? WHERE from_number IS NULL`).run(config.myWhatsappNumber);
 }
 
+// limite do cartao (opcional, informado pelo usuario) -- ver expenses/balance.ts
+const paymentMethodColumns = db.prepare(`PRAGMA table_info(payment_methods)`).all() as { name: string }[];
+if (!paymentMethodColumns.some((c) => c.name === "credit_limit")) {
+  db.exec(`ALTER TABLE payment_methods ADD COLUMN credit_limit REAL`);
+}
+
 // node:sqlite (DatabaseSync) nao tem um helper de transacao pronto tipo o do
 // better-sqlite3 -- achado da auditoria: insercao de N parcelas ou de um lote
 // de gastos rodava fora de transacao, entao uma falha no meio do loop deixava

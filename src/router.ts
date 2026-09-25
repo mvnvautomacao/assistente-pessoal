@@ -112,6 +112,7 @@ import { createBillAlert, listBillAlerts, findActiveBillAlertByName, updateBillA
 import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
+import { getRangeBalance } from "./expenses/balance";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import {
@@ -3274,14 +3275,27 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         : interpretation.period === "week"
           ? currentWeekRange()
           : currentMonthRange();
-      const income = getIncomeSummaryBetween(range.start, range.end, from);
-      const expense = getExpenseSummaryBetween(range.start, range.end, from);
-      const balance = income.total - expense.total;
-      const balanceEmoji = balance >= 0 ? "✅" : "🔻";
-      logActivity(from, "balance", `${range.label}: entradas R$${income.total.toFixed(2)}, gastos R$${expense.total.toFixed(2)}, saldo R$${balance.toFixed(2)}`);
+      // regra: gasto no Pix/dinheiro (e sem forma de pagamento) abate das entradas;
+      // gasto no cartao so abate do limite do cartao (se o usuario informou um --
+      // sem limite, nao mostra nada dele alem do quanto foi gasto no cartao)
+      const bal = getRangeBalance(from, range.start, range.end);
+      const balanceEmoji = bal.balance >= 0 ? "✅" : "🔻";
+      const cardLines =
+        bal.spentCard > 0 || bal.cards.length
+          ? `
+
+💳 No cartão: R$${bal.spentCard.toFixed(2)} (não abate do saldo)` +
+            bal.cards.map((c) => `
+   • ${c.name}: limite disponível R$${c.available.toFixed(2)} de R$${c.limit.toFixed(2)}`).join("")
+          : "";
+      logActivity(from, "balance", `${range.label}: entradas R$${bal.incomeTotal.toFixed(2)}, gastos (pix/dinheiro) R$${bal.spentNonCard.toFixed(2)}, saldo R$${bal.balance.toFixed(2)}`);
       await sendText(
         from,
-        `📊 Saldo — ${range.label}\n\n💵 Entradas: R$${income.total.toFixed(2)}\n💰 Gastos: R$${expense.total.toFixed(2)}\n${balanceEmoji} Saldo: R$${balance.toFixed(2)}`
+        `📊 Saldo — ${range.label}
+
+💵 Entradas: R$${bal.incomeTotal.toFixed(2)}
+💰 Gastos (Pix/dinheiro): R$${bal.spentNonCard.toFixed(2)}
+${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
       );
       break;
     }
