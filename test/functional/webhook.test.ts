@@ -1959,6 +1959,44 @@ test("gasto com valor zero ou negativo responde o motivo (valor precisa ser maio
   assert.match(sent[1].text, /maior que R[$] 0,00/); // nem chega a perguntar categoria
 });
 
+// Pedido do usuario: "gastos de segunda a quinta, detalhado" e em seguida
+// "qual o total?" -- o intervalo de dias nao era entendido e o total da lista
+// mostrada nao existia. Agora lista o intervalo (com total) e responde a soma.
+test("list_expenses com intervalo de dias mostra detalhado com total, e 'qual o total' soma a lista mostrada", async (t) => {
+  const LT = "551100090810";
+  seed(LT);
+  const cat = getOrCreateCategory(LT, "Lista-total");
+  const d1 = addDaysToDateString(today(), -6);
+  const d2 = addDaysToDateString(today(), -5);
+  const fora = addDaysToDateString(today(), -1);
+  insertExpense({ fromNumber: LT, amount: 10, description: "intervalo um", categoryId: cat.id, paymentMethodId: null, date: d1 });
+  insertExpense({ fromNumber: LT, amount: 32.5, description: "intervalo dois", categoryId: cat.id, paymentMethodId: null, date: d2 });
+  insertExpense({ fromNumber: LT, amount: 999, description: "fora do intervalo", categoryId: cat.id, paymentMethodId: null, date: fora });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_expenses", date_start: d1, date_end: d2 }]);
+  await handleIncomingMessage(evolutionMessage(LT, "gastos de segunda a quinta detalhado"));
+  assert.equal(sent.length, 1); // direto detalhado, sem perguntar "resumo ou detalhado"
+  assert.match(sent[0].text, /intervalo um/);
+  assert.match(sent[0].text, /intervalo dois/);
+  assert.doesNotMatch(sent[0].text, /fora do intervalo/);
+  assert.match(sent[0].text, /Total: R[$]42.50/);
+
+  queueReply([{ type: "total_last_list" }]);
+  await handleIncomingMessage(evolutionMessage(LT, "qual o total?"));
+  assert.match(sent[1].text, /R[$]42.50/);
+  assert.match(sent[1].text, /2 gasto/);
+});
+
+test("total_last_list sem nenhuma lista recente orienta em vez de inventar um valor", async (t) => {
+  const LT2 = "551100090811";
+  seed(LT2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "total_last_list" }]);
+  await handleIncomingMessage(evolutionMessage(LT2, "qual o total?"));
+  assert.match(sent[0].text, /lista de gastos recente/);
+});
+
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {
   const EE2 = "551100090096";
   seed(EE2);

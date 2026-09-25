@@ -178,6 +178,7 @@ const TYPE_LABEL: Record<string, string> = {
   welcome: "👋 Boas-vindas (número novo)",
   help: "🤖 Explicou funcionalidades",
   list_expenses: "🧾 Lista de gastos",
+  total_last_list: "💰 Total da lista",
   edit_expense: "✏️ Gasto editado",
   reminder: "⏰ Lembrete",
   undo: "↩️ Desfeito",

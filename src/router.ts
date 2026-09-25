@@ -69,7 +69,7 @@ import {
 } from "./expenses/pendingRemoveRecurring";
 import { currentWeekRange, currentMonthRange, lastNDaysRange, singleDayRange, buildExpenseReportText } from "./expenses/reportText";
 import { setBudget, removeBudget, getBudget, listBudgets, checkBudgetAlert } from "./expenses/budgets";
-import { setLastShownExpenses, getLastShownExpenses, clearLastShownExpenses } from "./expenses/listCache";
+import { setLastShownExpenses, getLastShownExpenses, getLastShownLabel, clearLastShownExpenses } from "./expenses/listCache";
 import { setPendingListChoice, getPendingListChoice, clearPendingListChoice } from "./expenses/pendingListChoice";
 import {
   setPendingBulkRecategorize,
@@ -1844,7 +1844,8 @@ function buildGroupedExpenseListText(items: ExpenseListItem[], label: string): s
     return `📅 ${formatDateOnly(day)}\n${lines.join("\n")}`;
   });
 
-  return `🧾 Gastos — ${label}\n\n${sections.join("\n\n")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`;
+  const total = items.reduce((sum, i) => sum + i.amount, 0);
+  return `🧾 Gastos — ${label}\n\n${sections.join("\n\n")}\n\n💰 Total: R$${total.toFixed(2)}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`;
 }
 
 // resposta a "resumo por categoria ou detalhado por dia?" — se nao der pra saber
@@ -1874,7 +1875,7 @@ async function resolveListChoice(from: string, days: number, answerText: string)
     await sendText(from, `Nenhum gasto registrado em ${range.label}.`);
     return;
   }
-  setLastShownExpenses(from, items.map((item) => item.id));
+  setLastShownExpenses(from, items.map((item) => item.id), range.label);
   logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label} (detalhado)`);
   await sendText(from, buildGroupedExpenseListText(items, range.label));
 }
@@ -2413,7 +2414,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
-  if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense") {
+  if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense" && interpretation.type !== "total_last_list") {
     clearLastShownExpenses(from);
   }
 
@@ -2951,7 +2952,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       // periodo de mais de 1 dia: pergunta se quer o resumo por categoria (como
       // era antes) ou o detalhado, gasto a gasto separado por dia, em vez de
       // decidir por conta propria
-      if (interpretation.days && interpretation.days > 1) {
+      const hasDateRange = Boolean(interpretation.date_start && interpretation.date_end);
+      if (!hasDateRange && interpretation.days && interpretation.days > 1) {
         setPendingListChoice(from, interpretation.days);
         logActivity(from, "list_expenses", `perguntou formato pros ultimos ${interpretation.days} dias`);
         await sendText(
@@ -2964,7 +2966,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       // pedido vago tipo "editar compras", sem dia nenhum mencionado: antes de
       // mostrar a lista, avisa qual dia foi assumido, pra nao confundir quem
       // queria outro dia
-      const noDaySpecified = !interpretation.date && !interpretation.days;
+      const noDaySpecified = !interpretation.date && !interpretation.days && !hasDateRange;
       if (noDaySpecified) {
         await sendText(
           from,
@@ -2972,7 +2974,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         );
       }
 
-      const range = interpretation.date
+      const range = hasDateRange
+        ? {
+            start: interpretation.date_start!.slice(0, 10),
+            end: addOneDayToDateString(interpretation.date_end!),
+            label: `${formatDateOnly(interpretation.date_start!)} a ${formatDateOnly(interpretation.date_end!)}`,
+          }
+        : interpretation.date
         ? singleDayRange(interpretation.date.slice(0, 10), formatDateOnly(interpretation.date))
         : interpretation.days
           ? lastNDaysRange(interpretation.days)
@@ -2985,7 +2993,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      setLastShownExpenses(from, items.map((item) => item.id));
+      setLastShownExpenses(from, items.map((item) => item.id), range.label);
+      if (hasDateRange) {
+        // intervalo de varios dias: sempre detalhado, separado por dia, ja com o total
+        logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label} (detalhado)`);
+        await sendText(from, buildGroupedExpenseListText(items, range.label));
+        break;
+      }
       const lines = items.map((item, idx) => {
         const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
         return `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${details}) — ${formatDateOnly(item.date)}`;
@@ -2993,8 +3007,22 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label}`);
       await sendText(
         from,
-        `🧾 Gastos — ${range.label}\n\n${lines.join("\n")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`
+        `🧾 Gastos — ${range.label}\n\n${lines.join("\n")}\n\n💰 Total: R$${items.reduce((sum, i) => sum + i.amount, 0).toFixed(2)}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`
       );
+      break;
+    }
+    case "total_last_list": {
+      const ids = getLastShownExpenses(from);
+      if (!ids?.length) {
+        logActivity(from, "total_last_list", "sem lista recente");
+        await sendText(from, 'Não tenho uma lista de gastos recente pra somar. Me pede primeiro, ex: "gastos de hoje", ou pergunta direto "quanto gastei essa semana".');
+        break;
+      }
+      const shown = ids.map((id) => getExpenseById(from, id)).filter((e): e is ExpenseRecord => e !== null);
+      const total = shown.reduce((sum, e) => sum + e.amount, 0);
+      const label = getLastShownLabel(from);
+      logActivity(from, "total_last_list", `R$${total.toFixed(2)} em ${shown.length} gasto(s)`);
+      await sendText(from, `💰 Total${label ? ` (${label})` : ""}: R$${total.toFixed(2)} em ${shown.length} gasto(s).`);
       break;
     }
     case "edit_expense": {
