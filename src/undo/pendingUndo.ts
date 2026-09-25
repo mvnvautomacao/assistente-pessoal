@@ -7,6 +7,12 @@ const TTL_MS = 10 * 60 * 1000;
 export type UndoAction =
   | { kind: "delete_expense"; expenseId: number; description: string }
   | { kind: "delete_expenses_bulk"; expenseIds: number[]; description: string }
+  | {
+      // apagar um gasto (delete_expense) -- desfazer recria com os mesmos dados
+      kind: "recreate_expense";
+      params: { fromNumber: string; amount: number; description: string; categoryId: number | null; paymentMethodId: number | null; date: string };
+      description: string;
+    }
   | { kind: "delete_expenses_batch"; expenseIds: number[]; description: string }
   | {
       kind: "restore_expense";

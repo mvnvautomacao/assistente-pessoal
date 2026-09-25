@@ -2050,6 +2050,92 @@ test("balance: cartao nao abate do saldo, so mostra o gasto no cartao e o limite
   assert.match(sent[1].text, /limite disponível R[$]700\.00 de R[$]1000\.00/);
 });
 
+// Pedido do usuario: nao tinha como mandar o bot PARAR -- qualquer texto
+// virava resposta da pergunta pendente. "cancelar" descarta tudo que estava
+// esperando resposta, sem registrar nada.
+test("cancelar: descarta a pergunta de categoria pendente em vez de usar 'cancelar' como nome de categoria", async (t) => {
+  const CN1 = "551100090840";
+  seed(CN1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 33, category: "CategoriaCancelarXYZ", description: "gasto a cancelar", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(CN1, "33 em algo"));
+  assert.match(sent[0].text, /[Qq]ual categoria/);
+  assert.match(sent[0].text, /cancelar/); // dica de como desistir
+
+  await handleIncomingMessage(evolutionMessage(CN1, "cancelar"));
+  assert.match(sent[1].text, /cancelei/);
+  assert.equal(findCategoryByName(CN1, "cancelar"), null); // nao virou categoria
+  assert.equal(searchExpenses(CN1, "gasto a cancelar").length, 0);
+  assert.equal(getNextPendingCategorization(CN1), null);
+
+  // liberou: a proxima mensagem e interpretada normalmente
+  queueReply([{ type: "list_categories" }]);
+  await handleIncomingMessage(evolutionMessage(CN1, "quais categorias eu tenho"));
+  assert.equal(sent.length, 3);
+});
+
+test("cancelar: descarta a pergunta de forma de pagamento pendente, e 'para' sem nada pendente segue pro fluxo normal", async (t) => {
+  const CN2 = "551100090841";
+  seedNoDefaultPayment(CN2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 18, category: "Mercado", description: "gasto pagamento a cancelar", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(CN2, "18 no mercado"));
+  assert.match(sent[0].text, /forma de pagamento/i);
+
+  await handleIncomingMessage(evolutionMessage(CN2, "para"));
+  assert.match(sent[1].text, /cancelei/);
+  assert.equal(searchExpenses(CN2, "gasto pagamento a cancelar").length, 0);
+
+  // sem nada pendente, "para" nao e comando: vai pra IA como qualquer mensagem
+  queueReply([{ type: "unknown" }]);
+  await handleIncomingMessage(evolutionMessage(CN2, "para"));
+  assert.doesNotMatch(sent[2].text, /cancelei/);
+});
+
+// Pedido do usuario: "excluir a ultima compra registrada" nao era entendido.
+test("delete_expense: apaga o ultimo gasto com confirmacao, e 'desfaz isso' recria", async (t) => {
+  const DE1 = "551100090842";
+  seed(DE1);
+  const cat = getOrCreateCategory(DE1, "Apagar-teste");
+  insertExpense({ fromNumber: DE1, amount: 10, description: "gasto antigo apagar", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: DE1, amount: 77, description: "ultimo gasto apagar", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "delete_expense" }]);
+  await handleIncomingMessage(evolutionMessage(DE1, "excluir a ultima compra registrada"));
+  assert.match(sent[0].text, /ultimo gasto apagar/);
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(searchExpenses(DE1, "ultimo gasto apagar").length, 1); // so perguntou
+
+  await handleIncomingMessage(evolutionMessage(DE1, "sim"));
+  assert.match(sent[1].text, /apagado/);
+  assert.equal(searchExpenses(DE1, "ultimo gasto apagar").length, 0);
+  assert.equal(searchExpenses(DE1, "gasto antigo apagar").length, 1); // so o ultimo saiu
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(DE1, "desfaz isso"));
+  const back = searchExpenses(DE1, "ultimo gasto apagar");
+  assert.equal(back.length, 1);
+  assert.equal(back[0].amount, 77);
+});
+
+test("delete_expense: 'nao' cancela, por texto acha o gasto certo, e sem gasto nenhum avisa", async (t) => {
+  const DE2 = "551100090843";
+  seed(DE2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_expense" }]);
+  await handleIncomingMessage(evolutionMessage(DE2, "apaga o ultimo gasto"));
+  assert.match(sent[0].text, /Não achei nenhum gasto/);
+
+  insertExpense({ fromNumber: DE2, amount: 5, description: "padaria apagar texto", categoryId: null, paymentMethodId: null, date: today() });
+  queueReply([{ type: "delete_expense", query: "padaria" }]);
+  await handleIncomingMessage(evolutionMessage(DE2, "apaga o gasto da padaria"));
+  assert.match(sent[1].text, /padaria apagar texto/);
+  await handleIncomingMessage(evolutionMessage(DE2, "nao"));
+  assert.match(sent[2].text, /não apaguei/);
+  assert.equal(searchExpenses(DE2, "padaria apagar texto").length, 1);
+});
+
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {
   const EE2 = "551100090096";
   seed(EE2);

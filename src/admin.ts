@@ -191,6 +191,8 @@ const TYPE_LABEL: Record<string, string> = {
   balance: "📊 Saldo consultado",
   unknown: "❓ Não entendido",
   error: "⚠️ Erro",
+  delete_expense: "🗑️ Gasto apagado",
+  cancel: "✋ Pendência cancelada",
   set_bill_alert: "📌 Alerta de conta criado",
   list_bill_alerts: "📌 Lista de alertas de conta",
   remove_bill_alert: "📌 Alerta de conta removido",

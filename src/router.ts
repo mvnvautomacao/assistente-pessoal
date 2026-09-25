@@ -1,5 +1,11 @@
 import { sendText, getBase64FromMediaMessage } from "./whatsapp/client";
 import { withTransaction } from "./db";
+import {
+  setPendingDeleteExpense,
+  getPendingDeleteExpense,
+  clearPendingDeleteExpense,
+  PendingDeleteExpense,
+} from "./expenses/pendingDeleteExpense";
 import { InvalidAmountError, MAX_REASONABLE_AMOUNT, assertValidAmount } from "./validation";
 
 // Texto de erro pro cliente: valor invalido (zero, negativo ou absurdo) explica
@@ -419,6 +425,8 @@ const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp
 
 Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.
 
+✋ Se eu entender errado, é só dizer "cancelar" que eu paro de perguntar.
+
 🖥️ Você também pode ver e editar tudo pelo painel no navegador: ${config.dashboardUrl}`;
 
 export async function handleIncomingMessage(data: EvolutionMessage) {
@@ -521,6 +529,15 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
     // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
     // resposta dele deve resolver essa, nao uma categoria mais antiga na fila.
+    if (CANCEL_COMMAND.test(text)) {
+      const cancelled = cancelAllPendings(from);
+      if (cancelled > 0) {
+        logActivity(from, "cancel", `${cancelled} pendencia(s) cancelada(s) pelo usuario`);
+        await sendText(from, "Beleza, cancelei o que estava pendente — nada disso foi registrado. Pode mandar uma nova mensagem. 🙂");
+        return;
+      }
+    }
+
     let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
     while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
       await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
@@ -568,6 +585,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingMerge = getPendingMergeCategories(from);
     if (pendingMerge) {
       await resolveMergeCategoriesConfirmation(from, pendingMerge, text);
+      return;
+    }
+
+    const pendingDeleteExpense = getPendingDeleteExpense(from);
+    if (pendingDeleteExpense) {
+      await resolveDeleteExpenseConfirmation(from, pendingDeleteExpense, text);
       return;
     }
 
@@ -755,7 +778,7 @@ function paymentMethodQuestionText(from: string, amount: number, description: st
   const methodNames = listPaymentMethods(from)
     .map((m) => m.name)
     .join(", ");
-  return `Qual foi a forma de pagamento desse gasto de R$${amount.toFixed(2)} (${description})?\n\nFormas cadastradas: ${methodNames}\n\nPode responder com uma dessas ou dizer uma nova -- e já deixo essa como sua forma padrão pras próximas vezes.`;
+  return `Qual foi a forma de pagamento desse gasto de R$${amount.toFixed(2)} (${description})?\n\nFormas cadastradas: ${methodNames}\n\nPode responder com uma dessas ou dizer uma nova -- e já deixo essa como sua forma padrão pras próximas vezes. (Pra desistir, diga "cancelar".)`;
 }
 
 // Tempo maximo esperando "qual categoria e isso?" antes de decidir sozinho.
@@ -860,13 +883,68 @@ function recordSimpleExpense(
   return { created, budgetAlert };
 }
 
+// "cancelar"/"para"/"deixa pra la"... -- saida de emergencia: enquanto o bot
+// esta esperando uma resposta (categoria, forma de pagamento, confirmacao...),
+// qualquer texto vira a resposta, e um "para" virava categoria/forma de
+// pagamento ou ficava sendo insistido. Vale so pra mensagem INTEIRA curta,
+// nao pra frase que so contem essas palavras (ex: "cancela o evento X").
+const CANCEL_COMMAND =
+  /^\s*(cancel(a|ar|o)|par(a|ar|e)|esque[cç]a?|esquece(r)?|desconsidera|ignora|chega|deixa\s+(pra|para)\s+l[aá]|deixa\s+quieto|deixa\s+isso|n[aã]o\s+quero\s+mais|esquece\s+isso)(\s+(isso|tudo|por\s+favor|pf|pfv))?\s*[.!]*\s*$/i;
+
+// Descarta TODAS as perguntas pendentes desse numero (menos o alerta de conta
+// fixa, que e o bot puxando assunto por conta propria e tem sua propria
+// resposta "ja fez / amanha") e devolve quantas eram. Nada do que estava
+// pendente e registrado.
+function cancelAllPendings(from: string): number {
+  let cleared = 0;
+  while (getNextPendingExpensePaymentMethod(from)) {
+    clearHeadPendingExpensePaymentMethod(from);
+    cleared++;
+  }
+  let categorization = getNextPendingCategorization(from);
+  while (categorization) {
+    clearPendingCategorization(from, categorization.id);
+    cleared++;
+    categorization = getNextPendingCategorization(from);
+  }
+  while (getNextPendingCompletion(from)) {
+    clearHeadPendingCompletion(from);
+    cleared++;
+  }
+  const simple: Array<[unknown, () => void]> = [
+    [getPendingListChoice(from), () => clearPendingListChoice(from)],
+    [getPendingEventDeletion(from), () => clearPendingEventDeletion(from)],
+    [getPendingBulkRecategorize(from), () => clearPendingBulkRecategorize(from)],
+    [getPendingMergeCategories(from), () => clearPendingMergeCategories(from)],
+    [getPendingDeleteCategory(from), () => clearPendingDeleteCategory(from)],
+    [getPendingDeleteExpense(from), () => clearPendingDeleteExpense(from)],
+    [getPendingEditExpense(from), () => clearPendingEditExpense(from)],
+    [getPendingCorrectCategory(from), () => clearPendingCorrectCategory(from)],
+    [getPendingEditEvent(from), () => clearPendingEditEvent(from)],
+    [getPendingEditReminder(from), () => clearPendingEditReminder(from)],
+    [getPendingReminderDeletion(from), () => clearPendingReminderDeletion(from)],
+    [getPendingReminderAdvanceChoice(from), () => clearPendingReminderAdvanceChoice(from)],
+    [getPendingRemoveBudget(from), () => clearPendingRemoveBudget(from)],
+    [getPendingRemoveRecurring(from), () => clearPendingRemoveRecurring(from)],
+    [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
+    [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
+  ];
+  for (const [pendingState, clear] of simple) {
+    if (pendingState) {
+      clear();
+      cleared++;
+    }
+  }
+  return cleared;
+}
+
 function askForCategory(from: string, amount: number, description: string) {
   const categoryNames = listCategories(from)
     .map((c) => c.name)
     .join(", ");
   return sendText(
     from,
-    `Qual categoria é esse gasto de R$${amount.toFixed(2)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`
+    `Qual categoria é esse gasto de R$${amount.toFixed(2)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova. (Pra desistir, diga "cancelar".)`
   );
 }
 
@@ -2061,6 +2139,46 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
   );
 }
 
+// resposta a "confirma que quer apagar o gasto X?" -- so apaga com um "sim"
+// claro; "desfaz isso" recria o gasto com os mesmos dados
+async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDeleteExpense, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma que quer apagar o gasto "${pending.description}" (R$${pending.amount.toFixed(2)})? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingDeleteExpense(from);
+  if (no) {
+    logActivity(from, "delete_expense", `apagar #${pending.expenseId} nao confirmado`);
+    await sendText(from, "Beleza, não apaguei nada.");
+    return;
+  }
+
+  const removed = deleteExpense(from, pending.expenseId);
+  if (!removed) {
+    await sendText(from, "Esse gasto já não existe mais.");
+    return;
+  }
+  setPendingUndo(from, {
+    kind: "recreate_expense",
+    params: {
+      fromNumber: from,
+      amount: pending.amount,
+      description: pending.description,
+      categoryId: pending.categoryId,
+      paymentMethodId: pending.paymentMethodId,
+      date: pending.date,
+    },
+    description: `R$${pending.amount.toFixed(2)} — ${pending.description}`,
+  });
+  logActivity(from, "delete_expense", `apagado: R$${pending.amount.toFixed(2)} — ${pending.description}`);
+  await sendText(from, `🗑️ Gasto apagado: R$${pending.amount.toFixed(2)} — ${pending.description}. Se foi sem querer, é só dizer "desfaz isso".`);
+}
+
 // resposta a "confirma que quer apagar a categoria X?" -- so apaga de verdade
 // com um "sim" claro. Os gastos ficam sem categoria (nunca sao apagados) e o
 // "desfaz isso" recria a categoria e devolve eles (mesmo undo do merge).
@@ -2417,7 +2535,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
 async function handleInterpretation(from: string, interpretation: Interpretation) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
-  if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense" && interpretation.type !== "total_last_list") {
+  if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense" && interpretation.type !== "total_last_list" && interpretation.type !== "delete_expense") {
     clearLastShownExpenses(from);
   }
 
@@ -3014,6 +3132,41 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       );
       break;
     }
+    case "delete_expense": {
+      let expense: ExpenseRecord | null;
+      if (interpretation.list_ref) {
+        const ids = getLastShownExpenses(from);
+        const id = ids?.[interpretation.list_ref - 1];
+        expense = id ? getExpenseById(from, id) : null;
+        if (!expense) {
+          await sendText(from, `Não sei a que gasto o número "${interpretation.list_ref}" se refere. Me pede a lista de novo, ex: "gastos de hoje".`);
+          break;
+        }
+      } else {
+        expense = findRecentExpense(from, interpretation.query);
+        if (!expense) {
+          logActivity(from, "delete_expense", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
+          await sendText(from, `Não achei nenhum gasto${interpretation.query ? ` parecido com "${interpretation.query}"` : " registrado"} pra apagar.`);
+          break;
+        }
+      }
+      const category = expense.category_id ? getCategoryById(from, expense.category_id) : null;
+      setPendingDeleteExpense(from, {
+        expenseId: expense.id,
+        amount: expense.amount,
+        description: expense.description,
+        date: expense.date,
+        categoryId: expense.category_id,
+        categoryName: category?.name ?? null,
+        paymentMethodId: expense.payment_method_id,
+      });
+      logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} R$${expense.amount.toFixed(2)} — ${expense.description}`);
+      await sendText(
+        from,
+        `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). Responde "sim" ou "não".`
+      );
+      break;
+    }
     case "total_last_list": {
       const ids = getLastShownExpenses(from);
       if (!ids?.length) {
@@ -3322,6 +3475,11 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           for (const expenseId of undo.expenseIds) deleteExpense(from, expenseId);
           logActivity(from, "undo", `lote de gastos removido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz os ${undo.expenseIds.length} gastos: ${undo.description}.`);
+          break;
+        case "recreate_expense":
+          insertExpense(undo.params);
+          logActivity(from, "undo", `gasto recriado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o gasto ${undo.description} voltou.`);
           break;
         case "restore_expense":
           updateExpense(from, undo.expenseId, undo.previous);
