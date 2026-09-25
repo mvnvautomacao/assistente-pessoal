@@ -172,6 +172,7 @@ import {
   updateExpense,
   deleteExpense,
   getRecentExpensesList,
+  findInstallmentGroup,
   getExpensesByCategoryId,
   bulkUpdateExpenseCategory,
   searchExpenses,
@@ -2152,6 +2153,34 @@ async function performDeleteExpense(
   from: string,
   expense: { id: number; amount: number; description: string; date: string; category_id: number | null; payment_method_id: number | null }
 ) {
+  // compra parcelada: apagar UMA parcela apaga TODAS as do mesmo grupo
+  const group = findInstallmentGroup(from, expense.id);
+  if (group) {
+    const total = group.reduce((sum, e) => sum + e.amount, 0);
+    const baseName = expense.description.replace(/ \(parcela \d+\/\d+\)$/, "");
+    withTransaction(() => {
+      for (const parcela of group) deleteExpense(from, parcela.id);
+    });
+    setPendingUndo(from, {
+      kind: "recreate_expenses",
+      items: group.map((e) => ({
+        fromNumber: from,
+        amount: e.amount,
+        description: e.description,
+        categoryId: e.category_id,
+        paymentMethodId: e.payment_method_id,
+        date: e.date,
+      })),
+      description: `${baseName} (${group.length} parcelas)`,
+    });
+    logActivity(from, "delete_expense", `compra parcelada apagada: ${baseName}, ${group.length} parcela(s), R$${total.toFixed(2)}`);
+    await sendText(
+      from,
+      `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total R$${total.toFixed(2)}) foram removidas. Se foi sem querer, é só dizer "desfaz isso".`
+    );
+    return;
+  }
+
   const removed = deleteExpense(from, expense.id);
   if (!removed) {
     await sendText(from, "Esse gasto já não existe mais.");
@@ -3230,6 +3259,16 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         offerChoices: !interpretation.list_ref && !interpretation.query,
       });
       logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} R$${expense.amount.toFixed(2)} — ${expense.description}`);
+      const installmentGroup = findInstallmentGroup(from, expense.id);
+      if (installmentGroup) {
+        const baseName = expense.description.replace(/ \(parcela \d+\/\d+\)$/, "");
+        const total = installmentGroup.reduce((sum, e) => sum + e.amount, 0);
+        await sendText(
+          from,
+          `Essa é uma compra parcelada: "${baseName}" em ${installmentGroup.length}x (total R$${total.toFixed(2)}). Confirma que quer apagar TODAS as ${installmentGroup.length} parcelas? Responde "sim" ou "não".`
+        );
+        break;
+      }
       await sendText(
         from,
         `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). ${
@@ -3546,6 +3585,13 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           for (const expenseId of undo.expenseIds) deleteExpense(from, expenseId);
           logActivity(from, "undo", `lote de gastos removido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz os ${undo.expenseIds.length} gastos: ${undo.description}.`);
+          break;
+        case "recreate_expenses":
+          withTransaction(() => {
+            for (const item of undo.items) insertExpense(item);
+          });
+          logActivity(from, "undo", `compra parcelada recriada: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, ${undo.description} voltou.`);
           break;
         case "recreate_expense":
           insertExpense(undo.params);

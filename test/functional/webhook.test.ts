@@ -2189,6 +2189,51 @@ test("'cancelar' sem nada pendente responde que nao ha nada a cancelar (nao cai 
   assert.doesNotMatch(sent[0].text, /lembrete/);
 });
 
+// Pedido do usuario: apagar uma compra parcelada apaga TODAS as parcelas.
+test("delete_expense de compra parcelada apaga todas as parcelas, sem tocar em outra compra de mesmo nome, e desfaz recria todas", async (t) => {
+  const IP1 = "551100090850";
+  seed(IP1);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "installment_expense", description: "Geladeira parc", category: "Compras", total_amount: 900, installments: 3 }]);
+  await handleIncomingMessage(evolutionMessage(IP1, "comprei uma geladeira de 900 em 3x"));
+  // outra compra com o MESMO nome, em outro mes -- nao pode ser levada junto
+  queueReply([{ type: "installment_expense", description: "Geladeira parc", category: "Compras", total_amount: 200, installments: 2, date: addDaysToDateString(today(), -200) }]);
+  await handleIncomingMessage(evolutionMessage(IP1, "comprei outra geladeira de 200 em 2x"));
+  assert.equal(searchExpenses(IP1, "Geladeira parc").length, 5);
+
+  // "a ultima compra" e uma parcela da SEGUNDA compra (a mais recente inserida)
+  queueReply([{ type: "delete_expense", query: "parcela 2/3" }]);
+  await handleIncomingMessage(evolutionMessage(IP1, "apaga a geladeira parcela 2/3"));
+  assert.match(sent[sent.length - 1].text, /compra parcelada/);
+  assert.match(sent[sent.length - 1].text, /3x/);
+  assert.match(sent[sent.length - 1].text, /TODAS/);
+
+  await handleIncomingMessage(evolutionMessage(IP1, "sim"));
+  assert.match(sent[sent.length - 1].text, /3 parcelas/);
+  const restantes = searchExpenses(IP1, "Geladeira parc");
+  assert.equal(restantes.length, 2); // so a compra de 2x ficou
+  assert.ok(restantes.every((e) => /\/2\)$/.test(e.description)));
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(IP1, "desfaz isso"));
+  assert.equal(searchExpenses(IP1, "Geladeira parc").length, 5);
+  const totalTres = searchExpenses(IP1, "Geladeira parc").filter((e) => /\/3\)$/.test(e.description)).reduce((s, e) => s + e.amount, 0);
+  assert.equal(Math.round(totalTres * 100) / 100, 900);
+});
+
+test("delete_expense: gasto simples continua apagando so ele mesmo (nao e parcela)", async (t) => {
+  const IP2 = "551100090851";
+  seed(IP2);
+  insertExpense({ fromNumber: IP2, amount: 9, description: "coisa avulsa (parcela x)", categoryId: null, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_expense", query: "avulsa" }]);
+  await handleIncomingMessage(evolutionMessage(IP2, "apaga o gasto avulsa"));
+  assert.doesNotMatch(sent[0].text, /parcelada/);
+  await handleIncomingMessage(evolutionMessage(IP2, "sim"));
+  assert.equal(searchExpenses(IP2, "avulsa").length, 0);
+});
+
 test("edit_expense: responder 'nao' nao muda nada", async (t) => {
   const EE2 = "551100090096";
   seed(EE2);

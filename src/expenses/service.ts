@@ -568,3 +568,37 @@ export function getExpenseSummaryBetween(
 
   return { total, count: rows.length, categoryTotals };
 }
+
+// Compra parcelada nao tem vinculo no banco -- cada parcela e um gasto normal com
+// descricao "X (parcela i/N)" e data um mes depois da anterior (ver
+// finalizeInstallmentExpense em router.ts). Dado UMA parcela, acha todas as do
+// mesmo grupo: mesma descricao-base e N, e cada parcela j no mes esperado
+// (mes da parcela dada + (j - i)) -- assim duas compras diferentes com o mesmo
+// nome nao se misturam. Devolve as parcelas em ordem, ou null se o gasto nao e
+// parcela (ou se so ele mesmo sobrou).
+export function findInstallmentGroup(fromNumber: string, expenseId: number): ExpenseRecord[] | null {
+  const target = getExpenseById(fromNumber, expenseId);
+  if (!target) return null;
+  const match = /^(.*) \(parcela (\d+)\/(\d+)\)$/.exec(target.description);
+  if (!match) return null;
+  const base = match[1];
+  const targetIndex = Number(match[2]);
+  const total = Number(match[3]);
+  if (!Number.isInteger(total) || total < 2 || total > 120) return null;
+
+  const [ty, tm] = target.date.slice(0, 10).split("-").map(Number);
+  const monthIndex = (y: number, m: number) => y * 12 + (m - 1);
+  const stmt = db.prepare(`SELECT * FROM expenses WHERE from_number = ? AND description = ?`);
+
+  const group: ExpenseRecord[] = [];
+  for (let j = 1; j <= total; j++) {
+    const rows = stmt.all(fromNumber, `${base} (parcela ${j}/${total})`) as unknown as ExpenseRecord[];
+    const wanted = monthIndex(ty, tm) + (j - targetIndex);
+    const found = rows.find((row) => {
+      const [y, m] = row.date.slice(0, 10).split("-").map(Number);
+      return monthIndex(y, m) === wanted;
+    });
+    if (found) group.push(found);
+  }
+  return group.length >= 2 ? group : null;
+}

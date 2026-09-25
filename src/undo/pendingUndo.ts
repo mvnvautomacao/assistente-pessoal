@@ -8,6 +8,12 @@ export type UndoAction =
   | { kind: "delete_expense"; expenseId: number; description: string }
   | { kind: "delete_expenses_bulk"; expenseIds: number[]; description: string }
   | {
+      // apagar uma compra parcelada inteira -- desfazer recria todas as parcelas
+      kind: "recreate_expenses";
+      items: { fromNumber: string; amount: number; description: string; categoryId: number | null; paymentMethodId: number | null; date: string }[];
+      description: string;
+    }
+  | {
       // apagar um gasto (delete_expense) -- desfazer recria com os mesmos dados
       kind: "recreate_expense";
       params: { fromNumber: string; amount: number; description: string; categoryId: number | null; paymentMethodId: number | null; date: string };
