@@ -383,6 +383,12 @@ ${pwaHeadTags()}
   p.banner { border-radius: 10px; padding: 10px 14px; font-size: 0.85rem; margin: 0 0 -8px; }
   p.banner.error { background: rgba(240, 87, 107, 0.14); border: 1px solid rgba(240, 87, 107, 0.35); }
   p.banner.success { background: rgba(52, 211, 153, 0.14); border: 1px solid rgba(52, 211, 153, 0.35); color: var(--good); }
+  .pw-wrap { position: relative; }
+  .pw-wrap input { padding-right: 46px; }
+  button.pw-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); margin: 0; width: 36px; height: 36px; padding: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; touch-action: none; user-select: none; -webkit-user-select: none; }
+  button.pw-eye:hover, button.pw-eye:active { background: transparent; color: var(--text); }
+  label.remember { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-weight: 500; cursor: pointer; }
+  label.remember input { width: auto; margin: 0; accent-color: var(--accent); }
   details.forgot { margin-top: 18px; }
   details.forgot summary { color: var(--muted); font-size: 0.85rem; cursor: pointer; }
   details.forgot summary:hover { color: var(--accent); }
@@ -397,7 +403,11 @@ ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, 
   <input name="phone" id="phone" placeholder="(99) 9 9999-9999" inputmode="numeric" autocomplete="username" autofocus required>
   <p class="error field" id="phone-error">Número incompleto — precisa do DDD e os 9 dígitos do celular.</p>
   <label for="password">Senha</label>
-  <input name="password" id="password" type="text" autocomplete="current-password" required>
+  <div class="pw-wrap">
+    <input name="password" id="password" type="password" autocomplete="current-password" required>
+    <button type="button" class="pw-eye" id="pw-eye" aria-label="Segure pra ver a senha" title="Segure pra ver a senha">👁</button>
+  </div>
+  <label class="remember"><input type="checkbox" id="remember" checked> Lembrar meu número neste aparelho</label>
   <button type="submit">Entrar</button>
 </form>
 <details class="forgot">
@@ -412,6 +422,34 @@ ${opts.sent ? `<p class="banner success">Se esse número tiver acesso liberado, 
 <script>${PHONE_MASK_SCRIPT}
   attachPhoneMask(document.getElementById("phone"), document.getElementById("phone-error"));
   attachPhoneMask(document.getElementById("reset-phone"), document.getElementById("reset-phone-error"));
+  (function () {
+    var phone = document.getElementById("phone");
+    var remember = document.getElementById("remember");
+    var KEY = "organizai_phone";
+    // lembra so o NUMERO (a senha fica com o gerenciador de senhas do navegador,
+    // que oferece salvar sozinho por causa do type=password + autocomplete)
+    try {
+      var saved = localStorage.getItem(KEY);
+      if (saved) {
+        phone.value = saved;
+        phone.dispatchEvent(new Event("input"));
+        document.getElementById("password").focus();
+      }
+    } catch (e) {}
+    phone.form.addEventListener("submit", function () {
+      try {
+        if (remember.checked) localStorage.setItem(KEY, phone.value);
+        else localStorage.removeItem(KEY);
+      } catch (e) {}
+    });
+    // olho: a senha so aparece ENQUANTO segura o clique/toque, e volta a esconder ao soltar
+    var pw = document.getElementById("password");
+    var eye = document.getElementById("pw-eye");
+    function show(e) { e.preventDefault(); pw.type = "text"; }
+    function hide() { pw.type = "password"; }
+    ["mousedown", "touchstart"].forEach(function (ev) { eye.addEventListener(ev, show); });
+    ["mouseup", "mouseleave", "touchend", "touchcancel", "blur"].forEach(function (ev) { eye.addEventListener(ev, hide); });
+  })();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(function () {});
 </script>
 </body></html>`;
