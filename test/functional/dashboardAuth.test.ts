@@ -42,6 +42,7 @@ test("dashboard: pedir senha manda por WhatsApp (mockado), cria a conta, e respe
     assert.equal(sent.length, 1);
     assert.equal(sent[0].to, CANONICAL);
     assert.match(sent[0].text, /senha de acesso/i);
+    assert.ok(sent[0].text.includes("https://marcusvnv.com.br/dashboard")); // link do painel junto da senha
 
     // pedir de novo na hora: ja mandou nessa ultima hora, nao manda outra
     await fetch(`${server.baseUrl}/dashboard/request-password`, {

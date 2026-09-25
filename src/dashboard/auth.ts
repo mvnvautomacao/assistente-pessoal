@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { renderLoginPage } from "./layout";
 import { normalizeBrazilPhone } from "./utils";
+import { config } from "../config";
 import { isNumberAllowed } from "../access/allowlist";
 import { sendText } from "../whatsapp/client";
 import { createSession, getSession, destroySession, DASHBOARD_SESSION_TTL_MS } from "../auth/session";
@@ -47,7 +48,7 @@ export async function maybeSendNewPassword(rawPhone: string, options?: { bypassC
   upsertDashboardPassword(phoneNumber, hash);
   await sendText(
     phoneNumber,
-    `🔑 Sua senha de acesso ao painel Organizaí: ${password}\n\nUse com o número de WhatsApp pra entrar no painel. Não peça essa senha pra ninguém, nem pelo próprio WhatsApp.`
+    `🔑 Sua senha de acesso ao painel Organizaí: ${password}\n\nEntre com o seu número de WhatsApp e essa senha em:\n${config.dashboardUrl}\n\nNão peça essa senha pra ninguém, nem pelo próprio WhatsApp.`
   );
   return true;
 }

@@ -416,7 +416,9 @@ const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp
 📅 "marca dentista amanhã 15h" — agendo o compromisso
 ⏰ "me lembra de tomar remédio às 20h" — crio um lembrete
 
-Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.`;
+Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.
+
+🖥️ Você também pode ver e editar tudo pelo painel no navegador: ${config.dashboardUrl}`;
 
 export async function handleIncomingMessage(data: EvolutionMessage) {
   // Mensagem de grupo (JID termina em @g.us): nunca processa, incondicional --

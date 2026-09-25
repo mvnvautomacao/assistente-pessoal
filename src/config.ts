@@ -12,6 +12,8 @@ export const config = {
   // opcional: se definido, o endpoint /webhook so aceita chamadas com ?secret=
   // igual a esse valor. Recomendado antes de expor o servidor publicamente.
   webhookSecret: process.env.WEBHOOK_SECRET,
+  // link do painel, mandado junto da mensagem de boas-vindas e da senha
+  dashboardUrl: process.env.DASHBOARD_URL ?? "https://marcusvnv.com.br/dashboard",
 
   evolution: {
     apiUrl: required("EVOLUTION_API_URL"),

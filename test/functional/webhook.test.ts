@@ -1068,6 +1068,7 @@ test("numero novo recebe mensagem de boas-vindas antes da resposta normal; numer
   // autoResolvePaymentMethod) antes de confirmar
   assert.equal(sent.length, 2);
   assert.match(sent[0].text, /assistente pessoal/i);
+  assert.ok(sent[0].text.includes("https://marcusvnv.com.br/dashboard")); // link do painel junto das boas-vindas
   assert.match(sent[1].text, /forma de pagamento/i);
 
   await handleIncomingMessage(evolutionMessage(NEW_NUMBER, "Pix"));
