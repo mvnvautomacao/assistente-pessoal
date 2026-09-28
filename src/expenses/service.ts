@@ -48,6 +48,17 @@ export function ensureUserSeeded(fromNumber: string): boolean {
     for (const name of DEFAULT_PAYMENT_METHODS) insert.run(fromNumber, name);
   }
 
+  // relatorio semanal (toda sexta, 9h) e mensal ja vem ligado por padrao --
+  // o usuario pode mudar o dia quando quiser, mas nao precisa pedir pra
+  // comecar a receber (ver DEFAULT_REPORT_DAY em db.ts, que cobre quem ja
+  // usava o bot antes dessa mudanca).
+  if (isNewUser) {
+    db.prepare(
+      `INSERT INTO user_settings (from_number, report_day_of_week) VALUES (?, 5)
+       ON CONFLICT(from_number) DO NOTHING`
+    ).run(fromNumber);
+  }
+
   return isNewUser;
 }
 
@@ -204,13 +215,21 @@ export function setDefaultPaymentMethod(fromNumber: string, paymentMethodId: num
   ).run(fromNumber, paymentMethodId);
 }
 
-// 0=domingo .. 6=sabado, igual Date.getDay(). Enquanto nao for definido, o relatorio
-// semanal automatico fica desligado pra esse numero (selecao e obrigatoria).
+// 0=domingo .. 6=sabado, igual Date.getDay(). Vem ligado por padrao (sexta,
+// ver ensureUserSeeded/DEFAULT_REPORT_DAY) -- NULL so acontece se algo externo
+// mexer direto no banco.
 export function setReportDayOfWeek(fromNumber: string, dayOfWeek: number) {
   db.prepare(
     `INSERT INTO user_settings (from_number, report_day_of_week) VALUES (?, ?)
      ON CONFLICT(from_number) DO UPDATE SET report_day_of_week = excluded.report_day_of_week`
   ).run(fromNumber, dayOfWeek);
+}
+
+export function getReportDayOfWeek(fromNumber: string): number | null {
+  const row = db.prepare(`SELECT report_day_of_week FROM user_settings WHERE from_number = ?`).get(fromNumber) as
+    | { report_day_of_week: number | null }
+    | undefined;
+  return row?.report_day_of_week ?? null;
 }
 
 export interface ReportSubscriber {

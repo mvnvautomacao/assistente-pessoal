@@ -13,6 +13,8 @@ import {
   searchExpenses,
   getAllExpenses,
   bulkUpdateExpenseCategory,
+  getReportDayOfWeek,
+  setReportDayOfWeek,
   ExpenseListItem,
 } from "../expenses/service";
 import { renderPage } from "./layout";
@@ -35,6 +37,15 @@ import {
 
 import { getMonthBalance } from "../expenses/balance";
 export const expensesRouter = Router();
+
+const REPORT_DAY_NAMES = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
+
+expensesRouter.post("/dashboard/report-day", (req, res) => {
+  const phone = getPhone(req);
+  const day = Number(req.body.day_of_week);
+  if (Number.isInteger(day) && day >= 0 && day <= 6) setReportDayOfWeek(phone, day);
+  res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
+});
 
 function getPhone(req: { query: Record<string, unknown> }): string {
   return typeof req.query.phone === "string" ? normalizeBrazilPhone(req.query.phone) : "";
@@ -264,6 +275,20 @@ expensesRouter.get("/dashboard", (req, res) => {
     ? months.map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`).join("")
     : `<option value="${month}" selected>${escapeHtml(monthLabel(month))}</option>`;
 
+  // relatorio semanal vem ligado por padrao (toda sexta, 9h -- ver
+  // ensureUserSeeded); esse seletor so deixa trocar o dia, nao existe opcao
+  // de desligar ainda.
+  const reportDay = getReportDayOfWeek(phone) ?? 5;
+  const reportDayOptions = REPORT_DAY_NAMES.map(
+    (name, idx) => `<option value="${idx}" ${idx === reportDay ? "selected" : ""}>${name}</option>`
+  ).join("");
+  const reportDayControl = `
+  <form method="post" action="/dashboard/report-day?phone=${encodeURIComponent(phone)}" class="search-row" style="margin-top:10px">
+    <span style="color:var(--muted);font-size:0.85rem">📊 Relatório semanal toda</span>
+    <select name="day_of_week" onchange="this.form.submit()">${reportDayOptions}</select>
+    <span style="color:var(--muted);font-size:0.85rem">às 9h</span>
+  </form>`;
+
   const pageItems = paginate(expenses, page, perPage);
   const expenseRows = pageItems.length
     ? pageItems.map((e) => expenseRow(phone, e)).join("")
@@ -286,6 +311,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     </form>
     <a class="arrow" href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, 1)}">›</a>
   </div>
+  ${reportDayControl}
 
   <div class="cards">
     <div class="card"><div class="label">Total do mês</div><div class="value">${formatMoney(monthTotal)}</div></div>

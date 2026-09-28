@@ -2,6 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ensureUserSeeded,
+  getReportDayOfWeek,
+  setReportDayOfWeek,
+  getReportSubscribers,
   listCategories,
   findCategoryByName,
   findCategoryByKeyword,
@@ -44,6 +47,20 @@ test("ensureUserSeeded cria as categorias e formas de pagamento padrao uma unica
   assert.equal(listCategories(A).length, firstRun);
   assert.ok(firstRun > 0);
   assert.ok(listPaymentMethods(A).length > 0);
+});
+
+// Achado real: relatorio semanal exigia ativacao manual e ninguem sabia disso
+// -- vem ligado por padrao (sexta) desde a primeira mensagem do numero.
+test("ensureUserSeeded ja liga o relatorio semanal por padrao (toda sexta), sem precisar pedir", () => {
+  const H = "551100010091";
+  assert.equal(getReportDayOfWeek(H), null); // antes de existir, nao tem linha nenhuma
+  ensureUserSeeded(H);
+  assert.equal(getReportDayOfWeek(H), 5);
+  assert.ok(getReportSubscribers().some((s) => s.from_number === H));
+
+  setReportDayOfWeek(H, 3); // usuario escolheu outro dia
+  ensureUserSeeded(H); // chamar de novo (mensagem seguinte) nao pode resetar a escolha
+  assert.equal(getReportDayOfWeek(H), 3);
 });
 
 test("categorias/formas de pagamento sao isoladas por numero: seed de A nao vaza pra B", () => {

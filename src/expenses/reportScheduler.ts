@@ -7,7 +7,7 @@ import { spDayOfWeek, isLastDayOfMonthSP } from "../timeSP";
 export function startExpenseReportScheduler() {
   // roda todo dia as 8h: manda o relatorio semanal so pra quem escolheu hoje como o dia dele
   cron.schedule(
-    "0 8 * * *",
+    "0 9 * * *",
     async () => {
       const today = spDayOfWeek();
       const subscribers = getReportSubscribers().filter((s) => s.report_day_of_week === today);

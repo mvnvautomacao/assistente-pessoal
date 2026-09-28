@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startDashboardTestServer } from "../helpers/app";
-import { ensureUserSeeded, findRecentExpense, getExpenseById, getOrCreatePaymentMethod, insertExpense } from "../../src/expenses/service";
+import {
+  ensureUserSeeded,
+  findRecentExpense,
+  getExpenseById,
+  getOrCreatePaymentMethod,
+  insertExpense,
+  getReportDayOfWeek,
+} from "../../src/expenses/service";
 import { insertIncome } from "../../src/incomes/service";
 import { spDateString } from "../../src/timeSP";
 
@@ -229,5 +236,24 @@ test("painel inicial: sem nenhuma entrada no mes, nao mostra card de saldo", asy
     insertExpense({ fromNumber: S2, amount: 10, description: "sem entrada", categoryId: null, paymentMethodId: pix.id, date: spDateString() });
     const html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(S2) })).text();
     assert.ok(!html.includes("Entradas do mês"));
+  });
+});
+
+// Pedido do usuario: escolher o dia do relatorio semanal pelo painel.
+test("painel inicial: mostra o dia do relatorio semanal (sexta por padrao) e permite trocar", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const R = "551100050203";
+    ensureUserSeeded(R);
+    let html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(R) })).text();
+    assert.match(html, /<option value="5" selected>Sexta<\/option>/);
+
+    await fetch(`${baseUrl}/dashboard/report-day`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(R) },
+      body: new URLSearchParams({ day_of_week: "3" }),
+    });
+    assert.equal(getReportDayOfWeek(R), 3);
+    html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(R) })).text();
+    assert.match(html, /<option value="3" selected>Quarta<\/option>/);
   });
 });

@@ -335,7 +335,7 @@ Exemplos:
 • "quanto gastei essa semana"
 • "últimos 15 dias quanto gastei em mercado"
 
-Eu também mando um resumo automático toda semana e todo mês, sem você precisar pedir.`;
+Eu também mando um resumo automático toda sexta-feira às 9h, e outro no último dia de cada mês, sem você precisar pedir. Pra mudar o dia da semana: "quero receber toda quarta".`;
     case "edit_expense":
       return `✏️ Como corrigir um gasto que você já registrou:
 
@@ -2945,14 +2945,14 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, "Não entendi o dia. Pode ser: domingo, segunda, terça, quarta, quinta, sexta ou sábado.");
         break;
       }
-      const dayLabel = interpretation.day_of_week ?? "segunda";
+      const dayLabel = interpretation.day_of_week ?? "sexta";
       setReportDayOfWeek(from, dayMap[dayLabel]);
       logActivity(from, "set_report_day", `relatorio semanal agora chega toda(o) ${dayLabel}${interpretation.day_of_week ? "" : " (padrao)"}`);
       await sendText(
         from,
         interpretation.day_of_week
           ? `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${dayLabel} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
-          : `✅ Relatório semanal ativado! Vou te mandar toda segunda-feira de manhã (pode pedir pra eu mudar o dia quando quiser, ex: "quero receber toda sexta"), e o relatório do mês no último dia de cada mês às 18h.`
+          : `✅ Relatório semanal ativado! Vou te mandar toda sexta-feira às 9h (pode pedir pra eu mudar o dia quando quiser, ex: "quero receber toda quarta"), e o relatório do mês no último dia de cada mês às 18h.`
       );
       break;
     }

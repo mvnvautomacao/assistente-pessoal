@@ -218,6 +218,20 @@ const userSettingsColumns = db.prepare(`PRAGMA table_info(user_settings)`).all()
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "report_day_of_week")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN report_day_of_week INTEGER`);
 }
+
+// achado real: o relatorio semanal exigia o usuario ativar manualmente
+// mandando mensagem ("quero receber toda sexta"), sem nenhum aviso disso --
+// na pratica, ninguem recebia nada ate descobrir sozinho que precisava pedir.
+// Relatorio semanal (toda sexta, 9h) e mensal passam a vir LIGADOS por
+// padrao pra todo mundo. So preenche quem esta NULL ou sem linha nenhuma
+// ainda -- nao reaplica em quem ja escolheu outro dia por conta propria.
+const DEFAULT_REPORT_DAY = 5; // sexta-feira
+db.exec(`
+  INSERT INTO user_settings (from_number, report_day_of_week)
+  SELECT DISTINCT from_number, ${DEFAULT_REPORT_DAY} FROM categories
+  WHERE from_number NOT IN (SELECT from_number FROM user_settings)
+`);
+db.exec(`UPDATE user_settings SET report_day_of_week = ${DEFAULT_REPORT_DAY} WHERE report_day_of_week IS NULL`);
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
 }

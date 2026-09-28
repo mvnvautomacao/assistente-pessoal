@@ -1514,16 +1514,16 @@ test("set_report_day: dia especifico ativa o relatorio semanal nesse dia", async
 // desistia, nunca chamando setReportDayOfWeek nem pedindo o dia de novo.
 // Confirmado contra a API real que a IA de fato omite 'day_of_week' nesse
 // caso. Agora um pedido generico ativa com segunda-feira como padrao.
-test("set_report_day: pedido generico sem citar o dia usa segunda como padrao, em vez de nao ativar nada", async (t) => {
+test("set_report_day: pedido generico sem citar o dia usa sexta como padrao, em vez de nao ativar nada", async (t) => {
   const SR2 = "551100090502";
   seed(SR2);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_report_day" }]);
   await handleIncomingMessage(evolutionMessage(SR2, "ativa o relatório semanal"));
-  assert.match(sent[0].text, /segunda/i);
+  assert.match(sent[0].text, /sexta/i);
   assert.doesNotMatch(sent[0].text, /[Nn]ão entendi/);
   const sub = getReportSubscribers().find((s) => s.from_number === SR2);
-  assert.equal(sub?.report_day_of_week, 1);
+  assert.equal(sub?.report_day_of_week, 5);
 });
 
 test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita loop de bot com bot)", async (t) => {
