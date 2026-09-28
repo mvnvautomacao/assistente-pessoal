@@ -8,6 +8,8 @@ import { createSession, getSession, destroySession, ADMIN_SESSION_TTL_MS } from 
 import { isLoginLocked, recordFailedLogin, recordSuccessfulLogin } from "./auth/loginGuard";
 import { listDashboardAccounts, deleteDashboardAccount } from "./dashboard/accounts";
 import { maybeSendNewPassword } from "./dashboard/auth";
+import { sendText } from "./whatsapp/client";
+import { previousWeekRange, buildExpenseReportText } from "./expenses/reportText";
 import { PAGE_SIZES, paginate } from "./dashboard/utils";
 import { destroyDashboardSessionsForPhone } from "./auth/session";
 
@@ -327,6 +329,13 @@ ${allowed.length ? `<table><tr><th>Número</th><th>Nota</th><th>Autorizado em</t
   <button type="submit">+ Autorizar número</button>
 </form>
 
+<h2>Testar relatório semanal</h2>
+<p class="warn">Manda o relatório da semana passada pra um número, agora, só pra conferir como fica — não é o envio automático de sexta.</p>
+<form class="add-form" method="post" action="/admin/send-test-report">
+  <input type="text" name="phone_number" placeholder="Ex: 5561999210718" required>
+  <button type="submit">Mandar relatório de teste</button>
+</form>
+
 <h2 id="blocked">Tentativas bloqueadas recentemente (${allBlockedAttempts.length})</h2>
 ${allBlockedAttempts.length ? `<table><tr><th>Quando</th><th>Número</th><th>Mensagem</th><th></th></tr>${blockedRows}</table>` : `<p class="empty">Nenhuma tentativa bloqueada recentemente.</p>`}
 ${renderAdminPagination({
@@ -378,6 +387,17 @@ adminRouter.post("/admin/allowlist/remove", (req, res) => {
 adminRouter.post("/admin/dashboard-accounts/reset", async (req, res) => {
   const phoneNumber = String(req.body.phone_number || "");
   if (phoneNumber) await maybeSendNewPassword(phoneNumber, { bypassCooldown: true });
+  res.redirect("/admin");
+});
+
+// util pra ver como o relatorio semanal fica formatado de verdade, sem
+// esperar sexta-feira -- manda o relatorio da semana passada pro numero pedido.
+adminRouter.post("/admin/send-test-report", async (req, res) => {
+  const phoneNumber = normalizeBrazilPhone(String(req.body.phone_number || ""));
+  if (phoneNumber) {
+    const text = buildExpenseReportText(previousWeekRange(), { compare: true, fromNumber: phoneNumber });
+    await sendText(phoneNumber, `🧪 *Teste* (isso é uma prévia, não o envio automático de sexta)\n\n${text}`);
+  }
   res.redirect("/admin");
 });
 
