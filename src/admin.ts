@@ -393,12 +393,24 @@ adminRouter.post("/admin/dashboard-accounts/reset", async (req, res) => {
 // util pra ver como o relatorio semanal fica formatado de verdade, sem
 // esperar sexta-feira -- manda o relatorio da semana passada pro numero pedido.
 adminRouter.post("/admin/send-test-report", async (req, res) => {
-  const phoneNumber = normalizeBrazilPhone(String(req.body.phone_number || ""));
-  if (phoneNumber) {
+  // achado real (incidente em producao): sendText lanca erro se a Evolution API
+  // recusar o numero (ex: formato invalido), e sem try/catch isso vira uma
+  // promise rejeitada sem handler -- o Node derruba o processo inteiro por
+  // causa disso (unhandled rejection), nao so essa requisicao. Toda rota que
+  // chama a Evolution API precisa desse try/catch.
+  try {
+    const phoneNumber = normalizeBrazilPhone(String(req.body.phone_number || ""));
+    if (!/^\d{12,13}$/.test(phoneNumber)) {
+      res.status(400).send("Número inválido -- use o formato completo com 55, ex: 5561999210718.");
+      return;
+    }
     const text = buildExpenseReportText(previousWeekRange(), { compare: true, fromNumber: phoneNumber });
     await sendText(phoneNumber, `🧪 *Teste* (isso é uma prévia, não o envio automático de sexta)\n\n${text}`);
+    res.redirect("/admin");
+  } catch (err) {
+    console.error("Erro ao mandar relatorio de teste:", err);
+    res.status(500).send(`Deu erro ao mandar: ${err instanceof Error ? err.message : String(err)}`);
   }
-  res.redirect("/admin");
 });
 
 adminRouter.post("/admin/dashboard-accounts/revoke", (req, res) => {

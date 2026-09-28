@@ -13,6 +13,21 @@ import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import { startBillAlertScheduler } from "./bills/scheduler";
 import "./db";
 
+// incidente real: uma rota sem try/catch chamou a Evolution API, ela recusou o
+// pedido, e o erro (promise rejeitada sem handler) derrubou o processo INTEIRO
+// -- ninguem mais conseguia usar o bot ate o container reiniciar sozinho.
+// Isso protege contra qualquer descuido futuro (aqui ou em qualquer rota) que
+// esqueça um try/catch: loga o erro em vez de matar o servidor pra todo mundo
+// por causa de UMA requisicao. Nao susbtitui tratar o erro direito na rota
+// (perde a resposta certa pro usuario daquela requisicao), so evita que vire
+// uma queda geral.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection (processo continua rodando):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (processo continua rodando):", err);
+});
+
 const app = express();
 // necessario pro Express enxergar corretamente req.secure/x-forwarded-proto
 // atras do proxy reverso do Coolify (Traefik) -- sem isso, o cookie de sessao

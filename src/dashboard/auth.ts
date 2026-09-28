@@ -46,10 +46,18 @@ export async function maybeSendNewPassword(rawPhone: string, options?: { bypassC
   const password = generatePassword();
   const hash = await hashPassword(password);
   upsertDashboardPassword(phoneNumber, hash);
-  await sendText(
-    phoneNumber,
-    `🔑 Sua senha de acesso ao painel Organizaí: ${password}\n\nEntre com o seu número de WhatsApp e essa senha em:\n${config.dashboardUrl}\n\nNão peça essa senha pra ninguém, nem pelo próprio WhatsApp.`
-  );
+  try {
+    // achado real: sem esse try/catch, a Evolution API recusando o envio (fora
+    // do ar, numero invalido etc.) derrubava o processo inteiro (promise
+    // rejeitada sem handler) -- ninguem mais conseguia usar o bot ate reiniciar.
+    await sendText(
+      phoneNumber,
+      `🔑 Sua senha de acesso ao painel Organizaí: ${password}\n\nEntre com o seu número de WhatsApp e essa senha em:\n${config.dashboardUrl}\n\nNão peça essa senha pra ninguém, nem pelo próprio WhatsApp.`
+    );
+  } catch (err) {
+    console.error(`Erro ao mandar senha do dashboard pra ${phoneNumber}:`, err);
+    return false;
+  }
   return true;
 }
 
