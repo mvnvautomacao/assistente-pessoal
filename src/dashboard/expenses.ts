@@ -15,6 +15,10 @@ import {
   bulkUpdateExpenseCategory,
   getReportDayOfWeek,
   setReportDayOfWeek,
+  getNoExpenseReminderSettings,
+  setNoExpenseReminderEnabled,
+  setNoExpenseReminderTime,
+  parseReminderTime,
   ExpenseListItem,
 } from "../expenses/service";
 import { renderPage } from "./layout";
@@ -44,6 +48,14 @@ expensesRouter.post("/dashboard/report-day", (req, res) => {
   const phone = getPhone(req);
   const day = Number(req.body.day_of_week);
   if (Number.isInteger(day) && day >= 0 && day <= 6) setReportDayOfWeek(phone, day);
+  res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
+});
+
+expensesRouter.post("/dashboard/no-expense-reminder", (req, res) => {
+  const phone = getPhone(req);
+  setNoExpenseReminderEnabled(phone, req.body.enabled === "1");
+  const time = parseReminderTime(String(req.body.time ?? ""));
+  if (time) setNoExpenseReminderTime(phone, time);
   res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
 });
 
@@ -289,6 +301,20 @@ expensesRouter.get("/dashboard", (req, res) => {
     <span style="color:var(--muted);font-size:0.85rem">às 9h</span>
   </form>`;
 
+  // aviso automatico ("nao registrou nada hoje?") -- ligado por padrao, 18:30
+  // (ver ensureUserSeeded/db.ts), o usuario so desliga se nao quiser.
+  const noExpenseReminder = getNoExpenseReminderSettings(phone);
+  const noExpenseReminderControl = `
+  <form method="post" action="/dashboard/no-expense-reminder?phone=${encodeURIComponent(phone)}" class="search-row" style="margin-top:6px">
+    <span style="color:var(--muted);font-size:0.85rem">🔔 Avisar se eu não registrar nenhum gasto até</span>
+    <input type="time" name="time" value="${escapeHtml(noExpenseReminder.time)}" style="width:110px">
+    <select name="enabled">
+      <option value="1" ${noExpenseReminder.enabled ? "selected" : ""}>Ativado</option>
+      <option value="0" ${!noExpenseReminder.enabled ? "selected" : ""}>Desativado</option>
+    </select>
+    <button type="submit" class="btn secondary" style="padding:4px 12px">Salvar</button>
+  </form>`;
+
   const pageItems = paginate(expenses, page, perPage);
   const expenseRows = pageItems.length
     ? pageItems.map((e) => expenseRow(phone, e)).join("")
@@ -312,6 +338,7 @@ expensesRouter.get("/dashboard", (req, res) => {
     <a class="arrow" href="/dashboard?phone=${encodeURIComponent(phone)}&month=${shiftMonth(month, 1)}">›</a>
   </div>
   ${reportDayControl}
+  ${noExpenseReminderControl}
 
   <div class="cards">
     <div class="card"><div class="label">Total do mês</div><div class="value">${formatMoney(monthTotal)}</div></div>

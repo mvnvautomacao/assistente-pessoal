@@ -166,6 +166,10 @@ import {
   setDefaultPaymentMethod,
   listPaymentMethods,
   setReportDayOfWeek,
+  parseReminderTime,
+  getNoExpenseReminderSettings,
+  setNoExpenseReminderEnabled,
+  setNoExpenseReminderTime,
   getExpenseSummaryBetween,
   getExpensesBetween,
   getExpenseById,
@@ -2953,6 +2957,37 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         interpretation.day_of_week
           ? `✅ Combinado! Vou te mandar o relatório de gastos da semana toda ${dayLabel} de manhã, e o relatório do mês no último dia de cada mês às 18h.`
           : `✅ Relatório semanal ativado! Vou te mandar toda sexta-feira às 9h (pode pedir pra eu mudar o dia quando quiser, ex: "quero receber toda quarta"), e o relatório do mês no último dia de cada mês às 18h.`
+      );
+      break;
+    }
+    case "set_no_expense_reminder": {
+      let time: string | undefined;
+      if (interpretation.time !== undefined) {
+        const parsed = parseReminderTime(interpretation.time);
+        if (!parsed) {
+          await sendText(from, 'Não entendi o horário. Manda no formato 24h, tipo "18:30".');
+          break;
+        }
+        time = parsed;
+      }
+
+      if (time) setNoExpenseReminderTime(from, time);
+      // mudar so o horario ja implica querer o aviso ativado, a nao ser que o
+      // usuario tambem tenha pedido pra desativar na mesma frase.
+      if (interpretation.enabled !== undefined) setNoExpenseReminderEnabled(from, interpretation.enabled);
+      else if (time) setNoExpenseReminderEnabled(from, true);
+
+      const settings = getNoExpenseReminderSettings(from);
+      logActivity(
+        from,
+        "set_no_expense_reminder",
+        `aviso de gasto pendente ${settings.enabled ? `ativado (${settings.time})` : "desativado"}`
+      );
+      await sendText(
+        from,
+        settings.enabled
+          ? `🔔 Combinado! Se você não registrar nenhum gasto até ${settings.time}, eu te aviso.`
+          : "🔕 Combinado, não vou mais te avisar se você não registrar nenhum gasto no dia."
       );
       break;
     }

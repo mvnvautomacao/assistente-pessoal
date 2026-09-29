@@ -16,6 +16,7 @@ import {
   searchExpenses,
   learnKeyword,
   getReportSubscribers,
+  getNoExpenseReminderSettings,
   getNextPendingCategorization,
   backdatePendingCategorizationForTests,
   getOrCreatePaymentMethod,
@@ -1524,6 +1525,43 @@ test("set_report_day: pedido generico sem citar o dia usa sexta como padrao, em 
   assert.doesNotMatch(sent[0].text, /[Nn]ão entendi/);
   const sub = getReportSubscribers().find((s) => s.from_number === SR2);
   assert.equal(sub?.report_day_of_week, 5);
+});
+
+test("set_no_expense_reminder: desativa o aviso de gasto pendente", async (t) => {
+  const NE1 = "551100090601";
+  seed(NE1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_no_expense_reminder", enabled: false }]);
+  await handleIncomingMessage(evolutionMessage(NE1, "desativa o aviso de gasto pendente"));
+  assert.match(sent[0].text, /não vou mais te avisar/i);
+  assert.equal(getNoExpenseReminderSettings(NE1).enabled, false);
+});
+
+test("set_no_expense_reminder: mudar o horario ja reativa o aviso sozinho, mesmo sem pedir enabled=true", async (t) => {
+  const NE2 = "551100090602";
+  seed(NE2);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_no_expense_reminder", enabled: false }]);
+  await handleIncomingMessage(evolutionMessage(NE2, "desativa o aviso de gasto pendente"));
+  assert.equal(getNoExpenseReminderSettings(NE2).enabled, false);
+
+  queueReply([{ type: "set_no_expense_reminder", time: "20:00" }]);
+  await handleIncomingMessage(evolutionMessage(NE2, "muda o horario do aviso pra 20h"));
+  assert.match(sent[sent.length - 1].text, /20:00/);
+  const settings = getNoExpenseReminderSettings(NE2);
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.time, "20:00");
+});
+
+test("set_no_expense_reminder: horario invalido pede pra tentar de novo, sem mudar nada", async (t) => {
+  const NE3 = "551100090603";
+  seed(NE3);
+  const before = getNoExpenseReminderSettings(NE3);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_no_expense_reminder", time: "25:99" }]);
+  await handleIncomingMessage(evolutionMessage(NE3, "muda o aviso pra 25:99"));
+  assert.match(sent[0].text, /[Nn]ão entendi o horário/);
+  assert.deepEqual(getNoExpenseReminderSettings(NE3), before);
 });
 
 test("numero nao autorizado: nao recebe NENHUMA resposta e nem chama a IA (evita loop de bot com bot)", async (t) => {

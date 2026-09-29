@@ -11,6 +11,7 @@ import { startExpenseReportScheduler } from "./expenses/reportScheduler";
 import { startEventReminderScheduler } from "./events/reminderScheduler";
 import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import { startBillAlertScheduler } from "./bills/scheduler";
+import { startNoExpenseReminderScheduler } from "./expenses/noExpenseReminderScheduler";
 import "./db";
 
 // incidente real: uma rota sem try/catch chamou a Evolution API, ela recusou o
@@ -67,4 +68,5 @@ app.listen(config.port, () => {
   startEventReminderScheduler();
   startRecurringExpenseScheduler();
   startBillAlertScheduler();
+  startNoExpenseReminderScheduler();
 });

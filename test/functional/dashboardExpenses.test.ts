@@ -8,6 +8,7 @@ import {
   getOrCreatePaymentMethod,
   insertExpense,
   getReportDayOfWeek,
+  getNoExpenseReminderSettings,
 } from "../../src/expenses/service";
 import { insertIncome } from "../../src/incomes/service";
 import { spDateString } from "../../src/timeSP";
@@ -255,5 +256,50 @@ test("painel inicial: mostra o dia do relatorio semanal (sexta por padrao) e per
     assert.equal(getReportDayOfWeek(R), 3);
     html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(R) })).text();
     assert.match(html, /<option value="3" selected>Quarta<\/option>/);
+  });
+});
+
+// Pedido do usuario: acompanhar/editar o aviso de gasto pendente ("nao
+// registrou nada hoje?") pelo painel -- vem ligado por padrao, 18:30.
+test("painel inicial: mostra o aviso de gasto pendente (ligado, 18:30 por padrao) e permite editar", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const N = "551100050204";
+    ensureUserSeeded(N);
+    let html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(N) })).text();
+    assert.match(html, /value="18:30"/);
+    assert.match(html, /<option value="1" selected>Ativado<\/option>/);
+
+    await fetch(`${baseUrl}/dashboard/no-expense-reminder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(N) },
+      body: new URLSearchParams({ time: "20:15", enabled: "0" }),
+    });
+    let settings = getNoExpenseReminderSettings(N);
+    assert.equal(settings.time, "20:15");
+    assert.equal(settings.enabled, false);
+    html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(N) })).text();
+    assert.match(html, /value="20:15"/);
+    assert.match(html, /<option value="0" selected>Desativado<\/option>/);
+
+    await fetch(`${baseUrl}/dashboard/no-expense-reminder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(N) },
+      body: new URLSearchParams({ time: "20:15", enabled: "1" }),
+    });
+    settings = getNoExpenseReminderSettings(N);
+    assert.equal(settings.enabled, true);
+  });
+});
+
+test("painel inicial: horario invalido no aviso de gasto pendente e ignorado (mantem o valor anterior)", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const N2 = "551100050205";
+    ensureUserSeeded(N2);
+    await fetch(`${baseUrl}/dashboard/no-expense-reminder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(N2) },
+      body: new URLSearchParams({ time: "não é hora", enabled: "1" }),
+    });
+    assert.equal(getNoExpenseReminderSettings(N2).time, "18:30");
   });
 });

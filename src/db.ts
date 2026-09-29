@@ -64,11 +64,18 @@ db.exec(`
   -- forma de pagamento padrao e dia do relatorio semanal de cada numero.
   -- report_day_of_week: 0=domingo .. 6=sabado (igual Date.getDay()). NULL = relatorio semanal desligado ate o usuario escolher um dia.
   -- event_reminder_minutes: padrao de "avisar X min antes" pra eventos novos (pode ser sobrescrito por evento).
+  -- no_expense_reminder_*: aviso automatico ("nao registrou nada hoje?") -- ligado
+  -- por padrao, as 18:30. sent_date ("YYYY-MM-DD") guarda o dia (fuso SP) em que
+  -- ja foi resolvido (avisado OU o usuario ja tinha registrado algo), pra nao
+  -- checar de novo no mesmo dia (ver expenses/noExpenseReminderScheduler.ts).
   CREATE TABLE IF NOT EXISTS user_settings (
     from_number TEXT PRIMARY KEY,
     default_payment_method_id INTEGER REFERENCES payment_methods(id),
     report_day_of_week INTEGER,
-    event_reminder_minutes INTEGER NOT NULL DEFAULT 60
+    event_reminder_minutes INTEGER NOT NULL DEFAULT 60,
+    no_expense_reminder_enabled INTEGER NOT NULL DEFAULT 1,
+    no_expense_reminder_time TEXT NOT NULL DEFAULT '18:30',
+    no_expense_reminder_sent_date TEXT
   );
 
   -- agenda propria, isolada por numero (nao depende de conta do Google).
@@ -260,6 +267,19 @@ db.exec(`
 db.exec(`UPDATE user_settings SET report_day_of_week = ${DEFAULT_REPORT_DAY} WHERE report_day_of_week IS NULL`);
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
+}
+
+// aviso automatico de gasto pendente: ligado por padrao (mesma filosofia do
+// relatorio semanal, ver DEFAULT_REPORT_DAY acima) -- ninguem precisa pedir
+// pra comecar a receber, so desativar se nao quiser.
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_reminder_enabled")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_reminder_enabled INTEGER NOT NULL DEFAULT 1`);
+}
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_reminder_time")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_reminder_time TEXT NOT NULL DEFAULT '18:30'`);
+}
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_reminder_sent_date")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_reminder_sent_date TEXT`);
 }
 
 // bill_alerts existia antes da recorrencia por intervalo (so tinha dia fixo do

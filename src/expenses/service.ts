@@ -243,6 +243,74 @@ export function getReportSubscribers(): ReportSubscriber[] {
     .all() as unknown as ReportSubscriber[];
 }
 
+// "HH:MM" (24h), aceitando hora sem zero na frente ("9:00") -- normaliza pro
+// formato com zero (SEMPRE 2 digitos) ou devolve null se nao for um horario valido.
+export function parseReminderTime(raw: string): string | null {
+  const match = raw.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${match[2]}`;
+}
+
+export interface NoExpenseReminderSettings {
+  enabled: boolean;
+  time: string;
+}
+
+// Vem ligado por padrao (18:30, ver ensureUserSeeded/migracao em db.ts) --
+// mesma filosofia do relatorio semanal: ninguem precisa pedir pra comecar a
+// receber, so desativar se nao quiser (ver bug real corrigido em reportScheduler).
+export function getNoExpenseReminderSettings(fromNumber: string): NoExpenseReminderSettings {
+  const row = db
+    .prepare(`SELECT no_expense_reminder_enabled, no_expense_reminder_time FROM user_settings WHERE from_number = ?`)
+    .get(fromNumber) as { no_expense_reminder_enabled: number; no_expense_reminder_time: string } | undefined;
+  return { enabled: row ? row.no_expense_reminder_enabled === 1 : true, time: row?.no_expense_reminder_time ?? "18:30" };
+}
+
+export function setNoExpenseReminderEnabled(fromNumber: string, enabled: boolean) {
+  db.prepare(
+    `INSERT INTO user_settings (from_number, no_expense_reminder_enabled) VALUES (?, ?)
+     ON CONFLICT(from_number) DO UPDATE SET no_expense_reminder_enabled = excluded.no_expense_reminder_enabled`
+  ).run(fromNumber, enabled ? 1 : 0);
+}
+
+export function setNoExpenseReminderTime(fromNumber: string, time: string) {
+  db.prepare(
+    `INSERT INTO user_settings (from_number, no_expense_reminder_time) VALUES (?, ?)
+     ON CONFLICT(from_number) DO UPDATE SET no_expense_reminder_time = excluded.no_expense_reminder_time`
+  ).run(fromNumber, time);
+}
+
+export interface NoExpenseReminderSubscriber {
+  from_number: string;
+  time: string;
+  sent_date: string | null;
+}
+
+export function getNoExpenseReminderSubscribers(): NoExpenseReminderSubscriber[] {
+  return db
+    .prepare(
+      `SELECT from_number, no_expense_reminder_time AS time, no_expense_reminder_sent_date AS sent_date
+       FROM user_settings WHERE no_expense_reminder_enabled = 1`
+    )
+    .all() as unknown as NoExpenseReminderSubscriber[];
+}
+
+// marca o dia (fuso SP) como "resolvido" -- avisado, OU o usuario ja tinha
+// registrado algo -- pra nao checar de novo ate o dia seguinte.
+export function markNoExpenseReminderSent(fromNumber: string, dateStr: string) {
+  db.prepare(`UPDATE user_settings SET no_expense_reminder_sent_date = ? WHERE from_number = ?`).run(dateStr, fromNumber);
+}
+
+// existe algum gasto ATRIBUIDO a esse dia (coluna "date", igual todo resto do
+// sistema usa pra filtrar por dia -- nao created_at, que e quando foi digitado).
+export function hasExpenseForDate(fromNumber: string, dateStr: string): boolean {
+  const row = db.prepare(`SELECT 1 FROM expenses WHERE from_number = ? AND date = ? LIMIT 1`).get(fromNumber, dateStr);
+  return !!row;
+}
+
 export function learnKeyword(fromNumber: string, keyword: string, categoryId: number) {
   const clean = keyword.trim();
   if (!clean) return;

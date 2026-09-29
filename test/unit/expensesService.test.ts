@@ -5,6 +5,13 @@ import {
   getReportDayOfWeek,
   setReportDayOfWeek,
   getReportSubscribers,
+  parseReminderTime,
+  getNoExpenseReminderSettings,
+  setNoExpenseReminderEnabled,
+  setNoExpenseReminderTime,
+  getNoExpenseReminderSubscribers,
+  markNoExpenseReminderSent,
+  hasExpenseForDate,
   listCategories,
   findCategoryByName,
   findCategoryByKeyword,
@@ -61,6 +68,66 @@ test("ensureUserSeeded ja liga o relatorio semanal por padrao (toda sexta), sem 
   setReportDayOfWeek(H, 3); // usuario escolheu outro dia
   ensureUserSeeded(H); // chamar de novo (mensagem seguinte) nao pode resetar a escolha
   assert.equal(getReportDayOfWeek(H), 3);
+});
+
+test("parseReminderTime normaliza HH:MM valido (com ou sem zero na frente) e rejeita o resto", () => {
+  assert.equal(parseReminderTime("18:30"), "18:30");
+  assert.equal(parseReminderTime("9:00"), "09:00");
+  assert.equal(parseReminderTime("00:00"), "00:00");
+  assert.equal(parseReminderTime("23:59"), "23:59");
+  assert.equal(parseReminderTime("24:00"), null);
+  assert.equal(parseReminderTime("18:60"), null);
+  assert.equal(parseReminderTime("18h30"), null);
+  assert.equal(parseReminderTime("abc"), null);
+});
+
+// Achado real (mesma filosofia do relatorio semanal): o aviso de gasto
+// pendente vem ligado por padrao (18:30) desde a primeira mensagem do numero,
+// sem precisar pedir.
+test("ensureUserSeeded ja liga o aviso de gasto pendente por padrao (18:30), sem precisar pedir", () => {
+  const R = "551100010080";
+  ensureUserSeeded(R);
+  const settings = getNoExpenseReminderSettings(R);
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.time, "18:30");
+  assert.ok(getNoExpenseReminderSubscribers().some((s) => s.from_number === R));
+});
+
+test("setNoExpenseReminderEnabled/setNoExpenseReminderTime mudam so o que foi pedido, isolados por numero", () => {
+  const R1 = "551100010081";
+  const R2 = "551100010082";
+  ensureUserSeeded(R1);
+  ensureUserSeeded(R2);
+
+  setNoExpenseReminderTime(R1, "20:00");
+  assert.equal(getNoExpenseReminderSettings(R1).time, "20:00");
+  assert.equal(getNoExpenseReminderSettings(R1).enabled, true); // mudar so o horario nao desativa
+
+  setNoExpenseReminderEnabled(R1, false);
+  assert.equal(getNoExpenseReminderSettings(R1).enabled, false);
+  assert.equal(getNoExpenseReminderSettings(R1).time, "20:00"); // desativar nao apaga o horario escolhido
+
+  // isolamento: nada disso vazou pro R2
+  assert.equal(getNoExpenseReminderSettings(R2).enabled, true);
+  assert.equal(getNoExpenseReminderSettings(R2).time, "18:30");
+
+  assert.ok(!getNoExpenseReminderSubscribers().some((s) => s.from_number === R1)); // desativado nao aparece mais
+  assert.ok(getNoExpenseReminderSubscribers().some((s) => s.from_number === R2));
+});
+
+test("markNoExpenseReminderSent grava a data, e hasExpenseForDate so olha a coluna date (nao created_at)", () => {
+  const R = "551100010083";
+  ensureUserSeeded(R);
+
+  assert.equal(getNoExpenseReminderSubscribers().find((s) => s.from_number === R)?.sent_date, null);
+  markNoExpenseReminderSent(R, "2026-09-29");
+  assert.equal(getNoExpenseReminderSubscribers().find((s) => s.from_number === R)?.sent_date, "2026-09-29");
+
+  assert.equal(hasExpenseForDate(R, "2026-09-29"), false);
+  const category = getOrCreateCategory(R, "Mercado");
+  insertExpense({ fromNumber: R, amount: 10, description: "pao", categoryId: category.id, paymentMethodId: null, date: "2026-09-29" });
+  assert.equal(hasExpenseForDate(R, "2026-09-29"), true);
+  assert.equal(hasExpenseForDate(R, "2026-09-28"), false); // outro dia continua sem gasto
 });
 
 test("categorias/formas de pagamento sao isoladas por numero: seed de A nao vaza pra B", () => {

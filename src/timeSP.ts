@@ -4,6 +4,12 @@
 
 const spDateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" });
 const spWeekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" });
+const spTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "America/Sao_Paulo",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
 const WEEKDAY_TO_NUMBER: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
@@ -15,6 +21,11 @@ export function spDateString(d: Date = new Date()): string {
 // 0=domingo .. 6=sabado, igual Date.getDay(), mas calculado no fuso de Sao Paulo
 export function spDayOfWeek(d: Date = new Date()): number {
   return WEEKDAY_TO_NUMBER[spWeekdayFormatter.format(d)];
+}
+
+// "HH:MM" (24h) no relogio de Sao Paulo, independente do fuso do servidor.
+export function spTimeString(d: Date = new Date()): string {
+  return spTimeFormatter.format(d);
 }
 
 export function isLastDayOfMonthSP(d: Date = new Date()): boolean {
