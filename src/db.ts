@@ -108,11 +108,27 @@ db.exec(`
   -- cobranca mensal de cada cliente (numero autorizado) -- controle manual pelo
   -- admin, sem integracao com gateway de pagamento ainda. next_due_date e
   -- last_payment_date sao NULL ate o admin configurar a primeira cobranca.
+  -- plan ('mensal' ou 'anual') e so o ultimo plano usado, pra pre-selecionar a
+  -- tela -- o historico de verdade fica em client_payments.
   CREATE TABLE IF NOT EXISTS client_billing (
     from_number TEXT PRIMARY KEY,
     monthly_fee REAL,
     next_due_date TEXT,
-    last_payment_date TEXT
+    last_payment_date TEXT,
+    plan TEXT
+  );
+
+  -- historico de pagamentos registrados por cliente -- cada linha e 1 pagamento
+  -- (mensal cobre 1 mes, anual cobre 12), pra dar pra acompanhar mes a mes o
+  -- que cada cliente ja pagou (ver billing/service.ts getPaidMonthsForClient).
+  CREATE TABLE IF NOT EXISTS client_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    amount REAL NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    paid_at TEXT NOT NULL
   );
 
   -- login do dashboard web: senha SEMPRE gerada pelo sistema e mandada por
@@ -302,6 +318,12 @@ if (!keywordColumns.some((c) => c.name === "from_number")) {
 const paymentMethodColumns = db.prepare(`PRAGMA table_info(payment_methods)`).all() as { name: string }[];
 if (!paymentMethodColumns.some((c) => c.name === "credit_limit")) {
   db.exec(`ALTER TABLE payment_methods ADD COLUMN credit_limit REAL`);
+}
+
+// client_billing existia antes da coluna plan ser adicionada.
+const clientBillingColumns = db.prepare(`PRAGMA table_info(client_billing)`).all() as { name: string }[];
+if (clientBillingColumns.length && !clientBillingColumns.some((c) => c.name === "plan")) {
+  db.exec(`ALTER TABLE client_billing ADD COLUMN plan TEXT`);
 }
 
 // node:sqlite (DatabaseSync) nao tem um helper de transacao pronto tipo o do

@@ -12,7 +12,7 @@ import { sendText } from "./whatsapp/client";
 import { previousWeekRange, buildExpenseReportText } from "./expenses/reportText";
 import { PAGE_SIZES, paginate } from "./dashboard/utils";
 import { destroyDashboardSessionsForPhone } from "./auth/session";
-import { listClientBilling, setClientBillingInfo, markClientPaymentReceived } from "./billing/service";
+import { listClientBilling, setClientBillingInfo, recordClientPayment, getPaidMonthsForClient, PLAN_PRICES, BillingPlan } from "./billing/service";
 import { spDateString } from "./timeSP";
 
 export const adminRouter = Router();
@@ -125,6 +125,17 @@ function formatDate(value: string): string {
 function formatDateOnly(value: string): string {
   const [year, month, day] = value.slice(0, 10).split("-");
   return `${day}/${month}/${year}`;
+}
+
+const MONTH_NAMES = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
+// "2026-09" -> "setembro/2026"
+function formatYearMonth(value: string): string {
+  const [year, month] = value.split("-").map(Number);
+  return `${MONTH_NAMES[month - 1]}/${year}`;
 }
 
 // Paginacao achado da auditoria ("/admin sem paginação: atividade recente e
@@ -262,6 +273,7 @@ adminRouter.get("/admin", (req, res) => {
 
   // status e sempre CALCULADO (nunca guardado): compara next_due_date com
   // hoje, na hora de mostrar -- assim nao tem como ficar dessincronizado.
+  const PLAN_LABEL: Record<BillingPlan, string> = { mensal: "Mensal", anual: "Anual" };
   const clientRows = allowed
     .map((a) => {
       const b = billingByNumber.get(a.from_number);
@@ -272,6 +284,13 @@ adminRouter.get("/admin", (req, res) => {
         : dueDate < today
           ? `<span class="tag" style="background:#f0576b26;color:#c0392b">Atrasado</span>`
           : `<span class="tag" style="background:#34d39926;color:#1f8a5f">Em dia</span>`;
+      const planLabel = b?.plan ? ` <span style="color:#999">(${PLAN_LABEL[b.plan]})</span>` : "";
+      const paidMonths = getPaidMonthsForClient(a.from_number);
+      const monthsHistory = paidMonths.length
+        ? `<details><summary style="cursor:pointer;color:var(--muted)">${paidMonths.length} mês(es) pago(s)</summary>
+            <div style="margin-top:4px">${paidMonths.map((m) => formatYearMonth(m)).join(", ")}</div>
+          </details>`
+        : `<span style="color:var(--muted)">Nenhum pagamento ainda</span>`;
       return `
       <tr>
         <td>${escapeHtml(a.from_number)}${a.note ? ` <span style="color:#999">(${escapeHtml(a.note)})</span>` : ""}</td>
@@ -283,12 +302,19 @@ adminRouter.get("/admin", (req, res) => {
             <button type="submit" class="link-btn">Salvar</button>
           </form>
         </td>
-        <td>${status}</td>
+        <td>${status}${planLabel}</td>
         <td>${b?.last_payment_date ? formatDateOnly(b.last_payment_date) : "—"}</td>
+        <td>${monthsHistory}</td>
         <td class="row-actions">
           <form class="inline" method="post" action="/admin/clients/mark-paid">
             <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
-            <button type="submit" class="link-btn">Marcar pago</button>
+            <input type="hidden" name="plan" value="mensal">
+            <button type="submit" class="link-btn">Pago mensal (R$${PLAN_PRICES.mensal.toFixed(2)})</button>
+          </form>
+          <form class="inline" method="post" action="/admin/clients/mark-paid">
+            <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
+            <input type="hidden" name="plan" value="anual">
+            <button type="submit" class="link-btn">Pago anual (R$${PLAN_PRICES.anual.toFixed(2)})</button>
           </form>
           <form class="inline" method="post" action="/admin/allowlist/remove" onsubmit="return confirm('Revogar o acesso desse cliente? Ele para de receber resposta do assistente.')">
             <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
@@ -365,8 +391,8 @@ adminRouter.get("/admin", (req, res) => {
 <h1>Assistente Pessoal</h1>
 
 <h2>Clientes e cobrança (${allowed.length})</h2>
-<p class="warn">Controle manual por enquanto (sem integração com gateway de pagamento). "Marcar pago" reinicia o vencimento pra 1 mês a partir de hoje. "Revogar acesso" tira o cliente da lista de autorizados na hora — ele para de receber resposta do assistente até ser liberado de novo.</p>
-${allowed.length ? `<table><tr><th>Número</th><th>Mensalidade / Vencimento</th><th>Status</th><th>Último pagamento</th><th></th></tr>${clientRows}</table>` : `<p class="empty">Nenhum cliente autorizado ainda.</p>`}
+<p class="warn">Controle manual por enquanto (sem integração com gateway de pagamento). Planos fixos: mensal R$${PLAN_PRICES.mensal.toFixed(2)} ou anual R$${PLAN_PRICES.anual.toFixed(2)}. Marcar um pagamento reinicia o vencimento a partir de hoje (mensal +1 mês, anual +12 meses) e fica guardado no histórico de meses pagos. "Revogar acesso" tira o cliente da lista de autorizados na hora — ele para de receber resposta do assistente até ser liberado de novo.</p>
+${allowed.length ? `<table><tr><th>Número</th><th>Mensalidade / Vencimento</th><th>Status</th><th>Último pagamento</th><th>Meses pagos</th><th></th></tr>${clientRows}</table>` : `<p class="empty">Nenhum cliente autorizado ainda.</p>`}
 <form class="add-form" method="post" action="/admin/allowlist/add">
   <input type="text" name="from_number" placeholder="Ex: 5561999210718" required>
   <input type="text" name="note" placeholder="Nome/nota (opcional)">
@@ -460,7 +486,8 @@ adminRouter.post("/admin/clients/billing", (req, res) => {
 
 adminRouter.post("/admin/clients/mark-paid", (req, res) => {
   const fromNumber = String(req.body.from_number || "");
-  if (fromNumber) markClientPaymentReceived(fromNumber);
+  const plan = req.body.plan === "anual" ? "anual" : req.body.plan === "mensal" ? "mensal" : null;
+  if (fromNumber && plan) recordClientPayment(fromNumber, plan);
   res.redirect("/admin");
 });
 

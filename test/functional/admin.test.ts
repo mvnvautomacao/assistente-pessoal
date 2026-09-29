@@ -5,7 +5,7 @@ import { logActivity, getRecentActivity, getRecentBlockedAttempts } from "../../
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { getDashboardAccount, upsertDashboardPassword } from "../../src/dashboard/accounts";
 import { hashPassword } from "../../src/auth/password";
-import { getClientBilling } from "../../src/billing/service";
+import { getClientBilling, getPaidMonthsForClient } from "../../src/billing/service";
 
 async function withServer(fn: (baseUrl: string, authHeaders: () => Record<string, string>) => Promise<void>) {
   const server = await startAdminTestServer();
@@ -94,7 +94,7 @@ test("admin: revogar acesso ao painel apaga a conta, derruba sessao ativa, mas n
   }
 });
 
-test("admin: definir mensalidade/vencimento de um cliente e depois marcar como pago", async () => {
+test("admin: definir mensalidade/vencimento de um cliente e depois marcar pagamento mensal", async () => {
   await withServer(async (baseUrl, authHeaders) => {
     const PHONE = "551100095100";
     allowNumber(PHONE);
@@ -116,16 +116,57 @@ test("admin: definir mensalidade/vencimento de um cliente e depois marcar como p
     await fetch(`${baseUrl}/admin/clients/mark-paid`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
-      body: new URLSearchParams({ from_number: PHONE }),
+      body: new URLSearchParams({ from_number: PHONE, plan: "mensal" }),
     });
 
     billing = getClientBilling(PHONE);
-    assert.equal(billing?.monthly_fee, 49.9); // preservada
+    assert.equal(billing?.monthly_fee, 19.9); // pagamento mensal sempre usa o preco fixo, sobrescreve o valor antigo
+    assert.equal(billing?.plan, "mensal");
     assert.ok(billing?.last_payment_date);
     assert.notEqual(billing?.next_due_date, "2020-01-01"); // vencimento avancou
 
     const pageAfterPaid = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
     assert.ok(pageAfterPaid.includes("Em dia"), "depois de marcar pago devia mostrar 'Em dia'");
+    assert.ok(pageAfterPaid.includes("1 mês(es) pago(s)"), "devia mostrar 1 mes pago no historico");
+  });
+});
+
+test("admin: pagamento anual cobre 12 competencias no historico de meses pagos", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095103";
+    allowNumber(PHONE);
+
+    await fetch(`${baseUrl}/admin/clients/mark-paid`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, plan: "anual" }),
+    });
+
+    const billing = getClientBilling(PHONE);
+    assert.equal(billing?.monthly_fee, 179.9);
+    assert.equal(billing?.plan, "anual");
+
+    const months = getPaidMonthsForClient(PHONE);
+    assert.equal(months.length, 12);
+
+    const page = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.ok(page.includes("12 mês(es) pago(s)"));
+  });
+});
+
+test("admin: mark-paid sem plano valido nao grava nada (evita registrar cobranca ambigua)", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095104";
+    allowNumber(PHONE);
+
+    await fetch(`${baseUrl}/admin/clients/mark-paid`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, plan: "trimestral" }),
+    });
+
+    assert.equal(getClientBilling(PHONE), null);
+    assert.equal(getPaidMonthsForClient(PHONE).length, 0);
   });
 });
 
