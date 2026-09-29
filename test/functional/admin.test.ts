@@ -5,6 +5,7 @@ import { logActivity, getRecentActivity, getRecentBlockedAttempts } from "../../
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { getDashboardAccount, upsertDashboardPassword } from "../../src/dashboard/accounts";
 import { hashPassword } from "../../src/auth/password";
+import { getClientBilling } from "../../src/billing/service";
 
 async function withServer(fn: (baseUrl: string, authHeaders: () => Record<string, string>) => Promise<void>) {
   const server = await startAdminTestServer();
@@ -91,4 +92,77 @@ test("admin: revogar acesso ao painel apaga a conta, derruba sessao ativa, mas n
     await dashboardServer.close();
     await adminServer.close();
   }
+});
+
+test("admin: definir mensalidade/vencimento de um cliente e depois marcar como pago", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095100";
+    allowNumber(PHONE);
+
+    await fetch(`${baseUrl}/admin/clients/billing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, monthly_fee: "49.90", next_due_date: "2020-01-01" }),
+    });
+
+    let billing = getClientBilling(PHONE);
+    assert.equal(billing?.monthly_fee, 49.9);
+    assert.equal(billing?.next_due_date, "2020-01-01");
+    assert.equal(billing?.last_payment_date, null);
+
+    const pageBeforePaid = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.ok(pageBeforePaid.includes("Atrasado"), "vencimento no passado devia mostrar 'Atrasado'");
+
+    await fetch(`${baseUrl}/admin/clients/mark-paid`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE }),
+    });
+
+    billing = getClientBilling(PHONE);
+    assert.equal(billing?.monthly_fee, 49.9); // preservada
+    assert.ok(billing?.last_payment_date);
+    assert.notEqual(billing?.next_due_date, "2020-01-01"); // vencimento avancou
+
+    const pageAfterPaid = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.ok(pageAfterPaid.includes("Em dia"), "depois de marcar pago devia mostrar 'Em dia'");
+  });
+});
+
+test("admin: valor de mensalidade invalido (<=0 ou nao numerico) e data mal formada viram null, nao quebram a rota", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095101";
+    allowNumber(PHONE);
+
+    await fetch(`${baseUrl}/admin/clients/billing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, monthly_fee: "-5", next_due_date: "31/12/2026" }),
+    });
+
+    const billing = getClientBilling(PHONE);
+    assert.equal(billing?.monthly_fee, null);
+    assert.equal(billing?.next_due_date, null);
+  });
+});
+
+test("admin: revogar acesso de um cliente com cobranca configurada tira ele da allowlist (bot para de responder)", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095102";
+    allowNumber(PHONE);
+    await fetch(`${baseUrl}/admin/clients/billing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, monthly_fee: "30", next_due_date: "2026-12-01" }),
+    });
+    assert.ok(isNumberAllowed(PHONE));
+
+    await fetch(`${baseUrl}/admin/allowlist/remove`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE }),
+    });
+
+    assert.ok(!isNumberAllowed(PHONE));
+  });
 });

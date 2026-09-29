@@ -105,6 +105,16 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- cobranca mensal de cada cliente (numero autorizado) -- controle manual pelo
+  -- admin, sem integracao com gateway de pagamento ainda. next_due_date e
+  -- last_payment_date sao NULL ate o admin configurar a primeira cobranca.
+  CREATE TABLE IF NOT EXISTS client_billing (
+    from_number TEXT PRIMARY KEY,
+    monthly_fee REAL,
+    next_due_date TEXT,
+    last_payment_date TEXT
+  );
+
   -- login do dashboard web: senha SEMPRE gerada pelo sistema e mandada por
   -- WhatsApp (nunca escolhida digitando no site) -- prova que quem esta
   -- pedindo acesso controla aquele numero de verdade. last_password_sent_at

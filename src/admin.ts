@@ -12,6 +12,8 @@ import { sendText } from "./whatsapp/client";
 import { previousWeekRange, buildExpenseReportText } from "./expenses/reportText";
 import { PAGE_SIZES, paginate } from "./dashboard/utils";
 import { destroyDashboardSessionsForPhone } from "./auth/session";
+import { listClientBilling, setClientBillingInfo, markClientPaymentReceived } from "./billing/service";
+import { spDateString } from "./timeSP";
 
 export const adminRouter = Router();
 
@@ -116,6 +118,15 @@ function formatDate(value: string): string {
   return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
+// so string, sem Date: "2026-08-25" vira meia-noite UTC no construtor Date, que
+// reprojetado pro fuso de Sao Paulo mostraria o dia anterior -- mesma cilada ja
+// documentada em router.ts/dashboard. Usado pra data-calendario pura (vencimento,
+// ultimo pagamento), nunca pra timestamp com hora.
+function formatDateOnly(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split("-");
+  return `${day}/${month}/${year}`;
+}
+
 // Paginacao achado da auditoria ("/admin sem paginação: atividade recente e
 // tentativas bloqueadas mostram sempre os últimos 50"). Reaproveita PAGE_SIZES
 // e paginate() do dashboard, mas com nomes de parametro PREFIXADOS (ex:
@@ -215,6 +226,8 @@ adminRouter.get("/admin", (req, res) => {
   const pendingReminders = getPendingReminders(50);
   const allowed = listAllowedNumbers();
   const allowedSet = new Set(allowed.map((a) => a.from_number));
+  const billingByNumber = new Map(listClientBilling().map((b) => [b.from_number, b]));
+  const today = spDateString();
   const allBlockedAttempts = getRecentBlockedAttempts(500).filter((b) => !allowedSet.has(b.from_number));
   const blockedAttempts = paginate(allBlockedAttempts, blockedPagination.page, blockedPagination.perPage);
   const dashboardAccounts = listDashboardAccounts();
@@ -245,6 +258,45 @@ adminRouter.get("/admin", (req, res) => {
         </td>
       </tr>`
     )
+    .join("");
+
+  // status e sempre CALCULADO (nunca guardado): compara next_due_date com
+  // hoje, na hora de mostrar -- assim nao tem como ficar dessincronizado.
+  const clientRows = allowed
+    .map((a) => {
+      const b = billingByNumber.get(a.from_number);
+      const fee = b?.monthly_fee ?? null;
+      const dueDate = b?.next_due_date ?? null;
+      const status = !dueDate
+        ? `<span class="tag" style="background:var(--border);color:var(--muted)">Sem cobrança</span>`
+        : dueDate < today
+          ? `<span class="tag" style="background:#f0576b26;color:#c0392b">Atrasado</span>`
+          : `<span class="tag" style="background:#34d39926;color:#1f8a5f">Em dia</span>`;
+      return `
+      <tr>
+        <td>${escapeHtml(a.from_number)}${a.note ? ` <span style="color:#999">(${escapeHtml(a.note)})</span>` : ""}</td>
+        <td class="cell-form">
+          <form class="inline" method="post" action="/admin/clients/billing">
+            <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
+            <input type="number" step="0.01" min="0" name="monthly_fee" placeholder="Valor" value="${fee ?? ""}" style="width:90px">
+            <input type="date" name="next_due_date" value="${dueDate ?? ""}" style="width:145px">
+            <button type="submit" class="link-btn">Salvar</button>
+          </form>
+        </td>
+        <td>${status}</td>
+        <td>${b?.last_payment_date ? formatDateOnly(b.last_payment_date) : "—"}</td>
+        <td class="row-actions">
+          <form class="inline" method="post" action="/admin/clients/mark-paid">
+            <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
+            <button type="submit" class="link-btn">Marcar pago</button>
+          </form>
+          <form class="inline" method="post" action="/admin/allowlist/remove" onsubmit="return confirm('Revogar o acesso desse cliente? Ele para de receber resposta do assistente.')">
+            <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
+            <button type="submit" class="link-btn danger">Revogar acesso</button>
+          </form>
+        </td>
+      </tr>`;
+    })
     .join("");
 
   const blockedRows = blockedAttempts
@@ -311,6 +363,15 @@ adminRouter.get("/admin", (req, res) => {
 <body>
 <form class="inline" method="post" action="/admin/logout" style="float:right"><button type="submit" class="link-btn">Sair</button></form>
 <h1>Assistente Pessoal</h1>
+
+<h2>Clientes e cobrança (${allowed.length})</h2>
+<p class="warn">Controle manual por enquanto (sem integração com gateway de pagamento). "Marcar pago" reinicia o vencimento pra 1 mês a partir de hoje. "Revogar acesso" tira o cliente da lista de autorizados na hora — ele para de receber resposta do assistente até ser liberado de novo.</p>
+${allowed.length ? `<table><tr><th>Número</th><th>Mensalidade / Vencimento</th><th>Status</th><th>Último pagamento</th><th></th></tr>${clientRows}</table>` : `<p class="empty">Nenhum cliente autorizado ainda.</p>`}
+<form class="add-form" method="post" action="/admin/allowlist/add">
+  <input type="text" name="from_number" placeholder="Ex: 5561999210718" required>
+  <input type="text" name="note" placeholder="Nome/nota (opcional)">
+  <button type="submit">+ Novo cliente (conceder acesso)</button>
+</form>
 
 <h2>Contas do painel (${dashboardAccounts.length})</h2>
 <p class="warn">Senha sempre gerada pelo sistema e mandada por WhatsApp — nunca digitada aqui. "Redefinir senha" manda uma nova na hora, sem esperar o limite de 1h que vale pro autoatendimento.</p>
@@ -381,6 +442,25 @@ adminRouter.post("/admin/allowlist/add", (req, res) => {
 adminRouter.post("/admin/allowlist/remove", (req, res) => {
   const fromNumber = String(req.body.from_number || "");
   if (fromNumber) revokeNumber(fromNumber);
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/clients/billing", (req, res) => {
+  const fromNumber = String(req.body.from_number || "");
+  if (fromNumber) {
+    const rawFee = String(req.body.monthly_fee ?? "").trim().replace(",", ".");
+    const fee = rawFee === "" ? null : Number(rawFee);
+    const monthlyFee = fee !== null && Number.isFinite(fee) && fee > 0 ? fee : null;
+    const rawDate = String(req.body.next_due_date ?? "").trim();
+    const nextDueDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+    setClientBillingInfo(fromNumber, { monthlyFee, nextDueDate });
+  }
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/clients/mark-paid", (req, res) => {
+  const fromNumber = String(req.body.from_number || "");
+  if (fromNumber) markClientPaymentReceived(fromNumber);
   res.redirect("/admin");
 });
 
