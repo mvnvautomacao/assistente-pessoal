@@ -43,6 +43,26 @@ export function listRecurringExpenses(fromNumber: string): RecurringExpense[] {
     .all(fromNumber) as unknown as RecurringExpense[];
 }
 
+// atualiza so os campos passados, mantendo o resto -- nao mexe em
+// last_run_month mesmo trocando o dia do mes (nao "reabre" o lancamento desse mes).
+export function updateRecurringExpense(
+  fromNumber: string,
+  id: number,
+  changes: { description?: string; amount?: number; categoryId?: number | null; paymentMethodId?: number | null; dayOfMonth?: number }
+): RecurringExpense | null {
+  const current = getRecurringExpenseById(fromNumber, id);
+  if (!current) return null;
+  const description = changes.description ?? current.description;
+  const amount = changes.amount ?? current.amount;
+  const categoryId = changes.categoryId !== undefined ? changes.categoryId : current.category_id;
+  const paymentMethodId = changes.paymentMethodId !== undefined ? changes.paymentMethodId : current.payment_method_id;
+  const dayOfMonth = changes.dayOfMonth ?? current.day_of_month;
+  db.prepare(
+    `UPDATE recurring_expenses SET description = ?, amount = ?, category_id = ?, payment_method_id = ?, day_of_month = ? WHERE id = ? AND from_number = ?`
+  ).run(description, amount, categoryId, paymentMethodId, dayOfMonth, id, fromNumber);
+  return getRecurringExpenseById(fromNumber, id);
+}
+
 export function deactivateRecurringExpense(fromNumber: string, id: number): boolean {
   const result = db.prepare(`UPDATE recurring_expenses SET active = 0 WHERE id = ? AND from_number = ?`).run(id, fromNumber);
   return result.changes > 0;

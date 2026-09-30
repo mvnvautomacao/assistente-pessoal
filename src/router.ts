@@ -113,7 +113,15 @@ import {
   listRecurringExpenses,
   findActiveRecurringExpenseByDescription,
   deactivateRecurringExpense,
+  updateRecurringExpense,
 } from "./expenses/recurring";
+import {
+  setPendingEditRecurring,
+  getPendingEditRecurring,
+  clearPendingEditRecurring,
+  PendingEditRecurring,
+  RecurringExpenseParams,
+} from "./expenses/pendingEditRecurring";
 import { createBillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
 import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
@@ -181,6 +189,10 @@ import {
   bulkUpdateExpenseCategory,
   searchExpenses,
   deleteCategory,
+  renameCategory,
+  findPaymentMethodByName,
+  findPaymentMethodMentionedIn,
+  renamePaymentMethod,
   ExpenseRecord,
   ExpenseListItem,
   PendingCategorization,
@@ -347,7 +359,7 @@ Primeiro, peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje"
 
 Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número, tipo "muda o valor do 2 pra 45".
 
-Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro".
+Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro". Isso vale pra qualquer campo — valor, data, forma de pagamento e também o nome/descrição, tipo "muda o nome do último gasto pra Feira".
 
 Antes de mudar de verdade, eu sempre confirmo com você mostrando o que vai virar o quê — se eu errar, é só me dizer o valor certo antes de confirmar.`;
     case "category":
@@ -660,6 +672,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingEditRecurring = getPendingEditRecurring(from);
+    if (pendingEditRecurring) {
+      await resolveEditRecurringConfirmation(from, pendingEditRecurring, text);
+      return;
+    }
+
     const pendingRemoveBillAlert = getPendingRemoveBillAlert(from);
     if (pendingRemoveBillAlert) {
       await resolveRemoveBillAlertConfirmation(from, pendingRemoveBillAlert, text);
@@ -938,6 +956,7 @@ function cancelAllPendings(from: string): number {
     [getPendingReminderAdvanceChoice(from), () => clearPendingReminderAdvanceChoice(from)],
     [getPendingRemoveBudget(from), () => clearPendingRemoveBudget(from)],
     [getPendingRemoveRecurring(from), () => clearPendingRemoveRecurring(from)],
+    [getPendingEditRecurring(from), () => clearPendingEditRecurring(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
   ];
@@ -2431,11 +2450,11 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
   if (yes) {
     clearPendingEditEvent(from);
     updateEvent(from, pending.eventId, {
-      title: pending.previous.title,
+      title: pending.proposedTitle,
       start: pending.proposedStart,
       end: pending.proposedEnd,
       location: pending.previous.location ?? undefined,
-      reminderMinutes: pending.previous.reminderMinutes,
+      reminderMinutes: pending.proposedReminderMinutes,
     });
     setPendingUndo(from, {
       kind: "restore_event_time",
@@ -2444,16 +2463,23 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       description: pending.title,
     });
     logActivity(from, "edit_event", `confirmado: "${pending.title}": ${pending.changeText}`);
-    await sendText(from, `✏️ Evento "${pending.title}" remarcado: ${pending.changeText}`);
+    await sendText(from, `✏️ "${pending.title}" alterado: ${pending.changeText}`);
     return;
   }
   if (no) {
     clearPendingEditEvent(from);
-    logActivity(from, "edit_event", `remarcacao de "${pending.title}" nao confirmada`);
+    logActivity(from, "edit_event", `alteracao de "${pending.title}" nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
 
+  // resposta livre (nem "sim" nem "nao") so tenta virar uma NOVA data/hora
+  // quando a mudanca em questao ja envolvia data/hora -- pra edicao de
+  // titulo/antecedencia, tentar reinterpretar como data so confundiria mais.
+  if (!pending.isDateTimeChange) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
+    return;
+  }
   const extracted = await extractDateTimeFromAnswer(answerText);
   if (!extracted) {
     await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
@@ -2477,7 +2503,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
 
   if (yes) {
     clearPendingEditReminder(from);
-    updateReminder(from, pending.reminderId, { message: pending.message, dueAt: pending.proposedDueAt });
+    updateReminder(from, pending.reminderId, { message: pending.proposedMessage, dueAt: pending.proposedDueAt });
     setPendingUndo(from, {
       kind: "restore_reminder_time",
       reminderId: pending.reminderId,
@@ -2485,16 +2511,20 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
       description: pending.message,
     });
     logActivity(from, "edit_reminder", `confirmado: "${pending.message}": ${pending.changeText}`);
-    await sendText(from, `✏️ Lembrete "${pending.message}" remarcado: ${pending.changeText}`);
+    await sendText(from, `✏️ Lembrete "${pending.message}" alterado: ${pending.changeText}`);
     return;
   }
   if (no) {
     clearPendingEditReminder(from);
-    logActivity(from, "edit_reminder", `remarcacao de "${pending.message}" nao confirmada`);
+    logActivity(from, "edit_reminder", `alteracao de "${pending.message}" nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
 
+  if (!pending.isDateTimeChange) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
+    return;
+  }
   const extracted = await extractDateTimeFromAnswer(answerText);
   if (!extracted) {
     await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
@@ -2569,6 +2599,39 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
   });
   logActivity(from, "remove_recurring_expense", `confirmado: "${pending.description}" removido`);
   await sendText(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
+}
+
+// mesma ideia de resolveRemoveRecurringConfirmation, mas pra editar campos em vez de remover
+async function resolveEditRecurringConfirmation(from: string, pending: PendingEditRecurring, answerText: string) {
+  const normalized = answerText.trim().toLowerCase();
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+
+  if (!yes && !no) {
+    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
+    return;
+  }
+
+  clearPendingEditRecurring(from);
+  if (no) {
+    logActivity(from, "edit_recurring_expense", `alteracao de "${pending.previous.description}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+
+  const updated = updateRecurringExpense(from, pending.recurringId, pending.proposedParams);
+  if (!updated) {
+    await sendText(from, "Não consegui editar esse gasto fixo.");
+    return;
+  }
+  setPendingUndo(from, {
+    kind: "restore_recurring_expense_fields",
+    recurringId: pending.recurringId,
+    previous: pending.previous,
+    description: pending.previous.description,
+  });
+  logActivity(from, "edit_recurring_expense", `confirmado: "${updated.description}": ${pending.changeText}`);
+  await sendText(from, `✏️ Gasto fixo "${updated.description}" alterado: ${pending.changeText}`);
 }
 
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
@@ -2781,18 +2844,30 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remarcar.`);
         break;
       }
-      if (!interpretation.new_date && !interpretation.new_time) {
-        await sendText(from, "Não entendi pra quando remarcar. Me diga o novo dia e/ou horário.");
+      const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
+      if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined) {
+        await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário, título ou a nova antecedência do aviso.");
         break;
       }
 
       const event = matches[0];
       // preenche so o que foi pedido -- "muda so o dia" mantem o horario
-      // original, "muda so o horario" mantem a data original (ver mergeDateTime)
-      const newStart = mergeDateTime(event.start, interpretation.new_date, interpretation.new_time);
-      const durationMs = new Date(event.end).getTime() - new Date(event.start).getTime();
-      const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
-      const changeText = `de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`;
+      // original, "muda so o horario" mantem a data original (ver mergeDateTime).
+      // Se a edicao nem envolve data/hora (so titulo/antecedencia), NAO chama
+      // mergeDateTime -- ele reconstroi a string via Date, o que reformataria
+      // (e poderia arredondar) um horario que o usuario nem pediu pra mudar.
+      const newStart = hasDateTimeChange ? mergeDateTime(event.start, interpretation.new_date, interpretation.new_time) : event.start;
+      const newEnd = hasDateTimeChange
+        ? new Date(new Date(newStart).getTime() + (new Date(event.end).getTime() - new Date(event.start).getTime())).toISOString()
+        : event.end;
+      const proposedTitle = interpretation.new_title ?? event.title;
+      const proposedReminderMinutes = interpretation.new_reminder_minutes ?? event.reminder_minutes;
+
+      const changeParts: string[] = [];
+      if (hasDateTimeChange) changeParts.push(`de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`);
+      if (interpretation.new_title) changeParts.push(`título "${event.title}" → "${interpretation.new_title}"`);
+      if (interpretation.new_reminder_minutes !== undefined) changeParts.push(`aviso ${proposedReminderMinutes} min antes`);
+      const changeText = changeParts.join("; ");
 
       setPendingEditEvent(from, {
         eventId: event.id,
@@ -2804,14 +2879,17 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           location: event.location,
           reminderMinutes: event.reminder_minutes,
         },
+        proposedTitle,
         proposedStart: newStart,
         proposedEnd: newEnd,
+        proposedReminderMinutes,
+        isDateTimeChange: hasDateTimeChange,
         changeText,
       });
       logActivity(from, "edit_event", `pediu confirmacao: "${event.title}" ${changeText}`);
       await sendText(
         from,
-        `Vou remarcar "${event.title}": ${changeText}. Confirma? Responde "sim"/"não", ou me diga a data/hora certa se eu errei.`
+        `Vou alterar "${event.title}": ${changeText}. Confirma? Responde "sim"/"não"${hasDateTimeChange ? ", ou me diga a data/hora certa se eu errei" : ""}.`
       );
       break;
     }
@@ -2875,26 +2953,37 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      if (!interpretation.new_date && !interpretation.new_time) {
-        await sendText(from, "Não entendi pra quando remarcar. Me diga o novo dia e/ou horário.");
+      const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
+      if (!hasDateTimeChange && !interpretation.new_message) {
+        await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário ou o novo texto do lembrete.");
         break;
       }
 
       const reminder = matches[0];
-      const newDueAt = mergeDateTime(reminder.due_at, interpretation.new_date, interpretation.new_time);
-      const changeText = `de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`;
+      // so chama mergeDateTime quando a edicao realmente envolve data/hora --
+      // ele reconstroi a string via Date, o que reformataria um horario que o
+      // usuario nem pediu pra mudar (mesmo cuidado do edit_event acima).
+      const newDueAt = hasDateTimeChange ? mergeDateTime(reminder.due_at, interpretation.new_date, interpretation.new_time) : reminder.due_at;
+      const proposedMessage = interpretation.new_message ?? reminder.message;
+
+      const changeParts: string[] = [];
+      if (hasDateTimeChange) changeParts.push(`de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`);
+      if (interpretation.new_message) changeParts.push(`texto "${reminder.message}" → "${interpretation.new_message}"`);
+      const changeText = changeParts.join("; ");
 
       setPendingEditReminder(from, {
         reminderId: reminder.id,
         message: reminder.message,
         previousDueAt: reminder.due_at,
+        proposedMessage,
         proposedDueAt: newDueAt,
+        isDateTimeChange: hasDateTimeChange,
         changeText,
       });
       logActivity(from, "edit_reminder", `pediu confirmacao: "${reminder.message}" ${changeText}`);
       await sendText(
         from,
-        `Vou remarcar o lembrete "${reminder.message}": ${changeText}. Confirma? Responde "sim"/"não", ou me diga a data/hora certa se eu errei.`
+        `Vou alterar o lembrete "${reminder.message}": ${changeText}. Confirma? Responde "sim"/"não"${hasDateTimeChange ? ", ou me diga a data/hora certa se eu errei" : ""}.`
       );
       break;
     }
@@ -3120,6 +3209,40 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         from,
         `Confirma que quer apagar a categoria "${category.name}"? ${items.length ? `Os ${items.length} gasto(s) dela ficam sem categoria (não são apagados). ` : ""}Responde "sim" ou "não".`
       );
+      break;
+    }
+    case "rename_category": {
+      const category = findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category);
+      if (!category) {
+        logActivity(from, "rename_category", `categoria "${interpretation.category}" nao encontrada`);
+        await sendText(from, `Não achei uma categoria parecida com "${interpretation.category}".`);
+        break;
+      }
+      const newName = interpretation.new_name.trim();
+      if (!newName) {
+        await sendText(from, "Não entendi o novo nome. Me diga como quer chamar a categoria.");
+        break;
+      }
+      renameCategory(from, category.id, newName);
+      logActivity(from, "rename_category", `"${category.name}" -> "${newName}"`);
+      await sendText(from, `✏️ Categoria "${category.name}" renomeada pra "${newName}".`);
+      break;
+    }
+    case "rename_payment_method": {
+      const method = findPaymentMethodByName(from, interpretation.payment_method) ?? findPaymentMethodMentionedIn(from, interpretation.payment_method);
+      if (!method) {
+        logActivity(from, "rename_payment_method", `forma de pagamento "${interpretation.payment_method}" nao encontrada`);
+        await sendText(from, `Não achei uma forma de pagamento parecida com "${interpretation.payment_method}".`);
+        break;
+      }
+      const newName = interpretation.new_name.trim();
+      if (!newName) {
+        await sendText(from, "Não entendi o novo nome. Me diga como quer chamar a forma de pagamento.");
+        break;
+      }
+      renamePaymentMethod(from, method.id, newName);
+      logActivity(from, "rename_payment_method", `"${method.name}" -> "${newName}"`);
+      await sendText(from, `✏️ Forma de pagamento "${method.name}" renomeada pra "${newName}".`);
       break;
     }
     case "bulk_recategorize": {
@@ -3415,7 +3538,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
       const lines = recurring.map((r) => `• ${r.description} — R$${r.amount.toFixed(2)}, todo dia ${r.day_of_month}`).join("\n");
-      await sendText(from, `🔁 Seus gastos fixos:\n\n${lines}\n\nPra parar de lançar um, é só dizer, ex: "cancela o gasto fixo da internet".`);
+      await sendText(
+        from,
+        `🔁 Seus gastos fixos:\n\n${lines}\n\nPra editar um, é só dizer, ex: "muda o valor do gasto fixo da internet pra 120". Pra parar de lançar, ex: "cancela o gasto fixo da internet".`
+      );
       break;
     }
     case "remove_recurring_expense": {
@@ -3438,6 +3564,70 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         from,
         `Vou parar de lançar o gasto fixo "${recurring.description}" (R$${recurring.amount.toFixed(2)}, todo dia ${recurring.day_of_month}). Confirma? Responde "sim" ou "não".`
       );
+      break;
+    }
+    case "edit_recurring_expense": {
+      const recurring = findActiveRecurringExpenseByDescription(from, interpretation.query);
+      if (!recurring) {
+        logActivity(from, "edit_recurring_expense", `nenhum gasto fixo encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não achei nenhum gasto fixo parecido com "${interpretation.query}".`);
+        break;
+      }
+      if (interpretation.new_day_of_month !== undefined && (interpretation.new_day_of_month < 1 || interpretation.new_day_of_month > 31)) {
+        await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.new_day_of_month}" não é um dia válido.`);
+        break;
+      }
+      const hasAnyChange =
+        interpretation.new_description !== undefined ||
+        interpretation.new_amount !== undefined ||
+        interpretation.new_category !== undefined ||
+        interpretation.new_day_of_month !== undefined ||
+        interpretation.new_payment_method !== undefined;
+      if (!hasAnyChange) {
+        await sendText(
+          from,
+          `O que você quer mudar em "${recurring.description}"? Pode ser o nome, o valor, a categoria, o dia do mês ou a forma de pagamento.`
+        );
+        break;
+      }
+
+      const previous: RecurringExpenseParams = {
+        description: recurring.description,
+        amount: recurring.amount,
+        categoryId: recurring.category_id,
+        paymentMethodId: recurring.payment_method_id,
+        dayOfMonth: recurring.day_of_month,
+      };
+      const proposedParams: RecurringExpenseParams = { ...previous };
+      const changeParts: string[] = [];
+
+      if (interpretation.new_description) {
+        proposedParams.description = interpretation.new_description;
+        changeParts.push(`nome "${previous.description}" → "${interpretation.new_description}"`);
+      }
+      if (interpretation.new_amount !== undefined) {
+        proposedParams.amount = interpretation.new_amount;
+        changeParts.push(`valor R$${previous.amount.toFixed(2)} → R$${interpretation.new_amount.toFixed(2)}`);
+      }
+      if (interpretation.new_category) {
+        const category = getOrCreateCategory(from, interpretation.new_category);
+        proposedParams.categoryId = category.id;
+        changeParts.push(`categoria → ${category.name}`);
+      }
+      if (interpretation.new_day_of_month !== undefined) {
+        proposedParams.dayOfMonth = interpretation.new_day_of_month;
+        changeParts.push(`dia do mês ${previous.dayOfMonth} → ${interpretation.new_day_of_month}`);
+      }
+      if (interpretation.new_payment_method) {
+        const paymentMethod = autoResolvePaymentMethod(from, interpretation.new_payment_method);
+        proposedParams.paymentMethodId = paymentMethod?.id ?? previous.paymentMethodId;
+        changeParts.push(`forma de pagamento → ${paymentMethod?.name ?? interpretation.new_payment_method}`);
+      }
+
+      const changeText = changeParts.join("; ");
+      setPendingEditRecurring(from, { recurringId: recurring.id, previous, proposedParams, changeText });
+      logActivity(from, "edit_recurring_expense", `pediu confirmacao: "${recurring.description}": ${changeText}`);
+      await sendText(from, `Vou alterar o gasto fixo "${recurring.description}": ${changeText}. Confirma? Responde "sim" ou "não".`);
       break;
     }
     case "set_bill_alert": {
@@ -3690,13 +3880,13 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
             location: undo.previous.location ?? undefined,
             reminderMinutes: undo.previous.reminderMinutes,
           });
-          logActivity(from, "undo", `remarcacao de evento desfeita: ${undo.description}`);
-          await sendText(from, `↩️ Prontinho, "${undo.description}" voltou pro horário de antes.`);
+          logActivity(from, "undo", `edicao de evento desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, "${undo.description}" voltou como estava antes.`);
           break;
         case "restore_reminder_time":
           updateReminder(from, undo.reminderId, { message: undo.description, dueAt: undo.previousDueAt });
-          logActivity(from, "undo", `remarcacao de lembrete desfeita: ${undo.description}`);
-          await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou pro horário de antes.`);
+          logActivity(from, "undo", `edicao de lembrete desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou como estava antes.`);
           break;
         case "restore_budget":
           setBudget(from, undo.categoryId, undo.monthlyLimit);
@@ -3712,6 +3902,11 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           createBillAlert(undo.params);
           logActivity(from, "undo", `alerta de conta fixa recriado: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" voltou a ser perguntado todo mês.`);
+          break;
+        case "restore_recurring_expense_fields":
+          updateRecurringExpense(from, undo.recurringId, undo.previous);
+          logActivity(from, "undo", `edicao de gasto fixo desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o gasto fixo "${undo.description}" voltou como estava antes.`);
           break;
       }
       break;

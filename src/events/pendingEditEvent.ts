@@ -5,10 +5,17 @@ const TTL_MS = 5 * 60 * 1000;
 
 export interface PendingEditEvent {
   eventId: number;
-  title: string;
+  title: string; // titulo ATUAL (antes dessa edicao) -- usado nas mensagens de confirmacao
   previous: { title: string; start: string; end: string; location: string | null; reminderMinutes: number };
+  proposedTitle: string;
   proposedStart: string;
   proposedEnd: string;
+  proposedReminderMinutes: number;
+  // habilita reinterpretar uma resposta livre (nem "sim" nem "nao") como uma
+  // NOVA data/hora via IA -- so faz sentido quando a mudanca pedida envolve
+  // data/hora; pra edicao so de titulo/antecedencia, uma resposta livre so
+  // gera "nao entendi", sem tentar achar data nenhuma nela.
+  isDateTimeChange: boolean;
   changeText: string;
   createdAt: number;
 }

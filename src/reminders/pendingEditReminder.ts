@@ -5,9 +5,13 @@ const TTL_MS = 5 * 60 * 1000;
 
 export interface PendingEditReminder {
   reminderId: number;
-  message: string;
+  message: string; // texto ATUAL (antes dessa edicao) -- usado nas mensagens de confirmacao
   previousDueAt: string;
+  proposedMessage: string;
   proposedDueAt: string;
+  // mesma ideia do PendingEditEvent: so reinterpreta resposta livre como nova
+  // data/hora quando a mudanca pedida envolve data/hora.
+  isDateTimeChange: boolean;
   changeText: string;
   createdAt: number;
 }

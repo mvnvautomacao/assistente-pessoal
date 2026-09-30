@@ -3,8 +3,9 @@ import { sendText } from "../whatsapp/client";
 import { spDateString, spTimeString } from "../timeSP";
 import { getNoExpenseReminderSubscribers, hasExpenseForDate, markNoExpenseReminderSent } from "./service";
 
-const REMINDER_MESSAGE =
-  "👋 Vi que você ainda não registrou nenhum gasto hoje. Será que esqueceu de anotar alguma coisa? Se lembrar de algo, só me mandar por aqui mesmo 🙂";
+function buildReminderMessage(time: string): string {
+  return `👋 Vi que você ainda não registrou nenhum gasto hoje. Será que esqueceu de anotar alguma coisa? Se lembrar de algo, só me mandar por aqui mesmo 🙂\n\n(Esse aviso vem todo dia às ${time} se você não registrar nada. Se quiser, posso desativar ou mudar o horário -- é só pedir.)`;
+}
 
 export function startNoExpenseReminderScheduler() {
   // roda a cada minuto: cada numero tem seu proprio horario configuravel, entao
@@ -24,7 +25,7 @@ export function startNoExpenseReminderScheduler() {
             markNoExpenseReminderSent(s.from_number, today); // ja registrou algo hoje -- nao precisa avisar
             continue;
           }
-          await sendText(s.from_number, REMINDER_MESSAGE);
+          await sendText(s.from_number, buildReminderMessage(s.time));
           markNoExpenseReminderSent(s.from_number, today);
         } catch (err) {
           console.error(`Erro ao enviar aviso de gasto pendente pra ${s.from_number}:`, err);

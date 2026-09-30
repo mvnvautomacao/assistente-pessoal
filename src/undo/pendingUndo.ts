@@ -81,6 +81,15 @@ export type UndoAction =
       kind: "restore_bill_alert";
       params: { fromNumber: string; name: string } & ({ dayOfMonth: number } | { intervalDays: number });
       description: string;
+    }
+  | {
+      // editar um gasto fixo (edit_recurring_expense) so muda campos (UPDATE),
+      // nao apaga/recria -- desfazer e so devolver os campos de antes, mesma
+      // ideia de restore_event_time/restore_reminder_time.
+      kind: "restore_recurring_expense_fields";
+      recurringId: number;
+      previous: { description: string; amount: number; categoryId: number | null; paymentMethodId: number | null; dayOfMonth: number };
+      description: string;
     };
 
 interface PendingUndo {

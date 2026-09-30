@@ -24,6 +24,7 @@ import {
   getDefaultPaymentMethod,
   deletePaymentMethod,
   listPaymentMethods,
+  findPaymentMethodByName,
 } from "../../src/expenses/service";
 import { backdatePendingExpensePaymentMethodForTests } from "../../src/expenses/pendingPaymentMethod";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
@@ -1915,6 +1916,30 @@ test("edit_expense: pede confirmacao antes de mudar, e permite ajustar o valor a
   assert.equal(findRecentExpense(EE1, "gasto edit confirm")?.amount, 46.5);
 });
 
+// Regressao: usuario reportou que pedir pra mudar o NOME/descricao de um
+// gasto nao funcionava. O codigo em si sempre suportou field="description"
+// (parseEditFieldValue), o problema era a IA nunca classificar esse pedido
+// como edit_expense com esse campo por falta de exemplo no prompt (corrigido
+// em interpret.ts). Esse teste garante que, uma vez classificado certo, o
+// fluxo completo (pergunta -> confirma -> aplica) funciona igual aos outros campos.
+test("edit_expense: editar a descricao/nome de um gasto (bug reportado -- so faltava a IA reconhecer o pedido)", async (t) => {
+  const EED = "551100090870";
+  seed(EED);
+  const cat = getOrCreateCategory(EED, "Edit-nome");
+  insertExpense({ fromNumber: EED, amount: 40, description: "Mercado", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "Mercado", field: "description", value: "Feira" }]);
+  await handleIncomingMessage(evolutionMessage(EED, "muda o nome do gasto do mercado pra Feira"));
+  assert.match(sent[0].text, /Feira/);
+  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.equal(findRecentExpense(EED, "Mercado")?.description, "Mercado"); // ainda nao mudou
+
+  await handleIncomingMessage(evolutionMessage(EED, "sim"));
+  assert.equal(findRecentExpense(EED, "Feira")?.description, "Feira");
+  assert.equal(findRecentExpense(EED, "Feira")?.amount, 40); // resto do gasto preservado
+});
+
 // Achado da auditoria: 13 dos 17 tipos de pendencia checados aqui nao tinham
 // try/catch nenhum -- um erro em qualquer um deles sumia em silencio total
 // (so console.error, sem log no /admin nem resposta pro cliente). Agora o
@@ -1980,6 +2005,46 @@ test("delete_category: responder nao cancela, e categoria inexistente avisa", as
   queueReply([{ type: "delete_category", category: "CategoriaQueNaoExisteXYZ" }]);
   await handleIncomingMessage(evolutionMessage(DC2, "apaga a categoria CategoriaQueNaoExisteXYZ"));
   assert.match(sent[2].text, /Não achei/);
+});
+
+// Achado da auditoria: renameCategory ja existia (so usado pelo dashboard) --
+// nao tinha NENHUM jeito de renomear categoria pelo WhatsApp. Aplica na hora,
+// sem confirmacao (mesmo padrao de edit_bill_alert: risco baixo, reversivel
+// so renomeando de volta), e preserva os gastos ja vinculados.
+test("rename_category: renomeia na hora (sem confirmacao), preserva os gastos vinculados, e categoria inexistente avisa", async (t) => {
+  const RC1 = "551100090880";
+  seed(RC1);
+  const cat = getOrCreateCategory(RC1, "Mercado renomear");
+  insertExpense({ fromNumber: RC1, amount: 30, description: "compra do mes", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "rename_category", category: "Mercado renomear", new_name: "Supermercado" }]);
+  await handleIncomingMessage(evolutionMessage(RC1, "renomeia a categoria Mercado renomear pra Supermercado"));
+  assert.match(sent[0].text, /Supermercado/);
+  assert.equal(findCategoryByName(RC1, "Mercado renomear"), null);
+  assert.ok(findCategoryByName(RC1, "Supermercado"));
+  assert.equal(findRecentExpense(RC1, "compra do mes")?.category_id, cat.id); // gasto continua vinculado (mesmo id)
+
+  queueReply([{ type: "rename_category", category: "NaoExisteXYZ", new_name: "Qualquer" }]);
+  await handleIncomingMessage(evolutionMessage(RC1, "renomeia a categoria NaoExisteXYZ pra Qualquer"));
+  assert.match(sent[1].text, /Não achei/);
+});
+
+test("rename_payment_method: renomeia na hora (sem confirmacao), e forma de pagamento inexistente avisa", async (t) => {
+  const RC2 = "551100090881";
+  seed(RC2);
+  getOrCreatePaymentMethod(RC2, "Nubank");
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "rename_payment_method", payment_method: "Nubank", new_name: "Cartão Roxo" }]);
+  await handleIncomingMessage(evolutionMessage(RC2, "renomeia o cartao nubank pra Cartão Roxo"));
+  assert.match(sent[0].text, /Cartão Roxo/);
+  assert.equal(findPaymentMethodByName(RC2, "Nubank"), null);
+  assert.ok(findPaymentMethodByName(RC2, "Cartão Roxo"));
+
+  queueReply([{ type: "rename_payment_method", payment_method: "NaoExisteXYZ", new_name: "Qualquer" }]);
+  await handleIncomingMessage(evolutionMessage(RC2, "renomeia a forma de pagamento NaoExisteXYZ pra Qualquer"));
+  assert.match(sent[1].text, /Não achei/);
 });
 
 // Pedido do usuario: gasto de R$0 dava a mensagem generica de erro; agora
@@ -2473,6 +2538,69 @@ test("edit_event: undo volta o evento pro horario de antes", async (t) => {
   assert.equal(getEventById(EV5, event.id)?.start, original);
 });
 
+// Achado da auditoria: edit_event so mudava data/hora -- renomear o evento ou
+// mudar a antecedencia do aviso (padrao 60 min) so era possivel apagando e
+// recriando. Agora da pra editar os dois, juntos ou separados, sem mexer na
+// data/hora se o usuario nao pediu.
+test("edit_event: agora tambem edita titulo e antecedencia do aviso, sem exigir mudar data/hora", async (t) => {
+  const EV6 = "551100090871";
+  seed(EV6);
+  const start = nearFuture();
+  const event = createEvent({ fromNumber: EV6, title: "Dentista", start });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "dentista", new_title: "Dentista Dr. Paulo" }]);
+  await handleIncomingMessage(evolutionMessage(EV6, "muda o nome do evento dentista pra Dentista Dr. Paulo"));
+  assert.match(sent[0].text, /Dentista Dr\. Paulo/);
+  await handleIncomingMessage(evolutionMessage(EV6, "sim"));
+  let updated = getEventById(EV6, event.id)!;
+  assert.equal(updated.title, "Dentista Dr. Paulo");
+  assert.equal(updated.start, start); // data/hora intocada
+  assert.equal(updated.reminder_minutes, 60); // antecedencia intocada
+
+  queueReply([{ type: "edit_event", query: "dentista", new_reminder_minutes: 30 }]);
+  await handleIncomingMessage(evolutionMessage(EV6, "me avisa 30 minutos antes do dentista em vez de 60"));
+  await handleIncomingMessage(evolutionMessage(EV6, "sim"));
+  updated = getEventById(EV6, event.id)!;
+  assert.equal(updated.reminder_minutes, 30);
+  assert.equal(updated.title, "Dentista Dr. Paulo"); // titulo da edicao anterior preservado
+});
+
+test("edit_event: resposta livre a uma edicao de titulo/antecedencia (sem data/hora envolvida) nao tenta reinterpretar como data", async (t) => {
+  const EV7 = "551100090872";
+  seed(EV7);
+  const event = createEvent({ fromNumber: EV7, title: "Consulta", start: nearFuture() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "consulta", new_title: "Consulta Dra. Ana" }]);
+  await handleIncomingMessage(evolutionMessage(EV7, "renomeia a consulta pra Consulta Dra. Ana"));
+
+  await handleIncomingMessage(evolutionMessage(EV7, "talvez, deixa eu ver")); // nem "sim" puro nem "nao"
+  assert.match(sent[1].text, /[Nn]ão entendi/);
+  assert.equal(getEventById(EV7, event.id)?.title, "Consulta"); // ainda nao aplicado
+});
+
+test("edit_event: undo de edicao de titulo/antecedencia desfaz tudo, nao so a data", async (t) => {
+  const EV8 = "551100090873";
+  seed(EV8);
+  const start = nearFuture();
+  const event = createEvent({ fromNumber: EV8, title: "Reuniao renomear", start });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "reuniao renomear", new_title: "Reuniao com o cliente", new_reminder_minutes: 15 }]);
+  await handleIncomingMessage(evolutionMessage(EV8, "renomeia a reuniao renomear pra Reuniao com o cliente e avisa 15 min antes"));
+  await handleIncomingMessage(evolutionMessage(EV8, "sim"));
+  assert.equal(getEventById(EV8, event.id)?.title, "Reuniao com o cliente");
+  assert.equal(getEventById(EV8, event.id)?.reminder_minutes, 15);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(EV8, "desfaz isso"));
+  const restored = getEventById(EV8, event.id)!;
+  assert.equal(restored.title, "Reuniao renomear");
+  assert.equal(restored.reminder_minutes, 60);
+  assert.equal(restored.start, start);
+});
+
 test("edit_reminder: pede confirmacao antes de remarcar, 'nao' cancela, e undo volta pro horario de antes", async (t) => {
   const ER1 = "551100090106";
   seed(ER1);
@@ -2514,6 +2642,32 @@ test("edit_reminder: mudar so o dia mantem o horario original", async (t) => {
   await handleIncomingMessage(evolutionMessage(ER2, "muda o lembrete do remedio pro dia 12"));
   await handleIncomingMessage(evolutionMessage(ER2, "sim"));
   assert.equal(listReminders(ER2).find((r) => r.id === reminderId)?.due_at, "2026-09-12T21:00:00-03:00"); // manteve as 21h
+});
+
+// Achado da auditoria: edit_reminder so mudava data/hora -- mudar o TEXTO do
+// lembrete so era possivel apagando e recriando. Undo restaura o texto original.
+test("edit_reminder: agora tambem edita o texto do lembrete, com undo restaurando o texto original", async (t) => {
+  const ER3 = "551100090113";
+  seed(ER3);
+  // due_at "cru" (com milissegundos/Z) de proposito: se a edicao reformatasse a
+  // data sem o usuario ter pedido (bug real ja corrigido no edit_event acima,
+  // mesmo risco aqui), esse valor exato mudaria e o teste pegaria isso.
+  const dueAt = nearFuture();
+  const reminderId = createReminder(ER3, "pagar boleto", dueAt);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_reminder", query: "pagar boleto", new_message: "Pagar o boleto do carro" }]);
+  await handleIncomingMessage(evolutionMessage(ER3, "o lembrete de pagar boleto agora e Pagar o boleto do carro"));
+  assert.match(sent[0].text, /Pagar o boleto do carro/);
+  await handleIncomingMessage(evolutionMessage(ER3, "sim"));
+  let reminder = listReminders(ER3).find((r) => r.id === reminderId)!;
+  assert.equal(reminder.message, "Pagar o boleto do carro");
+  assert.equal(reminder.due_at, dueAt); // data/hora intocada, byte a byte
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(ER3, "desfaz isso"));
+  reminder = listReminders(ER3).find((r) => r.id === reminderId)!;
+  assert.equal(reminder.message, "pagar boleto");
 });
 
 // Regressao: relatado em producao -- nao existia NENHUM jeito de apagar um
@@ -2650,6 +2804,62 @@ test("remove_recurring_expense: undo recria o gasto fixo removido", async (t) =>
   assert.equal(restored.length, 1);
   assert.equal(restored[0].description, "netflix undo");
   assert.equal(restored[0].day_of_month, 15);
+});
+
+// Achado da auditoria: nao existia NENHUM jeito de editar um gasto fixo ja
+// cadastrado -- so dava pra cancelar e criar de novo do zero. Agora da pra
+// mudar qualquer campo (nome, valor, categoria, dia do mes, pagamento), com
+// confirmacao antes e undo depois, igual os outros fluxos de edicao.
+test("edit_recurring_expense: muda varios campos de uma vez, com confirmacao antes e undo depois", async (t) => {
+  const ERC1 = "551100090874";
+  seed(ERC1);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "set_recurring_expense", description: "academia edit", amount: 89.9, category: "Saude", day_of_month: 5 }]);
+  await handleIncomingMessage(evolutionMessage(ERC1, "todo dia 5 pago 89,90 de academia edit"));
+
+  queueReply([{ type: "edit_recurring_expense", query: "academia edit", new_amount: 99.9, new_day_of_month: 8 }]);
+  await handleIncomingMessage(evolutionMessage(ERC1, "muda o gasto fixo da academia edit pra 99,90 e vencendo dia 8"));
+  assert.match(sent[1].text, /99\.90/);
+  assert.match(sent[1].text, /[Cc]onfirma/);
+  let recurring = listRecurringExpenses(ERC1)[0];
+  assert.equal(recurring.amount, 89.9); // ainda nao mudou, so perguntou
+  assert.equal(recurring.day_of_month, 5);
+
+  await handleIncomingMessage(evolutionMessage(ERC1, "sim"));
+  recurring = listRecurringExpenses(ERC1)[0];
+  assert.equal(recurring.amount, 99.9);
+  assert.equal(recurring.day_of_month, 8);
+  assert.equal(recurring.description, "academia edit"); // nao mudou o que nao foi pedido
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(ERC1, "desfaz isso"));
+  recurring = listRecurringExpenses(ERC1)[0];
+  assert.equal(recurring.amount, 89.9);
+  assert.equal(recurring.day_of_month, 5);
+});
+
+test("edit_recurring_expense: renomear, responder 'nao', gasto fixo inexistente, e dia do mes invalido", async (t) => {
+  const ERC2 = "551100090875";
+  seed(ERC2);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "edit_recurring_expense", query: "nao existe", new_amount: 10 }]);
+  await handleIncomingMessage(evolutionMessage(ERC2, "muda o gasto fixo que nao existe"));
+  assert.match(sent[0].text, /[Nn]ão achei/);
+
+  queueReply([{ type: "set_recurring_expense", description: "streaming renomear", amount: 25, category: "Lazer", day_of_month: 20 }]);
+  await handleIncomingMessage(evolutionMessage(ERC2, "todo dia 20 pago 25 de streaming renomear"));
+
+  queueReply([{ type: "edit_recurring_expense", query: "streaming renomear", new_day_of_month: 40 }]);
+  await handleIncomingMessage(evolutionMessage(ERC2, "muda o gasto fixo do streaming renomear pro dia 40"));
+  assert.match(sent[2].text, /entre 1 e 31/);
+  assert.equal(listRecurringExpenses(ERC2)[0].day_of_month, 20); // nao mudou
+
+  queueReply([{ type: "edit_recurring_expense", query: "streaming renomear", new_description: "Streaming Premium" }]);
+  await handleIncomingMessage(evolutionMessage(ERC2, "renomeia o gasto fixo do streaming renomear pra Streaming Premium"));
+  await handleIncomingMessage(evolutionMessage(ERC2, "não"));
+  assert.match(sent[4].text, /não mexi/i);
+  assert.equal(listRecurringExpenses(ERC2)[0].description, "streaming renomear"); // nao mudou
 });
 
 // Pedido do usuario: "exibir minha agenda de novembro" nao era entendido, porque

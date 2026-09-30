@@ -258,9 +258,13 @@ expensesRouter.get("/dashboard", (req, res) => {
     return;
   }
 
+  // achado real: sem "?month=" na URL, sempre mostrava o mes com a compra mais
+  // RECENTE (months[0]) -- se o usuario tivesse uma parcela futura cadastrada,
+  // o login abria direto num mes que ainda nem chegou, em vez do mes atual.
+  // Login sempre abre no mes atual; o usuario troca de mes manualmente quando quiser.
   const months = getAvailableMonths(phone);
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const month = typeof req.query.month === "string" && req.query.month ? req.query.month : months[0] ?? currentMonth;
+  const currentMonth = todaySP().slice(0, 7);
+  const month = typeof req.query.month === "string" && req.query.month ? req.query.month : currentMonth;
 
   const expenses = getExpensesForMonth(phone, month);
   const categoryTotals = getCategoryTotalsForMonth(phone, month);
@@ -283,9 +287,12 @@ expensesRouter.get("/dashboard", (req, res) => {
     )
     .join("");
 
-  const monthOptions = months.length
-    ? months.map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`).join("")
-    : `<option value="${month}" selected>${escapeHtml(monthLabel(month))}</option>`;
+  // garante que o mes exibido sempre aparece no seletor, mesmo sem nenhum
+  // gasto nele ainda (ex: mes atual em branco, ou mes futuro de uma parcela).
+  const monthOptionValues = months.includes(month) ? months : [...months, month].sort().reverse();
+  const monthOptions = monthOptionValues
+    .map((m) => `<option value="${m}" ${m === month ? "selected" : ""}>${escapeHtml(monthLabel(m))}</option>`)
+    .join("");
 
   // relatorio semanal vem ligado por padrao (toda sexta, 9h -- ver
   // ensureUserSeeded); esse seletor so deixa trocar o dia, nao existe opcao

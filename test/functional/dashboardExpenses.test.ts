@@ -16,6 +16,16 @@ import { spDateString } from "../../src/timeSP";
 const A = "551100050001";
 const B = "551100050002";
 
+// "YYYY-MM-15", N meses a frente do mes atual (fuso SP) -- simula uma parcela
+// futura cadastrada hoje.
+function futureMonthDateString(monthsAhead: number): string {
+  const [y, m] = spDateString().slice(0, 7).split("-").map(Number);
+  const targetIdx = m - 1 + monthsAhead;
+  const yy = y + Math.floor(targetIdx / 12);
+  const mm = (targetIdx % 12) + 1;
+  return `${yy}-${String(mm).padStart(2, "0")}-15`;
+}
+
 async function withServer(
   fn: (baseUrl: string, authHeaders: (phone: string) => Record<string, string>) => Promise<void>
 ) {
@@ -301,5 +311,41 @@ test("painel inicial: horario invalido no aviso de gasto pendente e ignorado (ma
       body: new URLSearchParams({ time: "não é hora", enabled: "1" }),
     });
     assert.equal(getNoExpenseReminderSettings(N2).time, "18:30");
+  });
+});
+
+// Achado real: sem "?month=" na URL, o painel sempre mostrava o mes com a
+// compra mais RECENTE (podendo ser um mes futuro, ex: parcela cadastrada
+// adiantada) em vez do mes atual -- login abria direto num mes que nem tinha
+// chegado ainda.
+test("painel inicial: sempre abre no mes ATUAL, mesmo com uma parcela cadastrada num mes futuro", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const M = "551100050206";
+    ensureUserSeeded(M);
+    const pix = getOrCreatePaymentMethod(M, "Pix");
+    const currentMonth = spDateString().slice(0, 7);
+    insertExpense({
+      fromNumber: M,
+      amount: 50,
+      description: "parcela bem no futuro",
+      categoryId: null,
+      paymentMethodId: pix.id,
+      date: futureMonthDateString(3),
+    });
+
+    const html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(M) })).text();
+    assert.ok(!html.includes("parcela bem no futuro")); // mes futuro nao aparece sem pedir
+    assert.match(html, new RegExp(`<option value="${currentMonth}" selected>`)); // seletor mostra o mes atual
+  });
+});
+
+test("painel inicial: o seletor de mes sempre inclui o mes exibido, mesmo sem nenhum gasto nele ainda", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const M2 = "551100050207";
+    ensureUserSeeded(M2);
+    const currentMonth = spDateString().slice(0, 7);
+    // nenhum gasto cadastrado em nenhum mes -- getAvailableMonths(M2) e vazio
+    const html = await (await fetch(`${baseUrl}/dashboard`, { headers: authHeaders(M2) })).text();
+    assert.match(html, new RegExp(`<option value="${currentMonth}" selected>`));
   });
 });
