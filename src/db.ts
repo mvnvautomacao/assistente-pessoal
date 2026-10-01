@@ -92,6 +92,18 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- alertas ADICIONAIS de um evento, alem do principal (que continua em
+  -- events.reminder_minutes/reminder_sent, sem mudar nada no resto do sistema
+  -- que ja dependia so dessas 2 colunas). Maximo de 2 linhas por evento --
+  -- junto com o principal, ate 3 alertas no total (ver MAX_REMINDERS_PER_EVENT
+  -- em events/service.ts).
+  CREATE TABLE IF NOT EXISTS event_extra_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES events(id),
+    minutes_before INTEGER NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0
+  );
+
   -- orcamento mensal por usuario+categoria; alerta quando o gasto do mes na
   -- categoria bate 80%/100% desse valor
   CREATE TABLE IF NOT EXISTS budgets (

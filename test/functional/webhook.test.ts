@@ -36,7 +36,7 @@ import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { setPaymentMethodLimit } from "../../src/expenses/balance";
 import { insertIncome } from "../../src/incomes/service";
 import { spDateString, addDaysToDateString } from "../../src/timeSP";
-import { createEvent, getEventById, findUpcomingEvents } from "../../src/events/service";
+import { createEvent, getEventById, findUpcomingEvents, listEventReminderMinutes, addEventExtraReminder } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
 import { listRecurringExpenses } from "../../src/expenses/recurring";
 import { listBillAlerts, getBillAlertById, createBillAlert } from "../../src/bills/service";
@@ -2599,6 +2599,97 @@ test("edit_event: undo de edicao de titulo/antecedencia desfaz tudo, nao so a da
   assert.equal(restored.title, "Reuniao renomear");
   assert.equal(restored.reminder_minutes, 60);
   assert.equal(restored.start, start);
+});
+
+// Regressao direta do que foi relatado em producao: usuario tentou mudar a
+// antecedencia de 60 pra 120 minutos e disse que "nao foi possivel". O
+// mecanismo em si (updateEvent/resolveEditEventConfirmation) e indiferente ao
+// valor -- esse teste prova que 120 funciona exatamente igual a 30 (ja testado
+// acima), e que converter "1 dia antes" pra 1440 minutos tambem funciona.
+test("edit_event: muda a antecedencia pra 120 minutos (relatado como 'nao funcionou') e tambem aceita antecedencia em dias", async (t) => {
+  const EV9 = "551100090876";
+  seed(EV9);
+  const event = createEvent({ fromNumber: EV9, title: "Compra de pao", start: nearFuture(), reminderMinutes: 60 });
+
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "compra de pao", new_reminder_minutes: 120 }]);
+  await handleIncomingMessage(evolutionMessage(EV9, "me avisa 120 minutos antes da compra de pao em vez de 60"));
+  await handleIncomingMessage(evolutionMessage(EV9, "sim"));
+  assert.equal(getEventById(EV9, event.id)?.reminder_minutes, 120);
+
+  queueReply([{ type: "edit_event", query: "compra de pao", new_reminder_minutes: 1440 }]); // "1 dia antes"
+  await handleIncomingMessage(evolutionMessage(EV9, "quero ser avisado 1 dia antes da compra de pao"));
+  await handleIncomingMessage(evolutionMessage(EV9, "sim"));
+  assert.equal(getEventById(EV9, event.id)?.reminder_minutes, 1440);
+});
+
+// Achado da auditoria: o whitelist de confirmacao ("sim"/"s"/"confirmo"/...)
+// nao reconhecia afirmativas comuns em portugues, o que podia fazer uma edicao
+// parecer "nao funcionar" se o usuario respondesse com uma delas.
+test("edit_event: confirmacao reconhece mais afirmativas comuns ('claro', 'perfeito', 'com certeza')", async (t) => {
+  const EV10 = "551100090877";
+  seed(EV10);
+  const event = createEvent({ fromNumber: EV10, title: "Revisao do carro", start: nearFuture(), reminderMinutes: 60 });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "revisao do carro", new_reminder_minutes: 180 }]);
+  await handleIncomingMessage(evolutionMessage(EV10, "me avisa 3 horas antes da revisao do carro"));
+  await handleIncomingMessage(evolutionMessage(EV10, "claro"));
+  assert.doesNotMatch(sent[sent.length - 1].text, /[Nn]ão entendi/);
+  assert.equal(getEventById(EV10, event.id)?.reminder_minutes, 180);
+});
+
+// Pedido do usuario: ate 3 avisos por evento (principal + 2 extras), em
+// qualquer combinacao de minutos/horas/dias, sem perder os que ja existiam.
+test("add_event_reminder: adiciona avisos extras (maximo 3 no total), sem duplicar nem substituir os existentes", async (t) => {
+  const AE1 = "551100090878";
+  seed(AE1);
+  const event = createEvent({ fromNumber: AE1, title: "Consulta com a Alice", start: nearFuture(), reminderMinutes: 60 });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "add_event_reminder", query: "consulta com a alice", minutes_before: 1440 }]);
+  await handleIncomingMessage(evolutionMessage(AE1, "quero ser avisado tambem 1 dia antes da consulta com a Alice"));
+  assert.match(sent[0].text, /1 dia/);
+  assert.match(sent[0].text, /1 hora/);
+
+  queueReply([{ type: "add_event_reminder", query: "consulta com a alice", minutes_before: 120 }]);
+  await handleIncomingMessage(evolutionMessage(AE1, "adiciona mais um alerta de 2 horas antes pra consulta com a Alice"));
+  assert.match(sent[1].text, /2 horas/);
+  assert.deepEqual(listEventReminderMinutes(AE1, event.id), [1440, 120, 60]);
+
+  // 4o alerta: ja esta no maximo (3)
+  queueReply([{ type: "add_event_reminder", query: "consulta com a alice", minutes_before: 30 }]);
+  await handleIncomingMessage(evolutionMessage(AE1, "adiciona mais um alerta de 30 minutos antes pra consulta com a Alice"));
+  assert.match(sent[2].text, /máximo/i);
+  assert.equal(listEventReminderMinutes(AE1, event.id).length, 3);
+
+  // duplicado (60 ja existe)
+  queueReply([{ type: "add_event_reminder", query: "consulta com a alice", minutes_before: 60 }]);
+  await handleIncomingMessage(evolutionMessage(AE1, "me avisa 60 minutos antes da consulta com a Alice tambem"));
+  assert.match(sent[3].text, /já tem/i);
+});
+
+test("remove_event_reminder: remove so o aviso pedido, mantendo os outros, e nao deixa remover o ultimo restante", async (t) => {
+  const RE1 = "551100090879";
+  seed(RE1);
+  const event = createEvent({ fromNumber: RE1, title: "Exame da Alice", start: nearFuture(), reminderMinutes: 60 });
+  addEventExtraReminder(RE1, event.id, 1440);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "remove_event_reminder", query: "exame da alice", minutes_before: 1440 }]);
+  await handleIncomingMessage(evolutionMessage(RE1, "tira o aviso de 1 dia antes do exame da Alice"));
+  assert.match(sent[0].text, /1 hora/);
+  assert.doesNotMatch(sent[0].text, /1 dia/);
+  assert.deepEqual(listEventReminderMinutes(RE1, event.id), [60]);
+
+  queueReply([{ type: "remove_event_reminder", query: "exame da alice", minutes_before: 60 }]);
+  await handleIncomingMessage(evolutionMessage(RE1, "tira o aviso de 1 hora antes do exame da Alice"));
+  assert.match(sent[1].text, /pelo menos 1/);
+  assert.deepEqual(listEventReminderMinutes(RE1, event.id), [60]); // nao removeu
+
+  queueReply([{ type: "remove_event_reminder", query: "exame da alice", minutes_before: 999 }]);
+  await handleIncomingMessage(evolutionMessage(RE1, "tira o aviso de 999 minutos antes do exame da Alice"));
+  assert.match(sent[2].text, /não tem um aviso/);
 });
 
 test("edit_reminder: pede confirmacao antes de remarcar, 'nao' cancela, e undo volta pro horario de antes", async (t) => {

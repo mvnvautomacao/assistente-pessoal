@@ -12,6 +12,13 @@ import {
   getDueEventReminders,
   markEventReminderSent,
   getEventsForMonth,
+  formatMinutesBefore,
+  listEventReminderMinutes,
+  addEventExtraReminder,
+  removeEventReminder,
+  getDueExtraEventReminders,
+  markEventExtraReminderSent,
+  MAX_REMINDERS_PER_EVENT,
 } from "../../src/events/service";
 
 const A = "551100040001";
@@ -140,4 +147,100 @@ test("getEventsForMonth pega eventos exatamente no primeiro e no ultimo instante
   const titles = getEventsForMonth(A, "2032-03").map((e) => e.title);
   assert.ok(titles.includes("Bem no inicio do mes"));
   assert.ok(titles.includes("Quase no fim do mes"));
+});
+
+test("formatMinutesBefore mostra dias/horas por extenso em vez de minutos crus", () => {
+  assert.equal(formatMinutesBefore(0), "na hora");
+  assert.equal(formatMinutesBefore(30), "30 min");
+  assert.equal(formatMinutesBefore(60), "1 hora");
+  assert.equal(formatMinutesBefore(120), "2 horas");
+  assert.equal(formatMinutesBefore(90), "1h30");
+  assert.equal(formatMinutesBefore(1440), "1 dia");
+  assert.equal(formatMinutesBefore(2880), "2 dias");
+});
+
+// Pedido do usuario: um evento pode ter ate 3 avisos (principal + 2 extras),
+// em qualquer combinacao de minutos/horas/dias.
+test("addEventExtraReminder/listEventReminderMinutes: acumula ate o maximo, rejeita duplicado e 4o alerta", () => {
+  const event = createEvent({ fromNumber: A, title: "Consulta com varios avisos", start: "2099-08-01T15:00:00-03:00", reminderMinutes: 60 });
+  assert.deepEqual(listEventReminderMinutes(A, event.id), [60]);
+
+  assert.deepEqual(addEventExtraReminder(A, event.id, 1440), { ok: true }); // 1 dia antes
+  assert.deepEqual(listEventReminderMinutes(A, event.id), [1440, 60]);
+
+  assert.deepEqual(addEventExtraReminder(A, event.id, 120), { ok: true }); // 2 horas antes
+  assert.deepEqual(listEventReminderMinutes(A, event.id), [1440, 120, 60]);
+  assert.equal(listEventReminderMinutes(A, event.id).length, MAX_REMINDERS_PER_EVENT);
+
+  assert.deepEqual(addEventExtraReminder(A, event.id, 30), { ok: false, reason: "max_reached" });
+  assert.deepEqual(addEventExtraReminder(A, event.id, 60), { ok: false, reason: "duplicate" }); // ja tem 60
+  assert.deepEqual(addEventExtraReminder(A, 999999, 30), { ok: false, reason: "not_found" });
+});
+
+test("removeEventReminder: remove um extra sem afetar os outros, e promove um extra se remover o principal", () => {
+  const event = createEvent({ fromNumber: A, title: "Reuniao com avisos", start: "2099-08-02T10:00:00-03:00", reminderMinutes: 60 });
+  addEventExtraReminder(A, event.id, 1440);
+  addEventExtraReminder(A, event.id, 120);
+
+  assert.deepEqual(removeEventReminder(A, event.id, 120), { ok: true });
+  assert.deepEqual(listEventReminderMinutes(A, event.id), [1440, 60]);
+
+  // remover o PRINCIPAL (60) promove o extra restante (1440) a novo principal
+  assert.deepEqual(removeEventReminder(A, event.id, 60), { ok: true });
+  assert.deepEqual(listEventReminderMinutes(A, event.id), [1440]);
+  assert.equal(getEventById(A, event.id)!.reminder_minutes, 1440);
+
+  // so resta 1 -- nao pode remover o ultimo
+  assert.deepEqual(removeEventReminder(A, event.id, 1440), { ok: false, reason: "last_one" });
+  assert.deepEqual(removeEventReminder(A, event.id, 9999), { ok: false, reason: "not_found" });
+});
+
+test("SEGURANCA: addEventExtraReminder/removeEventReminder nunca alcancam evento de outro numero", () => {
+  const event = createEvent({ fromNumber: A, title: "So do A", start: "2099-08-03T10:00:00-03:00", reminderMinutes: 60 });
+  assert.deepEqual(addEventExtraReminder(B, event.id, 120), { ok: false, reason: "not_found" });
+  assert.equal(listEventReminderMinutes(A, event.id).length, 1);
+
+  addEventExtraReminder(A, event.id, 120);
+  assert.deepEqual(removeEventReminder(B, event.id, 120), { ok: false, reason: "not_found" });
+  assert.equal(listEventReminderMinutes(A, event.id).length, 2); // continua intacto
+});
+
+test("deleteEvent apaga tambem os alertas extras (nao deixa orfao), e so afeta evento do dono certo", () => {
+  const event = createEvent({ fromNumber: A, title: "Vai ser apagado", start: "2099-08-04T10:00:00-03:00", reminderMinutes: 60 });
+  addEventExtraReminder(A, event.id, 1440);
+
+  deleteEvent(B, event.id); // B tentando apagar evento de A: nao deve afetar nada
+  assert.equal(listEventReminderMinutes(A, event.id).length, 2);
+
+  deleteEvent(A, event.id);
+  assert.equal(getEventById(A, event.id), undefined);
+  assert.equal(listEventReminderMinutes(A, event.id).length, 0);
+});
+
+test("getDueExtraEventReminders/markEventExtraReminderSent: so traz o que venceu e ainda nao foi avisado", () => {
+  const past = createEvent({ fromNumber: A, title: "Extra ja deveria ter avisado", start: "2020-01-01T00:00:00-03:00", reminderMinutes: 60 });
+  addEventExtraReminder(A, past.id, 30);
+  const future = createEvent({ fromNumber: A, title: "Extra ainda nao chegou", start: "2099-01-01T00:00:00-03:00", reminderMinutes: 60 });
+  addEventExtraReminder(A, future.id, 30);
+
+  const due = getDueExtraEventReminders();
+  const dueForPast = due.find((d) => d.eventId === past.id);
+  assert.ok(dueForPast);
+  assert.equal(dueForPast!.minutesBefore, 30);
+  assert.ok(!due.some((d) => d.eventId === future.id));
+
+  markEventExtraReminderSent(dueForPast!.id);
+  assert.ok(!getDueExtraEventReminders().some((d) => d.eventId === past.id)); // nao avisa 2x
+});
+
+test("updateEvent reagenda tambem os alertas extras (sent volta a 0) quando o evento muda de horario", () => {
+  const event = createEvent({ fromNumber: A, title: "Extra a reagendar", start: "2020-01-01T00:00:00-03:00", reminderMinutes: 60 });
+  addEventExtraReminder(A, event.id, 30);
+  const due = getDueExtraEventReminders().find((d) => d.eventId === event.id)!;
+  markEventExtraReminderSent(due.id);
+  assert.ok(!getDueExtraEventReminders().some((d) => d.eventId === event.id));
+
+  updateEvent(A, event.id, { title: "Extra a reagendar", start: "2020-02-01T00:00:00-03:00", reminderMinutes: 60 });
+  // novo start ja passou tambem (ainda no passado), entao volta a estar devido
+  assert.ok(getDueExtraEventReminders().some((d) => d.eventId === event.id));
 });

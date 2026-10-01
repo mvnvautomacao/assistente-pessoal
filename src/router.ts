@@ -39,6 +39,11 @@ import {
   listUpcomingEvents,
   getEventById,
   getEventsForMonth,
+  formatMinutesBefore,
+  listEventReminderMinutes,
+  addEventExtraReminder,
+  removeEventReminder,
+  MAX_REMINDERS_PER_EVENT,
 } from "./events/service";
 import {
   createReminder,
@@ -324,7 +329,7 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar, pra não esquecer. Pra cancelar, é só dizer, tipo "cancela a consulta do dia 15". Pra mudar só o dia/horário sem cancelar: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar.`;
+Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15".`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -1432,8 +1437,8 @@ async function resolvePendingReceiptConfirmation(from: string, pending: PendingR
 
   // awaiting === "confirm"
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (yes) {
     clearPendingReceiptConfirmation(from);
@@ -1996,8 +2001,8 @@ async function resolveListChoice(from: string, days: number, answerText: string)
 // com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
 async function resolveEventDeletionConfirmation(from: string, pending: { eventId: number; title: string }, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — quer mesmo cancelar o evento "${pending.title}"? Responde "sim" ou "não".`);
@@ -2035,8 +2040,8 @@ async function resolveEventDeletionConfirmation(from: string, pending: { eventId
 // resolveEventDeletionConfirmation, pra lembrete.
 async function resolveReminderDeletionConfirmation(from: string, pending: { reminderId: number; message: string }, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — quer mesmo apagar o lembrete "${pending.message}"? Responde "sim" ou "não".`);
@@ -2108,8 +2113,8 @@ async function resolveReminderAdvanceChoice(
 // verdade com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
 async function resolveBulkRecategorizeConfirmation(from: string, pending: PendingBulkRecategorize, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer mudar ${pending.summary} pra "${pending.toCategoryName}"? Responde "sim" ou "não".`);
@@ -2137,8 +2142,8 @@ async function resolveBulkRecategorizeConfirmation(from: string, pending: Pendin
 // categoria de origem de verdade com um "sim" claro
 async function resolveMergeCategoriesConfirmation(from: string, pending: PendingMergeCategories, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(
@@ -2271,8 +2276,8 @@ async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDe
     return;
   }
 
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer apagar o gasto "${pending.description}" (R$${pending.amount.toFixed(2)})? Responde "sim" ou "não".`);
@@ -2304,8 +2309,8 @@ async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDe
 // "desfaz isso" recria a categoria e devolve eles (mesmo undo do merge).
 async function resolveDeleteCategoryConfirmation(from: string, pending: PendingDeleteCategory, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer apagar a categoria "${pending.categoryName}"? Responde "sim" ou "não".`);
@@ -2367,8 +2372,8 @@ function parseEditFieldValue(
 // pedir confirmacao com o valor corrigido, em vez de assumir ou travar
 async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (yes) {
     clearPendingEditExpense(from);
@@ -2404,8 +2409,8 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
 // resolvePendingCategorization ja faz pra gasto pendente de categoria
 async function resolveCorrectCategoryConfirmation(from: string, pending: PendingCorrectCategory, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (yes) {
     clearPendingCorrectCategory(from);
@@ -2444,8 +2449,8 @@ async function resolveCorrectCategoryConfirmation(from: string, pending: Pending
 // verdade e sexta as 16h", nao so um ISO exato
 async function resolveEditEventConfirmation(from: string, pending: PendingEditEvent, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (yes) {
     clearPendingEditEvent(from);
@@ -2498,8 +2503,8 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
 // mesma ideia de resolveEditEventConfirmation, pra lembrete
 async function resolveEditReminderConfirmation(from: string, pending: PendingEditReminder, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (yes) {
     clearPendingEditReminder(from);
@@ -2540,8 +2545,8 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
 // verdade com um "sim" claro, igual as outras confirmacoes de exclusao
 async function resolveRemoveBudgetConfirmation(from: string, pending: PendingRemoveBudget, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer remover o orçamento de "${pending.categoryName}"? Responde "sim" ou "não".`);
@@ -2569,8 +2574,8 @@ async function resolveRemoveBudgetConfirmation(from: string, pending: PendingRem
 // mesma ideia de resolveRemoveBudgetConfirmation, pra gasto fixo
 async function resolveRemoveRecurringConfirmation(from: string, pending: PendingRemoveRecurring, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer parar de lançar o gasto fixo "${pending.description}"? Responde "sim" ou "não".`);
@@ -2604,8 +2609,8 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
 // mesma ideia de resolveRemoveRecurringConfirmation, mas pra editar campos em vez de remover
 async function resolveEditRecurringConfirmation(from: string, pending: PendingEditRecurring, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
@@ -2637,8 +2642,8 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
 async function resolveRemoveBillAlertConfirmation(from: string, pending: PendingRemoveBillAlert, answerText: string) {
   const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para)\b/.test(normalized);
+  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
+  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
 
   if (!yes && !no) {
     await sendText(from, `Não entendi — confirma que quer parar de receber o alerta de "${pending.name}"? Responde "sim" ou "não".`);
@@ -2849,6 +2854,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário, título ou a nova antecedência do aviso.");
         break;
       }
+      if (
+        interpretation.new_reminder_minutes !== undefined &&
+        (interpretation.new_reminder_minutes < 0 || interpretation.new_reminder_minutes > 43200)
+      ) {
+        await sendText(from, "A antecedência do aviso precisa ser entre 0 (na hora) e 30 dias antes.");
+        break;
+      }
 
       const event = matches[0];
       // preenche so o que foi pedido -- "muda so o dia" mantem o horario
@@ -2866,7 +2878,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const changeParts: string[] = [];
       if (hasDateTimeChange) changeParts.push(`de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`);
       if (interpretation.new_title) changeParts.push(`título "${event.title}" → "${interpretation.new_title}"`);
-      if (interpretation.new_reminder_minutes !== undefined) changeParts.push(`aviso ${proposedReminderMinutes} min antes`);
+      if (interpretation.new_reminder_minutes !== undefined) changeParts.push(`aviso ${formatMinutesBefore(proposedReminderMinutes)} antes`);
       const changeText = changeParts.join("; ");
 
       setPendingEditEvent(from, {
@@ -2891,6 +2903,70 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         from,
         `Vou alterar "${event.title}": ${changeText}. Confirma? Responde "sim"/"não"${hasDateTimeChange ? ", ou me diga a data/hora certa se eu errei" : ""}.`
       );
+      break;
+    }
+    case "add_event_reminder": {
+      const matches = findUpcomingEvents(from, interpretation.query);
+      if (matches.length === 0) {
+        logActivity(from, "add_event_reminder", `nenhum evento encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
+        break;
+      }
+      if (matches.length > 1) {
+        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
+        logActivity(from, "add_event_reminder", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
+        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer adicionar o aviso.`);
+        break;
+      }
+      if (interpretation.minutes_before < 0 || interpretation.minutes_before > 43200) {
+        await sendText(from, "A antecedência do aviso precisa ser entre 0 (na hora) e 30 dias antes.");
+        break;
+      }
+
+      const event = matches[0];
+      const result = addEventExtraReminder(from, event.id, interpretation.minutes_before);
+      if (!result.ok && result.reason === "duplicate") {
+        await sendText(from, `"${event.title}" já tem um aviso de ${formatMinutesBefore(interpretation.minutes_before)} antes.`);
+        break;
+      }
+      if (!result.ok && result.reason === "max_reached") {
+        const current = listEventReminderMinutes(from, event.id).map(formatMinutesBefore).join(", ");
+        await sendText(from, `"${event.title}" já tem o máximo de ${MAX_REMINDERS_PER_EVENT} avisos (${current}). Remova um antes de adicionar outro.`);
+        break;
+      }
+      const allReminders = listEventReminderMinutes(from, event.id).map(formatMinutesBefore).join(", ");
+      logActivity(from, "add_event_reminder", `"${event.title}" +${formatMinutesBefore(interpretation.minutes_before)} antes`);
+      await sendText(from, `🔔 Adicionado! "${event.title}" agora avisa: ${allReminders}.`);
+      break;
+    }
+    case "remove_event_reminder": {
+      const matches = findUpcomingEvents(from, interpretation.query);
+      if (matches.length === 0) {
+        logActivity(from, "remove_event_reminder", `nenhum evento encontrado para "${interpretation.query}"`);
+        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
+        break;
+      }
+      if (matches.length > 1) {
+        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
+        logActivity(from, "remove_event_reminder", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
+        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remover o aviso.`);
+        break;
+      }
+
+      const event = matches[0];
+      const result = removeEventReminder(from, event.id, interpretation.minutes_before);
+      if (!result.ok && result.reason === "not_found") {
+        const current = listEventReminderMinutes(from, event.id).map(formatMinutesBefore).join(", ");
+        await sendText(from, `"${event.title}" não tem um aviso de ${formatMinutesBefore(interpretation.minutes_before)} antes. Os avisos dele hoje são: ${current}.`);
+        break;
+      }
+      if (!result.ok && result.reason === "last_one") {
+        await sendText(from, `"${event.title}" só tem esse aviso — todo evento precisa ficar com pelo menos 1. Se quiser trocar, peça pra mudar em vez de remover.`);
+        break;
+      }
+      const allReminders = listEventReminderMinutes(from, event.id).map(formatMinutesBefore).join(", ");
+      logActivity(from, "remove_event_reminder", `"${event.title}" -${formatMinutesBefore(interpretation.minutes_before)} antes`);
+      await sendText(from, `🔕 Removido! "${event.title}" agora avisa: ${allReminders}.`);
       break;
     }
     case "reminder": {
