@@ -7,6 +7,7 @@ import { getDashboardAccount, upsertDashboardPassword } from "../../src/dashboar
 import { hashPassword } from "../../src/auth/password";
 import { getClientBilling, getPaidMonthsForClient } from "../../src/billing/service";
 import { getNoExpenseReminderDays, setNoExpenseReminderDays } from "../../src/expenses/service";
+import { isNumberBlocked, blockNumber } from "../../src/access/blocklist";
 
 async function withServer(fn: (baseUrl: string, authHeaders: () => Record<string, string>) => Promise<void>) {
   const server = await startAdminTestServer();
@@ -247,5 +248,53 @@ test("admin: desmarcar todos os dias salva lista vazia (suspende o aviso pra tod
     });
     assert.deepEqual(getNoExpenseReminderDays(), []);
     setNoExpenseReminderDays([1, 3, 5]); // devolve ao padrao
+  });
+});
+
+test("admin: bloquear numero pelo painel tira da lista de autorizados, aparece em Numeros bloqueados, e desbloquear nao autoriza de volta", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095200";
+    allowNumber(PHONE);
+
+    await fetch(`${baseUrl}/admin/blocklist/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, raw: "1", note: "spam" }),
+    });
+    assert.ok(isNumberBlocked(PHONE));
+    assert.ok(!isNumberAllowed(PHONE));
+
+    const page = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.ok(page.includes("Números bloqueados (") && page.includes(PHONE) && page.includes("spam"));
+
+    // autorizar pelo painel um bloqueado nao funciona
+    await fetch(`${baseUrl}/admin/allowlist/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE, raw: "1" }),
+    });
+    assert.ok(!isNumberAllowed(PHONE));
+
+    await fetch(`${baseUrl}/admin/blocklist/remove`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams({ from_number: PHONE }),
+    });
+    assert.ok(!isNumberBlocked(PHONE));
+    assert.ok(!isNumberAllowed(PHONE));
+  });
+});
+
+test("admin: tentativa bloqueada ganha botao Bloquear e some da lista de tentativas depois de bloqueada", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const PHONE = "551100095201";
+    logActivity(PHONE, "blocked", "mensagem bloqueada (numero nao autorizado): oi");
+    let page = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.ok(page.includes('action="/admin/blocklist/add"') && page.includes(PHONE));
+
+    blockNumber(PHONE);
+    page = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    const attemptsSection = page.split("Tentativas bloqueadas recentemente")[1].split("Lembretes pendentes")[0];
+    assert.ok(!attemptsSection.includes(PHONE));
   });
 });

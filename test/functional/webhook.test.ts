@@ -28,6 +28,7 @@ import {
 } from "../../src/expenses/service";
 import { backdatePendingExpensePaymentMethodForTests } from "../../src/expenses/pendingPaymentMethod";
 import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
+import { blockNumber } from "../../src/access/blocklist";
 import { resetRateLimitForTests } from "../../src/access/rateLimit";
 import { resetOwnerAlertForTests } from "../../src/access/ownerAlert";
 import { getRecentBlockedAttempts, getRecentActivity } from "../../src/activity/service";
@@ -3055,4 +3056,19 @@ test("edit_event: encontra e remarca evento criado a mais de 60 dias no futuro",
   await handleIncomingMessage(evolutionMessage(EE10, "sim"));
   const updated = getEventById(EE10, event.id);
   assert.equal(new Date(updated!.start).toISOString(), "2026-09-20T13:00:00.000Z"); // 10h BRT = 13h UTC
+});
+
+test("numero BLOQUEADO pelo admin: ignorado em silencio mesmo estando autorizado -- sem resposta, sem IA, sem alerta pro dono, sem log", async (t) => {
+  const BK = "551100090990";
+  allowNumber(BK);
+  blockNumber(BK);
+  assert.equal(isNumberAllowed(BK), false);
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "expense", amount: 999, category: "Nao Deveria", description: "nao deveria registrar", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(BK, "gastei 999 no mercado"));
+
+  assert.equal(sent.length, 0); // nem pro numero, nem alerta pro dono
+  assert.equal(findRecentExpense(BK), null);
+  assert.ok(!getRecentBlockedAttempts(100).some((b) => b.from_number === BK));
 });

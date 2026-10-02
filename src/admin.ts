@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "crypto";
 import { getRecentActivity, getPendingReminders, getRecentBlockedAttempts } from "./activity/service";
 import { listAllowedNumbers, allowNumber, revokeNumber } from "./access/allowlist";
+import { isNumberBlocked, blockNumber, unblockNumber, listBlockedNumbers } from "./access/blocklist";
 import { normalizeBrazilPhone } from "./dashboard/utils";
 import { config } from "./config";
 import { createSession, getSession, destroySession, ADMIN_SESSION_TTL_MS } from "./auth/session";
@@ -248,7 +249,9 @@ adminRouter.get("/admin", (req, res) => {
     (name, idx) =>
       `<label style="margin-right:12px"><input type="checkbox" name="days" value="${idx}" ${noExpenseReminderDays.has(idx) ? "checked" : ""}> ${name}</label>`
   ).join("");
-  const allBlockedAttempts = getRecentBlockedAttempts(500).filter((b) => !allowedSet.has(b.from_number));
+  const blockedNumbers = listBlockedNumbers();
+  const blockedSet = new Set(blockedNumbers.map((b) => b.from_number));
+  const allBlockedAttempts = getRecentBlockedAttempts(500).filter((b) => !allowedSet.has(b.from_number) && !blockedSet.has(b.from_number));
   const blockedAttempts = paginate(allBlockedAttempts, blockedPagination.page, blockedPagination.perPage);
   const dashboardAccounts = listDashboardAccounts();
 
@@ -347,6 +350,28 @@ adminRouter.get("/admin", (req, res) => {
             <input type="hidden" name="raw" value="1">
             <button type="submit" class="link-btn">Aprovar</button>
           </form>
+          <form class="inline" method="post" action="/admin/blocklist/add" onsubmit="return confirm('Bloquear esse número pra sempre? Ele nunca mais recebe nada do assistente.')">
+            <input type="hidden" name="from_number" value="${escapeHtml(b.from_number)}">
+            <input type="hidden" name="raw" value="1">
+            <button type="submit" class="link-btn danger">Bloquear</button>
+          </form>
+        </td>
+      </tr>`
+    )
+    .join("");
+
+  const blockedNumberRows = blockedNumbers
+    .map(
+      (b) => `
+      <tr>
+        <td>${escapeHtml(b.from_number)}</td>
+        <td>${escapeHtml(b.note ?? "—")}</td>
+        <td>${formatDate(b.blocked_at)}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/blocklist/remove" onsubmit="return confirm('Desbloquear esse número? Ele volta pra \\'não autorizado\\' (precisa ser aprovado de novo).')">
+            <input type="hidden" name="from_number" value="${escapeHtml(b.from_number)}">
+            <button type="submit" class="link-btn">Desbloquear</button>
+          </form>
         </td>
       </tr>`
     )
@@ -425,6 +450,15 @@ ${allowed.length ? `<table><tr><th>Número</th><th>Nota</th><th>Autorizado em</t
   <button type="submit">+ Autorizar número</button>
 </form>
 
+<h2>Números bloqueados (${blockedNumbers.length})</h2>
+<p class="warn">Número bloqueado nunca recebe NADA do assistente: nem resposta, nem lembrete, relatório ou qualquer outra automação. As mensagens dele são ignoradas em silêncio. O bloqueio vale mais que a autorização (bloquear também tira da lista de autorizados); desbloquear não autoriza de volta.</p>
+${blockedNumbers.length ? `<table><tr><th>Número</th><th>Nota</th><th>Bloqueado em</th><th></th></tr>${blockedNumberRows}</table>` : `<p class="empty">Nenhum número bloqueado.</p>`}
+<form class="add-form" method="post" action="/admin/blocklist/add">
+  <input type="text" name="from_number" placeholder="Ex: 5561999210718" required>
+  <input type="text" name="note" placeholder="Motivo/nota (opcional)">
+  <button type="submit" class="link-btn danger">Bloquear número</button>
+</form>
+
 <h2>Testar relatório semanal</h2>
 <p class="warn">Manda o relatório da semana passada pra um número, agora, só pra conferir como fica — não é o envio automático de sexta.</p>
 <form class="add-form" method="post" action="/admin/send-test-report">
@@ -477,7 +511,23 @@ adminRouter.post("/admin/allowlist/add", (req, res) => {
   const fromNumber = raw
     ? String(req.body.from_number || "").replace(/\D/g, "")
     : normalizeBrazilPhone(String(req.body.from_number || ""));
-  if (fromNumber) allowNumber(fromNumber, req.body.note ? String(req.body.note).trim() : undefined);
+  // numero bloqueado nao pode ser autorizado por aqui -- precisa desbloquear antes
+  if (fromNumber && !isNumberBlocked(fromNumber)) allowNumber(fromNumber, req.body.note ? String(req.body.note).trim() : undefined);
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/blocklist/add", (req, res) => {
+  const raw = req.body.raw === "1";
+  const fromNumber = raw
+    ? String(req.body.from_number || "").replace(/\D/g, "")
+    : normalizeBrazilPhone(String(req.body.from_number || ""));
+  if (fromNumber) blockNumber(fromNumber, req.body.note ? String(req.body.note).trim() : undefined);
+  res.redirect("/admin");
+});
+
+adminRouter.post("/admin/blocklist/remove", (req, res) => {
+  const fromNumber = String(req.body.from_number || "");
+  if (fromNumber) unblockNumber(fromNumber);
   res.redirect("/admin");
 });
 

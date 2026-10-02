@@ -155,6 +155,7 @@ import {
 } from "./expenses/pendingPaymentMethod";
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
+import { isNumberBlocked } from "./access/blocklist";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
@@ -458,6 +459,10 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   if (data.key.remoteJid.endsWith("@g.us")) return;
 
   const from = data.key.remoteJid.replace(/@s\.whatsapp\.net$/, "");
+
+  // Bloqueado pelo admin: ignora em silencio, sem log nem alerta (justamente o
+  // caso de bot em loop, que lotaria o /admin e o WhatsApp do dono).
+  if (isNumberBlocked(from)) return;
 
   // Numero nao autorizado: ignora em silencio, sem mandar nada de volta. Evita
   // loop de bot conversando com bot de outra empresa (ja aconteceu em producao).

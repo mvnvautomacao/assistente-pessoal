@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { isNumberBlocked } from "./blocklist";
 
 export interface AllowedNumber {
   from_number: string;
@@ -7,6 +8,7 @@ export interface AllowedNumber {
 }
 
 export function isNumberAllowed(fromNumber: string): boolean {
+  if (isNumberBlocked(fromNumber)) return false;
   const row = db.prepare(`SELECT 1 FROM allowed_numbers WHERE from_number = ?`).get(fromNumber);
   return !!row;
 }

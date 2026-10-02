@@ -124,6 +124,15 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- numeros BLOQUEADOS pelo admin: nunca recebem NADA do bot (resposta ou
+  -- automacao) e suas mensagens sao ignoradas em silencio. Bloqueio vale mais
+  -- que a lista de autorizados (ver access/blocklist.ts e sendText).
+  CREATE TABLE IF NOT EXISTS blocked_numbers (
+    from_number TEXT PRIMARY KEY,
+    note TEXT,
+    blocked_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- configuracao GLOBAL (nao por usuario, uma linha so, id fixo=1), definida
   -- pelo admin no /admin -- hoje so guarda em quais dias da semana o aviso de
   -- gasto pendente roda pra todo mundo (ver expenses/service.ts e

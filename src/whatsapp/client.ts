@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { isNumberBlocked } from "../access/blocklist";
 
 async function callEvolutionApi(path: string, body: unknown) {
   const res = await fetch(`${config.evolution.apiUrl}${path}`, {
@@ -17,6 +18,9 @@ async function callEvolutionApi(path: string, body: unknown) {
 }
 
 export async function sendText(to: string, text: string) {
+  // numero bloqueado pelo admin nunca recebe nada -- nem resposta, nem
+  // lembrete, relatorio ou qualquer outra automacao (todas passam por aqui).
+  if (isNumberBlocked(to)) return { skipped: "blocked" };
   return callEvolutionApi(`/message/sendText/${config.evolution.instanceName}`, {
     number: to,
     text,
