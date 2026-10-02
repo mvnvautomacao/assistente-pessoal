@@ -12,6 +12,8 @@ import {
   getNoExpenseReminderSubscribers,
   markNoExpenseReminderSent,
   hasExpenseForDate,
+  getNoExpenseReminderDays,
+  setNoExpenseReminderDays,
   listCategories,
   findCategoryByName,
   findCategoryByKeyword,
@@ -128,6 +130,34 @@ test("markNoExpenseReminderSent grava a data, e hasExpenseForDate so olha a colu
   insertExpense({ fromNumber: R, amount: 10, description: "pao", categoryId: category.id, paymentMethodId: null, date: "2026-09-29" });
   assert.equal(hasExpenseForDate(R, "2026-09-29"), true);
   assert.equal(hasExpenseForDate(R, "2026-09-28"), false); // outro dia continua sem gasto
+});
+
+// Pedido do usuario: o aviso de gasto pendente vinha rodando TODO dia; agora e
+// configuracao GLOBAL (definida pelo admin, nao por numero) de em quais dias
+// da semana ele pode rodar. Padrao combinado: segunda, quarta, sexta (1,3,5).
+// Precisa ser o PRIMEIRO teste a tocar nesse valor (linha unica e global,
+// compartilhada por todos os testes desse arquivo/processo).
+test("getNoExpenseReminderDays comeca em segunda/quarta/sexta por padrao (configuracao global, nao por numero)", () => {
+  assert.deepEqual(getNoExpenseReminderDays(), [1, 3, 5]);
+});
+
+test("setNoExpenseReminderDays muda o valor global (afeta todo mundo, nao e por numero)", () => {
+  setNoExpenseReminderDays([0, 6]); // so fim de semana, por exemplo
+  assert.deepEqual(getNoExpenseReminderDays(), [0, 6]);
+
+  setNoExpenseReminderDays([1, 1, 3, 3, 5]); // duplicado nao gera dia repetido
+  assert.deepEqual(getNoExpenseReminderDays(), [1, 3, 5]);
+
+  setNoExpenseReminderDays([5, 1, 3]); // ordem de entrada nao importa, sempre sai ordenado
+  assert.deepEqual(getNoExpenseReminderDays(), [1, 3, 5]);
+
+  setNoExpenseReminderDays([-1, 7, 2]); // valores fora de 0-6 sao ignorados
+  assert.deepEqual(getNoExpenseReminderDays(), [2]);
+
+  setNoExpenseReminderDays([]); // pode ficar vazio (aviso suspenso pra todo mundo)
+  assert.deepEqual(getNoExpenseReminderDays(), []);
+
+  setNoExpenseReminderDays([1, 3, 5]); // devolve ao padrao, pra nao vazar pra outros testes
 });
 
 test("categorias/formas de pagamento sao isoladas por numero: seed de A nao vaza pra B", () => {

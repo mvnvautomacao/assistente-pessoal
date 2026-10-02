@@ -124,6 +124,16 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- configuracao GLOBAL (nao por usuario, uma linha so, id fixo=1), definida
+  -- pelo admin no /admin -- hoje so guarda em quais dias da semana o aviso de
+  -- gasto pendente roda pra todo mundo (ver expenses/service.ts e
+  -- noExpenseReminderScheduler.ts). Lista de numeros "0,1,2,3,4,5,6"
+  -- (0=domingo..6=sabado, igual spDayOfWeek). Padrao: segunda, quarta, sexta.
+  CREATE TABLE IF NOT EXISTS app_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    no_expense_reminder_days TEXT NOT NULL DEFAULT '1,3,5'
+  );
+
   -- cobranca mensal de cada cliente (numero autorizado) -- controle manual pelo
   -- admin, sem integracao com gateway de pagamento ainda. next_due_date e
   -- last_payment_date sao NULL ate o admin configurar a primeira cobranca.
@@ -280,6 +290,10 @@ db.exec(`UPDATE user_settings SET report_day_of_week = ${DEFAULT_REPORT_DAY} WHE
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "event_reminder_minutes")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN event_reminder_minutes INTEGER NOT NULL DEFAULT 60`);
 }
+
+// garante que a linha unica de configuracao global existe (id=1) -- so insere
+// na primeira vez, nunca sobrescreve o que o admin ja escolheu depois.
+db.exec(`INSERT INTO app_settings (id, no_expense_reminder_days) VALUES (1, '1,3,5') ON CONFLICT(id) DO NOTHING`);
 
 // aviso automatico de gasto pendente: ligado por padrao (mesma filosofia do
 // relatorio semanal, ver DEFAULT_REPORT_DAY acima) -- ninguem precisa pedir

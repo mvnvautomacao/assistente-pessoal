@@ -83,18 +83,24 @@ test("updateReminder reseta sent=0 (edita um ja enviado -> volta a avisar)", () 
   assert.equal(getReminderById(A, target.id)!.sent, 0);
 });
 
+// Numero DEDICADO (nao A/B): o teste anterior ("getRemindersWithinDays") cria
+// um lembrete pra A com data relativa "agora + 30 dias", que pode cair em
+// novembro dependendo de quando a suite roda, contaminando a contagem abaixo
+// se reusasse A.
 test("getRemindersForMonth: so traz lembretes nao enviados daquele mes, isolado por numero", () => {
-  createReminder(A, "lembrete de novembro", "2026-11-15T10:00:00-03:00");
-  createReminder(A, "lembrete de dezembro", "2026-12-01T10:00:00-03:00");
-  createReminder(B, "lembrete de novembro de B", "2026-11-20T10:00:00-03:00"); // SEGURANCA: nao pode aparecer pra A
+  const M1 = "551100030003";
+  const M2 = "551100030004";
+  createReminder(M1, "lembrete de novembro", "2026-11-15T10:00:00-03:00");
+  createReminder(M1, "lembrete de dezembro", "2026-12-01T10:00:00-03:00");
+  createReminder(M2, "lembrete de novembro de B", "2026-11-20T10:00:00-03:00"); // SEGURANCA: nao pode aparecer pra M1
 
-  const novembroA = getRemindersForMonth(A, "2026-11");
+  const novembroA = getRemindersForMonth(M1, "2026-11");
   assert.equal(novembroA.length, 1);
   assert.equal(novembroA[0].message, "lembrete de novembro");
 
-  const created = createReminder(A, "ja enviado em novembro", "2026-11-05T10:00:00-03:00");
-  markReminderSent(A, created);
-  assert.ok(!getRemindersForMonth(A, "2026-11").some((r) => r.message === "ja enviado em novembro"));
+  const created = createReminder(M1, "ja enviado em novembro", "2026-11-05T10:00:00-03:00");
+  markReminderSent(M1, created);
+  assert.ok(!getRemindersForMonth(M1, "2026-11").some((r) => r.message === "ja enviado em novembro"));
 });
 
 test("SEGURANCA: markReminderSent nunca alcanca lembrete de outro numero", () => {

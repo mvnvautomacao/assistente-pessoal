@@ -6,6 +6,7 @@ import { allowNumber, isNumberAllowed } from "../../src/access/allowlist";
 import { getDashboardAccount, upsertDashboardPassword } from "../../src/dashboard/accounts";
 import { hashPassword } from "../../src/auth/password";
 import { getClientBilling, getPaidMonthsForClient } from "../../src/billing/service";
+import { getNoExpenseReminderDays, setNoExpenseReminderDays } from "../../src/expenses/service";
 
 async function withServer(fn: (baseUrl: string, authHeaders: () => Record<string, string>) => Promise<void>) {
   const server = await startAdminTestServer();
@@ -205,5 +206,46 @@ test("admin: revogar acesso de um cliente com cobranca configurada tira ele da a
     });
 
     assert.ok(!isNumberAllowed(PHONE));
+  });
+});
+
+// Pedido do usuario: o aviso de gasto pendente ("nao registrou nada hoje?")
+// vinha todo dia; agora o ADMIN escolhe em quais dias da semana ele roda,
+// pra todo mundo (nao e por numero/cliente). Padrao: segunda, quarta, sexta.
+test("admin: pagina mostra segunda/quarta/sexta marcados por padrao, e salvar muda a configuracao global", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    setNoExpenseReminderDays([1, 3, 5]); // garante o padrao, independente de testes anteriores
+
+    const page = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.match(page, /<input type="checkbox" name="days" value="1" checked>\s*Segunda/);
+    assert.match(page, /<input type="checkbox" name="days" value="3" checked>\s*Quarta/);
+    assert.match(page, /<input type="checkbox" name="days" value="5" checked>\s*Sexta/);
+    assert.doesNotMatch(page, /<input type="checkbox" name="days" value="0" checked>/); // domingo nao marcado
+
+    await fetch(`${baseUrl}/admin/no-expense-reminder-days`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams([["days", "2"], ["days", "4"]]), // so terca e quinta
+    });
+    assert.deepEqual(getNoExpenseReminderDays(), [2, 4]);
+
+    const updatedPage = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.match(updatedPage, /<input type="checkbox" name="days" value="2" checked>\s*Terça/);
+    assert.doesNotMatch(updatedPage, /<input type="checkbox" name="days" value="1" checked>/); // segunda desmarcou
+
+    setNoExpenseReminderDays([1, 3, 5]); // devolve ao padrao, pra nao vazar pra outros testes
+  });
+});
+
+test("admin: desmarcar todos os dias salva lista vazia (suspende o aviso pra todo mundo)", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    setNoExpenseReminderDays([1, 3, 5]);
+    await fetch(`${baseUrl}/admin/no-expense-reminder-days`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() },
+      body: new URLSearchParams(), // nenhum "days" -- nenhum checkbox marcado
+    });
+    assert.deepEqual(getNoExpenseReminderDays(), []);
+    setNoExpenseReminderDays([1, 3, 5]); // devolve ao padrao
   });
 });

@@ -311,6 +311,30 @@ export function hasExpenseForDate(fromNumber: string, dateStr: string): boolean 
   return !!row;
 }
 
+// configuracao GLOBAL (nao por usuario) de em quais dias da semana o aviso de
+// gasto pendente roda, pra todo mundo -- definida pelo admin, nao pelo
+// usuario final. 0=domingo .. 6=sabado, igual spDayOfWeek(). Padrao: segunda,
+// quarta, sexta (ver migracao em db.ts).
+export function getNoExpenseReminderDays(): number[] {
+  const row = db.prepare(`SELECT no_expense_reminder_days FROM app_settings WHERE id = 1`).get() as
+    | { no_expense_reminder_days: string }
+    | undefined;
+  if (!row) return [1, 3, 5];
+  const trimmed = row.no_expense_reminder_days.trim();
+  // "".split(",") vira [""], e Number("") e 0 -- sem essa guarda, lista vazia
+  // (aviso suspenso de proposito) voltava errado como [0] (so domingo).
+  if (trimmed === "") return [];
+  return trimmed
+    .split(",")
+    .map((d) => Number(d.trim()))
+    .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+}
+
+export function setNoExpenseReminderDays(days: number[]) {
+  const valid = Array.from(new Set(days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))).sort((a, b) => a - b);
+  db.prepare(`UPDATE app_settings SET no_expense_reminder_days = ? WHERE id = 1`).run(valid.join(","));
+}
+
 export function learnKeyword(fromNumber: string, keyword: string, categoryId: number) {
   const clean = keyword.trim();
   if (!clean) return;

@@ -13,6 +13,7 @@ import { previousWeekRange, buildExpenseReportText } from "./expenses/reportText
 import { PAGE_SIZES, paginate } from "./dashboard/utils";
 import { destroyDashboardSessionsForPhone } from "./auth/session";
 import { listClientBilling, setClientBillingInfo, recordClientPayment, getPaidMonthsForClient, PLAN_PRICES, BillingPlan } from "./billing/service";
+import { getNoExpenseReminderDays, setNoExpenseReminderDays } from "./expenses/service";
 import { spDateString } from "./timeSP";
 
 export const adminRouter = Router();
@@ -132,6 +133,9 @@ const MONTH_NAMES = [
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ];
 
+// 0=domingo .. 6=sabado, igual spDayOfWeek()
+const DAY_NAMES = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
+
 // "2026-09" -> "setembro/2026"
 function formatYearMonth(value: string): string {
   const [year, month] = value.split("-").map(Number);
@@ -239,6 +243,11 @@ adminRouter.get("/admin", (req, res) => {
   const allowedSet = new Set(allowed.map((a) => a.from_number));
   const billingByNumber = new Map(listClientBilling().map((b) => [b.from_number, b]));
   const today = spDateString();
+  const noExpenseReminderDays = new Set(getNoExpenseReminderDays());
+  const noExpenseReminderDayCheckboxes = DAY_NAMES.map(
+    (name, idx) =>
+      `<label style="margin-right:12px"><input type="checkbox" name="days" value="${idx}" ${noExpenseReminderDays.has(idx) ? "checked" : ""}> ${name}</label>`
+  ).join("");
   const allBlockedAttempts = getRecentBlockedAttempts(500).filter((b) => !allowedSet.has(b.from_number));
   const blockedAttempts = paginate(allBlockedAttempts, blockedPagination.page, blockedPagination.perPage);
   const dashboardAccounts = listDashboardAccounts();
@@ -423,6 +432,13 @@ ${allowed.length ? `<table><tr><th>Número</th><th>Nota</th><th>Autorizado em</t
   <button type="submit">Mandar relatório de teste</button>
 </form>
 
+<h2>Aviso de gasto pendente — dias da semana</h2>
+<p class="warn">Em quais dias o aviso automático ("você não registrou nada hoje") pode ser enviado, pra todo mundo. Fora desses dias, ninguém recebe esse aviso, mesmo que esteja ativado e no horário configurado. Isso não muda o horário nem liga/desliga por número — cada cliente continua controlando isso pelo WhatsApp ou pelo painel dele.</p>
+<form method="post" action="/admin/no-expense-reminder-days">
+  ${noExpenseReminderDayCheckboxes}
+  <button type="submit" class="link-btn" style="margin-left:8px">Salvar</button>
+</form>
+
 <h2 id="blocked">Tentativas bloqueadas recentemente (${allBlockedAttempts.length})</h2>
 ${allBlockedAttempts.length ? `<table><tr><th>Quando</th><th>Número</th><th>Mensagem</th><th></th></tr>${blockedRows}</table>` : `<p class="empty">Nenhuma tentativa bloqueada recentemente.</p>`}
 ${renderAdminPagination({
@@ -518,6 +534,17 @@ adminRouter.post("/admin/send-test-report", async (req, res) => {
     console.error("Erro ao mandar relatorio de teste:", err);
     res.status(500).send(`Deu erro ao mandar: ${err instanceof Error ? err.message : String(err)}`);
   }
+});
+
+// checkbox desmarcado nao manda nada no body -- "days" so aparece se pelo
+// menos 1 estiver marcado. Sem nenhum dia marcado, salva lista vazia (aviso
+// fica suspenso pra todo mundo ate o admin marcar algum de novo).
+adminRouter.post("/admin/no-expense-reminder-days", (req, res) => {
+  const raw = req.body.days;
+  const values = Array.isArray(raw) ? raw : raw !== undefined ? [raw] : [];
+  const days = values.map((v: unknown) => Number(v));
+  setNoExpenseReminderDays(days);
+  res.redirect("/admin");
 });
 
 adminRouter.post("/admin/dashboard-accounts/revoke", (req, res) => {
