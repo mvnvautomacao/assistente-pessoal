@@ -567,6 +567,17 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    // comando explicito diferente do que estava pendente: descarta a
+    // pendencia (sem avisar "cancelei", ja que o usuario nem sabia que algo
+    // tava pendente) e deixa cair na classificacao normal mais abaixo, como
+    // se fosse uma mensagem nova -- nao retorna aqui de proposito.
+    if (looksLikeExplicitDifferentRequest(text)) {
+      const cancelled = cancelAllPendings(from);
+      if (cancelled > 0) {
+        logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
+      }
+    }
+
     let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
     while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
       await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
@@ -925,6 +936,22 @@ function recordSimpleExpense(
 // nao pra frase que so contem essas palavras (ex: "cancela o evento X").
 const CANCEL_COMMAND =
   /^\s*(cancel(a|ar|o)|par(a|ar|e)|esque[cç]a?|esquece(r)?|desconsidera|ignora|chega|deixa\s+(pra|para)\s+l[aá]|deixa\s+quieto|deixa\s+isso|n[aã]o\s+quero\s+mais|esquece\s+isso)(\s+(isso|tudo|por\s+favor|pf|pfv))?\s*[.!]*\s*$/i;
+
+// Achado real: "somente editar essa forma de pagamento para PIX" (claramente
+// um comando explicito, nao uma resposta curta) foi engolido como resposta a
+// uma pendencia completamente diferente (fila de completar gasto parcial),
+// virando um gasto fantasma com valor reaproveitado de outra compra. Mensagem
+// LONGA (5+ palavras) com um verbo de EDITAR/CORRIGIR explicito tem muito mais
+// cara de comando novo do que de resposta direta (respostas a pendencia sao
+// tipicamente curtas: "pix", "mercado", "sim", "45") -- mesma logica do
+// CANCEL_COMMAND (explicito vence o que estiver pendente), mas pra "na
+// verdade quero outra coisa" em vez de "esquece".
+const EXPLICIT_EDIT_VERB = /\b(edita|editar|corrij[ao]|corrigir|altera|alterar|troca|trocar|muda|mudar|renomei[ae]|renomear)\b/i;
+
+function looksLikeExplicitDifferentRequest(message: string): boolean {
+  const wordCount = message.trim().split(/\s+/).filter(Boolean).length;
+  return wordCount >= 5 && EXPLICIT_EDIT_VERB.test(message);
+}
 
 // Descarta TODAS as perguntas pendentes desse numero (menos o alerta de conta
 // fixa, que e o bot puxando assunto por conta propria e tem sua propria

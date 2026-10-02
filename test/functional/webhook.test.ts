@@ -686,6 +686,45 @@ test("unknown (gasto parcial): sabe do que foi mas falta o valor -- pergunta so 
   assert.equal(expense?.amount, 35.9);
 });
 
+// Regressao real reportada pelo usuario: "somente editar essa forma de
+// pagamento para POX" foi engolido como resposta a uma pendencia de gasto
+// parcial completamente diferente (valor 50, faltando a descricao),
+// virando um gasto fantasma com a frase inteira como descricao. Comando
+// EXPLICITO (frase longa com verbo de editar) agora descarta a pendencia e
+// cai na classificacao normal, em vez de ser tratado como resposta.
+test("comando explicito (editar/mudar...) vence pendencia de gasto parcial, em vez de ser engolido como a descricao que faltava", async (t) => {
+  const EXU9 = "551100090960";
+  seed(EXU9);
+  const cat = getOrCreateCategory(EXU9, "Compras");
+  insertExpense({ fromNumber: EXU9, amount: 2000, description: "Telefone novo", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  // deixa pendente "falta a descricao" de um gasto parcial qualquer (nao tem
+  // nenhuma relacao com o pedido real que vem a seguir)
+  queueReply([{ type: "unknown", likely_intent: "expense", amount: 50, category: "Mercado" }]);
+  await handleIncomingMessage(evolutionMessage(EXU9, "gastei 50 reais"));
+  assert.match(sent[0].text, /que foi/i);
+
+  // em vez de responder "o que foi", manda um comando EXPLICITO sobre outra coisa
+  queueReply([{ type: "edit_expense", query: "Telefone novo", field: "payment_method", value: "pix" }]);
+  await handleIncomingMessage(evolutionMessage(EXU9, "somente editar essa forma de pagamento para pix"));
+
+  // NAO criou gasto fantasma de R$50 com a frase inteira como descricao
+  assert.equal(findRecentExpense(EXU9, "editar essa forma de pagamento"), null);
+  // tratou como pedido de edicao de verdade, pedindo confirmacao
+  assert.match(sent[1].text, /[Cc]onfirma/);
+
+  await handleIncomingMessage(evolutionMessage(EXU9, "sim"));
+  const pix = getOrCreatePaymentMethod(EXU9, "pix");
+  assert.equal(findRecentExpense(EXU9, "Telefone novo")?.payment_method_id, pix.id);
+
+  // a pendencia antiga (gasto parcial de R$50) foi descartada -- uma resposta
+  // curta normal nao deveria mais completar ela
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage(evolutionMessage(EXU9, "foi no mercado"));
+  assert.equal(findRecentExpense(EXU9, "mercado"), null);
+});
+
 test("unknown (fila de completude): duas mensagens incompletas na mesma vez -- pergunta uma de cada vez, na ordem", async (t) => {
   const EVU3 = "551100090204";
   seed(EVU3);
