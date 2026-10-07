@@ -14,7 +14,8 @@
     "google:token": "ts-node-dev --transpile-only scripts/get-google-token.ts",
     "evolution:setup": "ts-node-dev --transpile-only scripts/setup-evolution-instance.ts",
     "evolution:webhook": "ts-node-dev --transpile-only scripts/set-evolution-webhook.ts",
-    "deploy": "ts-node-dev --transpile-only scripts/deploy.ts"
+    "deploy": "ts-node-dev --transpile-only scripts/deploy.ts",
+    "sprint": "ts-node-dev --transpile-only scripts/sprint.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

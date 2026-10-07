@@ -16,6 +16,7 @@ import { destroyDashboardSessionsForPhone } from "./auth/session";
 import { listClientBilling, setClientBillingInfo, recordClientPayment, getPaidMonthsForClient, PLAN_PRICES, BillingPlan } from "./billing/service";
 import { getNoExpenseReminderDays, setNoExpenseReminderDays } from "./expenses/service";
 import { spDateString } from "./timeSP";
+import { registerSprintRoutes } from "./adminSprints";
 
 export const adminRouter = Router();
 
@@ -111,6 +112,7 @@ function requireAdminSession(req: Request, res: Response, next: NextFunction) {
 // prefixo "/admin"), entao um .use(fn) SEM path aqui interceptaria QUALQUER
 // rota que passasse por esse router (ex: /dashboard), nao so as de admin.
 adminRouter.use("/admin", requireAdminSession);
+registerSprintRoutes(adminRouter);
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -423,6 +425,7 @@ adminRouter.get("/admin", (req, res) => {
 <body>
 <form class="inline" method="post" action="/admin/logout" style="float:right"><button type="submit" class="link-btn">Sair</button></form>
 <h1>Assistente Pessoal</h1>
+<p><a href="/admin/sprints">📋 Sprints (Kanban)</a></p>
 
 <h2>Clientes e cobrança (${allowed.length})</h2>
 <p class="warn">Controle manual por enquanto (sem integração com gateway de pagamento). Planos fixos: mensal R$${PLAN_PRICES.mensal.toFixed(2)} ou anual R$${PLAN_PRICES.anual.toFixed(2)}. Marcar um pagamento reinicia o vencimento a partir de hoje (mensal +1 mês, anual +12 meses) e fica guardado no histórico de meses pagos. "Revogar acesso" tira o cliente da lista de autorizados na hora — ele para de receber resposta do assistente até ser liberado de novo.</p>

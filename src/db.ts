@@ -124,6 +124,28 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- sprints (prazo padrao de 10 dias, ajustavel) e os cards do kanban do /admin.
+  -- Todo pedido (melhoria, evolucao, incidente) vira um card num sprint; o card
+  -- anda pelas colunas backlog > refinado > a_fazer > fazendo > testando > feito.
+  CREATE TABLE IF NOT EXISTS sprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS sprint_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sprint_id INTEGER NOT NULL REFERENCES sprints(id),
+    title TEXT NOT NULL,
+    description TEXT,
+    type TEXT NOT NULL DEFAULT 'melhoria',
+    status TEXT NOT NULL DEFAULT 'backlog',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    done_at TEXT
+  );
+
   -- numeros BLOQUEADOS pelo admin: nunca recebem NADA do bot (resposta ou
   -- automacao) e suas mensagens sao ignoradas em silencio. Bloqueio vale mais
   -- que a lista de autorizados (ver access/blocklist.ts e sendText).

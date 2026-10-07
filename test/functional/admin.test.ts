@@ -298,3 +298,68 @@ test("admin: tentativa bloqueada ganha botao Bloquear e some da lista de tentati
     assert.ok(!attemptsSection.includes(PHONE));
   });
 });
+
+test("admin: /admin/sprints cria sprint ativo na hora, mostra as 6 colunas, e adiciona/move/edita/apaga card", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const post = (path: string, body: Record<string, string>, extra: Record<string, string> = {}) =>
+      fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders(), ...extra },
+        body: new URLSearchParams(body),
+      });
+
+    const page = await (await fetch(`${baseUrl}/admin/sprints`, { headers: authHeaders() })).text();
+    for (const col of ["Backlog", "Refinado", "A fazer", "Fazendo", "Testando", "Feito"]) assert.ok(page.includes(col), `coluna ${col}`);
+    assert.match(page, /Sprint \d+/);
+    assert.match(page, /Ajustar prazo/);
+
+    const created = (await (await post("/admin/sprints/cards", { title: "Card do teste admin", type: "incidente", status: "a_fazer" }, { Accept: "application/json" })).json()) as {
+      card: { id: number; status: string; type: string };
+    };
+    assert.equal(created.card.status, "a_fazer");
+    assert.equal(created.card.type, "incidente");
+
+    await post(`/admin/sprints/cards/${created.card.id}/move`, { status: "testando" });
+    const json1 = (await (await fetch(`${baseUrl}/admin/sprints.json`, { headers: authHeaders() })).json()) as { cards: { id: number; status: string; title: string }[] };
+    assert.equal(json1.cards.find((c) => c.id === created.card.id)!.status, "testando");
+
+    await post(`/admin/sprints/cards/${created.card.id}/move`, { status: "coluna-inexistente" }); // ignorado
+    await post(`/admin/sprints/cards/${created.card.id}/edit`, { title: "Titulo editado", description: "desc", type: "melhoria" });
+    const html = await (await fetch(`${baseUrl}/admin/sprints`, { headers: authHeaders() })).text();
+    assert.ok(html.includes("Titulo editado"));
+
+    await post(`/admin/sprints/cards/${created.card.id}/delete`, {});
+    const json2 = (await (await fetch(`${baseUrl}/admin/sprints.json`, { headers: authHeaders() })).json()) as { cards: { id: number; status: string }[] };
+    assert.ok(!json2.cards.some((c) => c.id === created.card.id));
+  });
+});
+
+test("admin: sprints exige sessao de admin (sem login mostra a tela de login, nao o kanban)", async () => {
+  await withServer(async (baseUrl) => {
+    const html = await (await fetch(`${baseUrl}/admin/sprints`)).text();
+    assert.ok(!html.includes("Backlog"));
+    assert.ok(html.includes("password"));
+    const res = await fetch(`${baseUrl}/admin/sprints.json`);
+    assert.ok(!(res.headers.get("content-type") ?? "").includes("json"));
+  });
+});
+
+test("admin: ajustar prazo e encerrar sprint pelo painel", async () => {
+  await withServer(async (baseUrl, authHeaders) => {
+    const post = (path: string, body: Record<string, string> = {}) =>
+      fetch(`${baseUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", ...authHeaders() }, body: new URLSearchParams(body) });
+    const before = (await (await fetch(`${baseUrl}/admin/sprints.json`, { headers: authHeaders() })).json()) as { sprint: { id: number; start_date: string } };
+
+    const [y, m, d] = before.sprint.start_date.split("-").map(Number);
+    const newEnd = new Date(Date.UTC(y, m - 1, d + 20)).toISOString().slice(0, 10);
+    await post("/admin/sprints/end-date", { end_date: newEnd });
+    const mid = (await (await fetch(`${baseUrl}/admin/sprints.json`, { headers: authHeaders() })).json()) as { sprint: { end_date: string } };
+    assert.equal(mid.sprint.end_date, newEnd);
+
+    await post("/admin/sprints/close");
+    const after = (await (await fetch(`${baseUrl}/admin/sprints.json`, { headers: authHeaders() })).json()) as { sprint: { id: number } };
+    assert.notEqual(after.sprint.id, before.sprint.id);
+    const page = await (await fetch(`${baseUrl}/admin/sprints`, { headers: authHeaders() })).text();
+    assert.ok(page.includes("Sprints anteriores"));
+  });
+});
