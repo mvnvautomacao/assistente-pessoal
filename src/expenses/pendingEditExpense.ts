@@ -1,8 +1,11 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
-// quer mudar X pra Y?" antes de editar um gasto de verdade, pra resolver a
-// resposta ("sim"/"nao"/um valor ajustado) na proxima mensagem. Mesma ideia dos
+// Cache curto e em memoria: guarda que um numero foi perguntado "confirma essas
+// alteracoes?" antes de editar gasto(s) de verdade, pra resolver a resposta
+// (1/2/3, sim/nao ou uma correcao) na proxima mensagem. Uma pendencia vale pra
+// UM OU MAIS gastos (lote) e pra uma ou mais mudancas por gasto. Mesma ideia dos
 // outros caches de conversa (pendingDeletion.ts etc).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import type { ExpenseEditField, RawChange } from "./editChanges";
+
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface EditExpenseParams {
@@ -13,15 +16,35 @@ export interface EditExpenseParams {
   paymentMethodId: number | null;
 }
 
-export interface PendingEditExpense {
+// uma linha da previa: "Valor: R$ 38,00 → R$ 45,00" ("(nova)" quando a categoria
+// ou forma de pagamento ainda nao existe e so sera criada no "1")
+export interface ExpenseChangeView {
+  field: ExpenseEditField;
+  label: string;
+  from: string;
+  to: string;
+  isNew: boolean;
+}
+
+export interface ExpenseEditItem {
   expenseId: number;
-  field: "amount" | "date" | "description" | "payment_method";
-  description: string;
-  previous: EditExpenseParams;
-  proposedParams: EditExpenseParams;
-  changeText: string;
+  description: string; // nome atual do gasto (mensagens)
+  headerText: string; // "Mercado — R$ 38,00 · 07/10 · Pix", fixa durante a confirmacao
+  previous: EditExpenseParams; // instantaneo do gasto quando a previa foi criada (RN09)
+  proposed: EditExpenseParams;
+  rawChanges: RawChange[]; // o que o usuario pediu (ja sem o que nao muda nada)
+  newCategoryName: string | null; // categoria a criar so na confirmacao
+  newPaymentMethodName: string | null; // forma de pagamento a criar so na confirmacao
+  views: ExpenseChangeView[];
+}
+
+export interface PendingEditExpense {
+  items: ExpenseEditItem[];
   awaitingCorrection: boolean;
-  headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
+  // com mais de uma mudanca (ou mais de um gasto) a opcao 2 primeiro pergunta
+  // QUAL corrigir ("pick"); com uma so, vai direto pro novo valor ("value")
+  correctionStage: "pick" | "value";
+  correctionTarget: { itemIndex: number; field: ExpenseEditField } | null;
   createdAt: number;
 }
 

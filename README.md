@@ -6,6 +6,7 @@ Bot de WhatsApp que:
 - Cria e cancela eventos no Google Calendar
 - Cria lembretes que o próprio bot te manda de volta no WhatsApp, na hora certa
 - Manda relatório de gastos automático (semanal/mensal) e sob demanda
+- Edita gastos já registrados pelo WhatsApp: vários campos de uma vez ("muda o 2 pra 45 e pix") e até 5 gastos numa mensagem, sempre com prévia "antes → depois", confirmação única (1 confirmar, 2 corrigir, 3 cancelar), validação de valor/data e desfazer em um passo
 - Painel visual dos gastos em `/dashboard`
 
 ## Como funciona (visão geral)

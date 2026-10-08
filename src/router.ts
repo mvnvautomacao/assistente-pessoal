@@ -6,7 +6,7 @@ import {
   clearPendingDeleteExpense,
   PendingDeleteExpense,
 } from "./expenses/pendingDeleteExpense";
-import { InvalidAmountError, MAX_REASONABLE_AMOUNT, assertValidAmount } from "./validation";
+import { InvalidAmountError, MAX_REASONABLE_AMOUNT, assertValidAmount, validateAmount } from "./validation";
 
 // Texto de erro pro cliente: valor invalido (zero, negativo ou absurdo) explica
 // o motivo de verdade; qualquer outro erro continua no generico.
@@ -106,13 +106,12 @@ import {
   clearPendingEditExpense,
   PendingEditExpense,
   EditExpenseParams,
+  ExpenseEditItem,
 } from "./expenses/pendingEditExpense";
-import {
-  setPendingCorrectCategory,
-  getPendingCorrectCategory,
-  clearPendingCorrectCategory,
-  PendingCorrectCategory,
-} from "./expenses/pendingCorrectCategory";
+import { ExpenseEditField, MAX_EDIT_BATCH, RawChange, mergeRawChanges, normalizeExpenseChanges } from "./expenses/editChanges";
+import { buildExpenseEditItem } from "./expenses/editItem";
+import { invalidDateMessage, parseExpenseDate } from "./expenses/parseDate";
+import { correctionOptions, formatCorrectionPicker, formatExpenseEditPreview, formatExpenseEditSuccess } from "./confirmation/expensePreview";
 import {
   createRecurringExpense,
   listRecurringExpenses,
@@ -397,7 +396,9 @@ Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número
 
 Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro". Isso vale pra qualquer campo — valor, data, forma de pagamento e também o nome/descrição, tipo "muda o nome do último gasto pra Feira".
 
-Antes de mudar de verdade, eu mostro "antes → depois" e você responde: *1* confirma, *2* corrige (eu pergunto o valor certo) ou *3* cancela.`;
+Dá pra mudar várias coisas de uma vez: "muda o 2 pra 45 e pix" ou "o 3 foi ontem, no crédito". E também mais de um gasto na mesma mensagem (até 5): "o mercado foi no pix e o uber no dinheiro".
+
+Antes de mudar de verdade, eu mostro "antes → depois" e você responde: *1* confirma, *2* corrige (eu pergunto qual e o valor certo) ou *3* cancela. Se foi sem querer, é só dizer "desfaz isso" — volta tudo de uma vez.`;
     case "category":
       return `🏷️ Como funcionam as categorias:
 
@@ -719,12 +720,6 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
-    const pendingCorrectCategory = getPendingCorrectCategory(from);
-    if (pendingCorrectCategory) {
-      await resolveCorrectCategoryConfirmation(from, pendingCorrectCategory, text);
-      return;
-    }
-
     const pendingEditEvent = getPendingEditEvent(from);
     if (pendingEditEvent) {
       await resolveEditEventConfirmation(from, pendingEditEvent, text);
@@ -859,9 +854,51 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   await processInterpretations(from, interpretations);
 }
 
+const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>(["edit_event", "edit_reminder", "edit_recurring_expense", "edit_expense", "correct_category"]);
+
+function editRequestLabel(interpretation: Interpretation): string {
+  if (interpretation.type === "edit_expense" && interpretation.list_ref) return `gasto ${interpretation.list_ref}`;
+  return (interpretation as { query?: string }).query || "esse item";
+}
+
+// RN10: o que ainda esta esperando resposta (confirmacao de edicao ou escolha de item)
+function pendingEditBlockerLabel(from: string): string | null {
+  const active = describeActiveEditConfirmation(from);
+  if (active) return active.label;
+  const choice = getPendingTargetChoice(from);
+  return choice ? editRequestLabel(choice.action) : null;
+}
+
 async function processInterpretations(from: string, items: Interpretation[]) {
+  const expenseEdits = items.filter(isExpenseEditAction);
+  const batchEdits = expenseEdits.length >= 2;
+  let batchDone = false;
+  let editStarted = false;
+
   for (const interpretation of items) {
     try {
+      if (batchEdits && isExpenseEditAction(interpretation) && batchDone) continue;
+
+      // RN10: so uma confirmacao de edicao por vez -- a segunda edicao da mesma
+      // mensagem nao pode apagar a primeira que ainda espera resposta
+      if (editStarted && EDIT_ACTION_TYPES.has(interpretation.type)) {
+        const blocker = pendingEditBlockerLabel(from);
+        if (blocker !== null) {
+          const skipped = batchEdits && isExpenseEditAction(interpretation) ? "gastos" : editRequestLabel(interpretation);
+          logActivity(from, interpretation.type, `adiado: confirmacao de "${blocker}" ainda pendente`);
+          await sendText(from, `Deixei a alteração de "${skipped}" pra depois: confirma a de "${blocker}" primeiro e me pede de novo.`);
+          if (batchEdits && isExpenseEditAction(interpretation)) batchDone = true;
+          continue;
+        }
+      }
+
+      if (batchEdits && isExpenseEditAction(interpretation)) {
+        batchDone = true;
+        editStarted = true;
+        await startExpenseEditBatch(from, expenseEdits);
+        continue;
+      }
+      if (EDIT_ACTION_TYPES.has(interpretation.type)) editStarted = true;
       await handleInterpretation(from, interpretation);
     } catch (err) {
       console.error("Erro ao processar interpretacao:", err);
@@ -1162,7 +1199,6 @@ function cancelAllPendings(from: string): number {
     [getPendingDeleteCategory(from), () => clearPendingDeleteCategory(from)],
     [getPendingDeleteExpense(from), () => clearPendingDeleteExpense(from)],
     [getPendingEditExpense(from), () => clearPendingEditExpense(from)],
-    [getPendingCorrectCategory(from), () => clearPendingCorrectCategory(from)],
     [getPendingEditEvent(from), () => clearPendingEditEvent(from)],
     [getPendingEditReminder(from), () => clearPendingEditReminder(from)],
     [getPendingReminderDeletion(from), () => clearPendingReminderDeletion(from)],
@@ -2548,36 +2584,6 @@ async function resolveDeleteCategoryConfirmation(from: string, pending: PendingD
   );
 }
 
-// calcula o novo valor de um campo de gasto (usado tanto no pedido inicial de
-// edicao quanto quando o usuario ajusta o valor proposto antes de confirmar)
-function parseEditFieldValue(
-  from: string,
-  field: "amount" | "date" | "description" | "payment_method",
-  rawValue: string,
-  baseParams: EditExpenseParams
-): { params: EditExpenseParams; changeText: string } | { error: string } {
-  const params = { ...baseParams };
-  if (field === "amount") {
-    const parsed = parseBrazilianAmountDetailed(rawValue);
-    if (!parsed.ok) {
-      return { error: parsed.reason === "not_positive" ? `O valor precisa ser maior que R$ 0,00.` : `Não entendi o valor "${rawValue}".` };
-    }
-    params.amount = parsed.value;
-    return { params, changeText: `valor agora é R${parsed.value.toFixed(2)}` };
-  }
-  if (field === "date") {
-    params.date = rawValue;
-    return { params, changeText: `data agora é ${formatDateOnly(rawValue)}` };
-  }
-  if (field === "description") {
-    params.description = rawValue;
-    return { params, changeText: `descrição agora é "${rawValue}"` };
-  }
-  const paymentMethod = getOrCreatePaymentMethod(from, rawValue);
-  params.paymentMethodId = paymentMethod.id;
-  return { params, changeText: `forma de pagamento agora é "${paymentMethod.name}"` };
-}
-
 // ---------------------------------------------------------------------------
 // Confirmacao de edicao: previa "antes -> depois" com opcoes 1/2/3.
 // A leitura da resposta (sim/nao/corrigir/texto livre) vem toda de
@@ -2771,9 +2777,7 @@ async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoi
 // se esta em "aguardando correcao" e que tipo de valor a correcao espera
 function describeActiveEditConfirmation(from: string): { label: string; awaitingCorrection: boolean; kind: CorrectionKind } | null {
   const expense = getPendingEditExpense(from);
-  if (expense) return { label: expense.description, awaitingCorrection: expense.awaitingCorrection, kind: expenseCorrectionKind(expense.field) };
-  const category = getPendingCorrectCategory(from);
-  if (category) return { label: category.description, awaitingCorrection: category.awaitingCorrection, kind: "text" };
+  if (expense) return { label: expenseEditLabel(expense.items), awaitingCorrection: expense.awaitingCorrection, kind: expenseEditKind(expense) };
   const event = getPendingEditEvent(from);
   if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventCorrectionKind(event) };
   const reminder = getPendingEditReminder(from);
@@ -2788,7 +2792,6 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
 // RN07: no maximo uma confirmacao de edicao ativa por numero
 function clearEditConfirmations(from: string) {
   clearPendingEditExpense(from);
-  clearPendingCorrectCategory(from);
   clearPendingEditEvent(from);
   clearPendingEditReminder(from);
   clearPendingEditRecurring(from);
@@ -2836,192 +2839,359 @@ function acceptsFreeText(kind: CorrectionKind): boolean {
   return kind === "amount" || kind === "date" || kind === "datetime" || kind === "day";
 }
 
-// ---- gasto ---------------------------------------------------------------
+// ---- gasto(s) ------------------------------------------------------------
+// Uma confirmacao vale pra 1 a 5 gastos e pra varias mudancas por gasto. Nada e
+// gravado (nem categoria/forma de pagamento nova) antes do "1".
 
-function expenseCorrectionKind(field: PendingEditExpense["field"]): CorrectionKind {
-  return field === "amount" ? "amount" : field === "date" ? "date" : "text";
-}
-
-const EXPENSE_FIELD_NOUN: Record<PendingEditExpense["field"], string> = {
+const EXPENSE_FIELD_NOUN: Record<ExpenseEditField, string> = {
   amount: "valor",
   date: "data",
   description: "nome",
   payment_method: "forma de pagamento",
+  category: "categoria",
 };
 
 function paymentMethodLabel(from: string, id: number | null): string {
   return (id !== null ? getPaymentMethodById(from, id)?.name : null) ?? "—";
 }
 
-function buildExpensePreview(from: string, pending: Omit<PendingEditExpense, "createdAt">): string {
-  const p = pending.previous;
-  const n = pending.proposedParams;
-  const change: PreviewChange =
-    pending.field === "amount"
-      ? { label: "Valor", from: formatBRL(p.amount), to: formatBRL(n.amount) }
-      : pending.field === "date"
-        ? { label: "Data", from: formatShortDate(p.date), to: formatShortDate(n.date) }
-        : pending.field === "description"
-          ? { label: "Descrição", from: p.description, to: n.description }
-          : { label: "Forma de pagamento", from: paymentMethodLabel(from, p.paymentMethodId), to: paymentMethodLabel(from, n.paymentMethodId) };
-  return formatEditPreview(pending.headerText, [change]);
+const NO_CHANGE_TEXT ="Já está assim, não mexi em nada.";
+const EDIT_BATCH_LIMIT_TEXT = `Faço até ${MAX_EDIT_BATCH} alterações por vez. Me manda as primeiras ${MAX_EDIT_BATCH} e depois as outras.`;
+
+function expenseFieldKind(field: ExpenseEditField): CorrectionKind {
+  return field === "amount" ? "amount" : field === "date" ? "date" : "text";
 }
 
-function expenseHeaderFor(from: string, params: EditExpenseParams): string {
-  return expenseHeader({
-    description: params.description,
-    amount: params.amount,
-    date: params.date,
-    paymentMethodName: params.paymentMethodId !== null ? getPaymentMethodById(from, params.paymentMethodId)?.name : null,
+function expenseParamsOf(expense: ExpenseRecord): EditExpenseParams {
+  return {
+    amount: expense.amount,
+    description: expense.description,
+    date: expense.date,
+    categoryId: expense.category_id,
+    paymentMethodId: expense.payment_method_id,
+  };
+}
+
+// RN04: texto livre so vira nova previa com 1 gasto e 1 mudanca de valor ou data
+function expenseEditKind(pending: Pick<PendingEditExpense, "items" | "correctionTarget">): CorrectionKind {
+  if (pending.correctionTarget) return expenseFieldKind(pending.correctionTarget.field);
+  if (pending.items.length === 1 && pending.items[0].views.length === 1) return expenseFieldKind(pending.items[0].views[0].field);
+  return "text";
+}
+
+function expenseEditLabel(items: ExpenseEditItem[]): string {
+  return items.length === 1 ? items[0].description : `${items.length} gastos`;
+}
+
+interface ExpenseEditRequest {
+  expense: ExpenseRecord;
+  rawChanges: RawChange[];
+}
+
+// RN05/RN06: o que da pra validar sem saber o gasto (valor e data impossiveis) e
+// validado ANTES de listar candidatos -- o usuario nao escolhe o item pra so
+// depois descobrir que o pedido estava errado
+function earlyEditError(rawChanges: RawChange[]): string | null {
+  for (const change of rawChanges) {
+    if (change.field === "amount") {
+      const parsed = parseBrazilianAmountDetailed(change.value);
+      if (!parsed.ok) return parsed.reason === "not_positive" ? "O valor precisa ser maior que R$ 0,00." : `Não entendi o valor "${change.value}".`;
+      const check = validateAmount(parsed.value);
+      if (!check.ok) return check.message;
+    } else if (change.field === "date") {
+      const parsed = parseExpenseDate(change.value, spDateString());
+      if (!parsed.ok && parsed.reason !== "unrecognized") return invalidDateMessage(parsed.shown);
+    }
+  }
+  return null;
+}
+
+// monta a previa (valida tudo) e so entao guarda a pendencia e pergunta 1/2/3
+async function startExpenseEdits(from: string, requests: ExpenseEditRequest[]) {
+  const items: ExpenseEditItem[] = [];
+  for (const { expense, rawChanges } of requests) {
+    const built = await buildExpenseEditItem(from, expense.id, expenseParamsOf(expense), rawChanges);
+    if ("error" in built) {
+      logActivity(from, "edit_expense", built.error);
+      await sendText(from, built.error);
+      return;
+    }
+    if (built.item.views.length > 0) items.push(built.item);
+  }
+  if (items.length === 0) {
+    logActivity(from, "edit_expense", "pedido sem nenhuma mudanca real");
+    await sendText(from, NO_CHANGE_TEXT);
+    return;
+  }
+  clearEditConfirmations(from);
+  setPendingEditExpense(from, { items, awaitingCorrection: false, correctionStage: "pick", correctionTarget: null });
+  logActivity(
+    from,
+    "edit_expense",
+    `pediu confirmacao: ${items.map((i) => `#${i.expenseId} ${i.description}: ${i.views.map((v) => `${v.label} ${v.from} -> ${v.to}`).join(", ")}`).join(" | ")}`
+  );
+  await sendText(from, formatExpenseEditPreview(items));
+}
+
+// acha o gasto de um pedido de edicao (numero da lista, texto ou "o ultimo"),
+// perguntando qual quando ha mais de um candidato (Card 2)
+async function resolveEditExpenseTarget(
+  from: string,
+  interpretation: Extract<Interpretation, { type: "edit_expense" }>,
+  resolvedTargetId?: number
+): Promise<ExpenseRecord | null> {
+  if (resolvedTargetId !== undefined || !interpretation.list_ref) {
+    const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
+    return expenseId === null ? null : getExpenseById(from, expenseId);
+  }
+  const ids = getLastShownExpenses(from);
+  if (ids === null) {
+    // RN07: lista expirada -- nunca aplica o numero a outra lista
+    await offerRecentExpensesForExpiredList(from, interpretation);
+    return null;
+  }
+  const id = ids[interpretation.list_ref - 1];
+  const expense = id ? getExpenseById(from, id) : null;
+  if (!expense) {
+    logActivity(from, "edit_expense", `referencia "${interpretation.list_ref}" sem lista valida`);
+    await sendText(from, `Não sei a que gasto o número "${interpretation.list_ref}" se refere. De qual dia são as compras que você quer editar?`);
+    return null;
+  }
+  return expense;
+}
+
+type ExpenseEditAction = Extract<Interpretation, { type: "edit_expense" | "correct_category" }>;
+
+function isExpenseEditAction(interpretation: Interpretation): interpretation is ExpenseEditAction {
+  return interpretation.type === "edit_expense" || interpretation.type === "correct_category";
+}
+
+function rawChangesOf(action: ExpenseEditAction): RawChange[] {
+  return action.type === "correct_category" ? normalizeExpenseChanges({ field: "category", value: action.category }) : normalizeExpenseChanges(action);
+}
+
+const NOT_UNDERSTOOD_CHANGE_TEXT = 'Não entendi o que mudar. Me diga o novo valor, ex: "muda o valor do mercado pra 45".';
+
+// 2+ pedidos de edicao de gasto na mesma mensagem: UMA confirmacao pro lote todo.
+// Aqui nao tem lista de candidatos (cada gasto precisa ser identificado sem
+// ambiguidade) -- se algum nao for, nao cria nada e pede pra ser mais especifico.
+async function startExpenseEditBatch(from: string, actions: ExpenseEditAction[]) {
+  const changesByAction: RawChange[][] = [];
+  for (const action of actions) {
+    const changes = rawChangesOf(action);
+    const problem = changes.length === 0 ? NOT_UNDERSTOOD_CHANGE_TEXT : earlyEditError(changes);
+    if (problem) {
+      logActivity(from, "edit_expense", `lote recusado: ${problem}`);
+      await sendText(from, problem);
+      return;
+    }
+    changesByAction.push(changes);
+  }
+
+  const shown = getLastShownExpenses(from);
+  const groups = new Map<number, ExpenseEditRequest>();
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
+    let expense: ExpenseRecord | null = null;
+    let problem: string | null = null;
+
+    if (action.type === "edit_expense" && action.list_ref) {
+      if (shown === null) problem = "A lista de gastos que eu tinha mostrado já expirou. Pede a lista de novo e me manda as alterações.";
+      else {
+        const id = shown[action.list_ref - 1];
+        expense = id ? getExpenseById(from, id) : null;
+        if (!expense) problem = `Não sei a que gasto o número "${action.list_ref}" se refere. Pede a lista de novo e me manda as alterações.`;
+      }
+    } else if (action.query) {
+      const found = searchTargets(from, "expense", action.query);
+      if (found.total === 0) problem = targetNotFoundText(action, "expense", action.query);
+      else if (found.total > 1) {
+        problem = `Achei mais de um gasto parecido com "${action.query}". Me manda uma alteração por vez, ou pede a lista dos gastos e usa o número de cada um.`;
+      } else expense = getExpenseById(from, found.ids[0]);
+    } else {
+      expense = findRecentExpense(from);
+      if (!expense) problem = targetNotFoundText(action, "expense");
+    }
+
+    if (!expense) {
+      logActivity(from, "edit_expense", `lote recusado: ${problem}`);
+      await sendText(from, problem!);
+      return;
+    }
+    const existing = groups.get(expense.id);
+    groups.set(expense.id, { expense, rawChanges: mergeRawChanges(existing?.rawChanges ?? [], changesByAction[i]) });
+  }
+
+  if (groups.size > MAX_EDIT_BATCH) {
+    logActivity(from, "edit_expense", `lote recusado: ${groups.size} gastos (limite ${MAX_EDIT_BATCH})`);
+    await sendText(from, EDIT_BATCH_LIMIT_TEXT);
+    return;
+  }
+  await startExpenseEdits(from, Array.from(groups.values()));
+}
+
+// refaz um item com um novo valor pra um campo e reenvia a previa. Devolve
+// false (e ja respondeu o motivo) quando o valor nao serve.
+async function applyExpenseCorrection(from: string, pending: PendingEditExpense, itemIndex: number, field: ExpenseEditField, rawValue: string): Promise<boolean> {
+  const noun = EXPENSE_FIELD_NOUN[field];
+  let value = rawValue.trim();
+  if (!value) {
+    await sendText(from, correctionRetry("Não recebi nada.", expenseFieldKind(field), noun));
+    return false;
+  }
+  if (field === "category" && value.split(/\s+/).filter(Boolean).length > 3) {
+    value = findCategoryMentionedIn(from, value)?.name ?? (await extractCategoryFromAnswer(value));
+  }
+  const item = pending.items[itemIndex];
+  const built = await buildExpenseEditItem(from, item.expenseId, item.previous, mergeRawChanges(item.rawChanges, [{ field, value }]));
+  if ("error" in built) {
+    await sendText(from, correctionRetry(built.error, expenseFieldKind(field), noun));
+    return false;
+  }
+  const items = pending.items.map((it, idx) => (idx === itemIndex ? built.item : it)).filter((it) => it.views.length > 0);
+  if (items.length === 0) {
+    clearPendingEditExpense(from);
+    logActivity(from, "edit_expense", "correcao deixou tudo como estava");
+    await sendText(from, NO_CHANGE_TEXT);
+    return true;
+  }
+  setPendingEditExpense(from, { items, awaitingCorrection: false, correctionStage: "pick", correctionTarget: null });
+  logActivity(from, "edit_expense", `correcao: #${item.expenseId} ${noun} -> ${value}`);
+  await sendText(from, formatExpenseEditPreview(items));
+  return true;
+}
+
+// RN09: antes de gravar, confere se cada gasto ainda existe e e igual ao da previa
+function expenseChangedSince(current: ExpenseRecord, previous: EditExpenseParams): boolean {
+  return (
+    current.amount !== previous.amount ||
+    current.description !== previous.description ||
+    current.date !== previous.date ||
+    current.category_id !== previous.categoryId ||
+    current.payment_method_id !== previous.paymentMethodId
+  );
+}
+
+async function confirmExpenseEdits(from: string, pending: PendingEditExpense) {
+  clearPendingEditExpense(from);
+  for (const item of pending.items) {
+    const current = getExpenseById(from, item.expenseId);
+    if (!current) {
+      logActivity(from, "edit_expense", `#${item.expenseId} nao existe mais`);
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    if (expenseChangedSince(current, item.previous)) {
+      logActivity(from, "edit_expense", `#${item.expenseId} mudou durante a confirmacao`);
+      await sendText(from, `O gasto "${item.description}" mudou enquanto a gente conversava (agora está ${formatBRL(current.amount)}). Me pede a alteração de novo.`);
+      return;
+    }
+  }
+
+  // tudo ou nada: categoria/forma de pagamento nova so nasce aqui, junto com as edicoes
+  withTransaction(() => {
+    for (const item of pending.items) {
+      const params = { ...item.proposed };
+      if (item.newPaymentMethodName) params.paymentMethodId = getOrCreatePaymentMethod(from, item.newPaymentMethodName).id;
+      if (item.newCategoryName) params.categoryId = getOrCreateCategory(from, item.newCategoryName).id;
+      updateExpense(from, item.expenseId, params);
+      if (params.categoryId !== null && params.categoryId !== item.previous.categoryId) learnKeyword(from, params.description, params.categoryId);
+    }
   });
+
+  if (pending.items.length === 1) {
+    const item = pending.items[0];
+    setPendingUndo(from, { kind: "restore_expense", expenseId: item.expenseId, previous: item.previous, description: item.previous.description });
+  } else {
+    setPendingUndo(from, {
+      kind: "restore_expenses_batch",
+      items: pending.items.map((item) => ({ expenseId: item.expenseId, previous: item.previous, description: item.previous.description })),
+      description: `${pending.items.length} gastos`,
+    });
+  }
+  logActivity(from, "edit_expense", `confirmado: ${pending.items.map((i) => `#${i.expenseId} ${i.description}`).join(", ")}`);
+  await sendText(from, formatExpenseEditSuccess(pending.items));
 }
 
 async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
-  const kind = expenseCorrectionKind(pending.field);
-  const noun = EXPENSE_FIELD_NOUN[pending.field];
-
-  // aplica um novo valor vindo da correcao e reenvia a previa
-  const applyCorrection = async (value: CorrectionValue): Promise<boolean> => {
-    const raw = value.kind === "amount" ? String(value.amount) : value.kind === "date" ? value.date : value.kind === "text" ? value.text : "";
-    const result = parseEditFieldValue(from, pending.field, raw, pending.previous);
-    if ("error" in result) {
-      await sendText(from, correctionRetry(result.error, kind, noun));
-      return false;
-    }
-    const next = { ...pending, proposedParams: result.params, changeText: result.changeText, awaitingCorrection: false };
-    setPendingEditExpense(from, next);
-    logActivity(from, "edit_expense", `correcao: #${pending.expenseId} ${result.changeText}`);
-    await sendText(from, buildExpensePreview(from, next));
-    return true;
-  };
+  const label = expenseEditLabel(pending.items);
 
   if (pending.awaitingCorrection) {
-    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e a resposta
     if (isCancelWord(answerText)) {
       clearPendingEditExpense(from);
-      logActivity(from, "edit_expense", `correcao de #${pending.expenseId} cancelada`);
+      logActivity(from, "edit_expense", `correcao de ${label} cancelada`);
       await sendText(from, "Beleza, não mexi em nada.");
       return;
     }
-    const interpreted = await interpretCorrection(kind, answerText);
-    if ("error" in interpreted) {
-      await sendText(from, correctionRetry(interpreted.error, kind, noun));
+    if (pending.correctionStage === "pick") {
+      const options = correctionOptions(pending.items);
+      const trimmed = answerText.trim();
+      const picked = /^\d+$/.test(trimmed) ? options[Number(trimmed) - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionPicker(options)}`);
+        return;
+      }
+      setPendingEditExpense(from, { ...pending, correctionStage: "value", correctionTarget: { itemIndex: picked.itemIndex, field: picked.field } });
+      logActivity(from, "edit_expense", `corrigindo ${picked.label}`);
+      await sendText(from, correctionQuestion(expenseFieldKind(picked.field), EXPENSE_FIELD_NOUN[picked.field]));
       return;
     }
-    await applyCorrection(interpreted.value);
+    const target = pending.correctionTarget!;
+    await applyExpenseCorrection(from, pending, target.itemIndex, target.field, answerText);
     return;
   }
 
   const reply = classifyConfirmationReply(answerText);
 
   if (reply === "confirm") {
-    clearPendingEditExpense(from);
-    if (!getExpenseById(from, pending.expenseId)) {
-      await sendText(from, "Não achei mais esse item.");
-      return;
-    }
-    updateExpense(from, pending.expenseId, pending.proposedParams);
-    setPendingUndo(from, {
-      kind: "restore_expense",
-      expenseId: pending.expenseId,
-      previous: pending.previous,
-      description: pending.description,
-    });
-    logActivity(from, "edit_expense", `confirmado: #${pending.expenseId} ${pending.description}: ${pending.changeText}`);
-    await sendText(from, `✏️ Gasto "${pending.description}" atualizado: ${pending.changeText}`);
+    await confirmExpenseEdits(from, pending);
     return;
   }
   if (reply === "cancel") {
     clearPendingEditExpense(from);
-    logActivity(from, "edit_expense", `edicao de #${pending.expenseId} nao confirmada`);
+    logActivity(from, "edit_expense", `edicao de ${label} nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
   if (reply === "correct") {
-    setPendingEditExpense(from, { ...pending, awaitingCorrection: true });
-    logActivity(from, "edit_expense", `pediu pra corrigir ${noun} de #${pending.expenseId}`);
-    await sendText(from, correctionQuestion(kind, noun));
+    const options = correctionOptions(pending.items);
+    if (options.length === 1) {
+      setPendingEditExpense(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: { itemIndex: options[0].itemIndex, field: options[0].field } });
+      logActivity(from, "edit_expense", `pediu pra corrigir ${options[0].label} de ${label}`);
+      await sendText(from, correctionQuestion(expenseFieldKind(options[0].field), EXPENSE_FIELD_NOUN[options[0].field]));
+    } else {
+      setPendingEditExpense(from, { ...pending, awaitingCorrection: true, correctionStage: "pick", correctionTarget: null });
+      logActivity(from, "edit_expense", `pediu pra corrigir ${label} (escolhendo qual)`);
+      await sendText(from, formatCorrectionPicker(options));
+    }
     return;
   }
 
+  // texto livre: so com 1 gasto e 1 mudanca de valor/data (RN04)
+  const kind = expenseEditKind(pending);
   if (acceptsFreeText(kind)) {
-    const interpreted = await interpretCorrection(kind, answerText);
-    if (!("error" in interpreted)) {
-      await applyCorrection(interpreted.value);
+    const field = pending.items[0].views[0].field;
+    let value: string | null = null;
+    if (kind === "amount") {
+      const parsedAmount = parseBrazilianAmountDetailed(answerText);
+      if (parsedAmount.ok || parsedAmount.reason === "not_positive") value = answerText;
+    } else {
+      const parsed = parseExpenseDate(answerText, spDateString());
+      if (parsed.ok || parsed.reason !== "unrecognized") value = answerText;
+      else {
+        const extracted = await extractDateTimeFromAnswer(answerText);
+        value = extracted?.newDate ?? null;
+      }
+    }
+    if (value !== null) {
+      const applied = await applyExpenseCorrection(from, pending, 0, field, value);
+      // valor recusado: fica esperando o valor certo (a pergunta ja foi repetida)
+      if (!applied) setPendingEditExpense(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: { itemIndex: 0, field } });
       return;
     }
   }
-  logActivity(from, "edit_expense", `resposta nao entendida na confirmacao de #${pending.expenseId}`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
-}
-
-// ---- categoria de um gasto -------------------------------------------------
-
-function buildCategoryPreview(pending: Omit<PendingCorrectCategory, "createdAt">): string {
-  return formatEditPreview(pending.headerText, [{ label: "Categoria", from: pending.previousCategoryName, to: pending.proposedCategoryName }]);
-}
-
-async function resolveCorrectCategoryConfirmation(from: string, pending: PendingCorrectCategory, answerText: string) {
-  if (pending.awaitingCorrection) {
-    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
-    if (isCancelWord(answerText)) {
-      clearPendingCorrectCategory(from);
-      logActivity(from, "correct_category", `correcao de ${pending.description} cancelada`);
-      await sendText(from, "Beleza, não mexi em nada.");
-      return;
-    }
-    const trimmed = answerText.trim();
-    if (!trimmed) {
-      await sendText(from, correctionRetry("Não recebi nada.", "text", "categoria"));
-      return;
-    }
-    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
-    const categoryName = findCategoryMentionedIn(from, trimmed)?.name ?? (wordCount <= 3 ? trimmed : await extractCategoryFromAnswer(trimmed));
-    const newCategory = getOrCreateCategory(from, categoryName);
-    const next = { ...pending, proposedCategoryId: newCategory.id, proposedCategoryName: newCategory.name, awaitingCorrection: false };
-    setPendingCorrectCategory(from, next);
-    logActivity(from, "correct_category", `correcao: ${pending.description} -> "${newCategory.name}"`);
-    await sendText(from, buildCategoryPreview(next));
-    return;
-  }
-
-  const reply = classifyConfirmationReply(answerText);
-
-  if (reply === "confirm") {
-    clearPendingCorrectCategory(from);
-    if (!getExpenseById(from, pending.expenseId)) {
-      await sendText(from, "Não achei mais esse item.");
-      return;
-    }
-    updateExpenseCategory(from, pending.expenseId, pending.proposedCategoryId);
-    learnKeyword(from, pending.description, pending.proposedCategoryId);
-    if (pending.previousCategoryId != null) {
-      setPendingUndo(from, {
-        kind: "restore_category",
-        expenseId: pending.expenseId,
-        previousCategoryId: pending.previousCategoryId,
-        description: pending.description,
-      });
-    }
-    logActivity(from, "correct_category", `confirmado: ${pending.description} agora e "${pending.proposedCategoryName}"`);
-    await sendText(from, `✏️ Categoria de "${pending.description}" (R$${pending.amount.toFixed(2)}) corrigida para "${pending.proposedCategoryName}"`);
-    return;
-  }
-  if (reply === "cancel") {
-    clearPendingCorrectCategory(from);
-    logActivity(from, "correct_category", `correcao de ${pending.description} nao confirmada`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-  if (reply === "correct") {
-    setPendingCorrectCategory(from, { ...pending, awaitingCorrection: true });
-    logActivity(from, "correct_category", `pediu pra corrigir a categoria de ${pending.description}`);
-    await sendText(from, correctionQuestion("text", "categoria"));
-    return;
-  }
-
-  // categoria e campo de texto: texto livre nunca vira o novo valor (RN04)
-  logActivity(from, "correct_category", `resposta nao entendida na confirmacao de ${pending.description}`);
+  logActivity(from, "edit_expense", `resposta nao entendida na confirmacao de ${label}`);
   await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
@@ -3558,41 +3728,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "correct_category": {
-      const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
-      if (expenseId === null) break;
-      const expense = getExpenseById(from, expenseId)!;
-      const category = getOrCreateCategory(from, interpretation.category);
-      const previousCategory = expense.category_id ? getCategoryById(from, expense.category_id) : null;
-      if (previousCategory?.id === category.id) {
-        await sendText(from, `"${expense.description}" já está em "${category.name}".`);
+      if (!interpretation.category?.trim()) {
+        await sendText(from, "Não entendi pra qual categoria mudar. Me diga, ex: \"muda o mercado pra lazer\".");
         break;
       }
-
-      const pendingCategory = {
-        expenseId: expense.id,
-        description: expense.description,
-        amount: expense.amount,
-        previousCategoryId: expense.category_id,
-        previousCategoryName: previousCategory?.name ?? "sem categoria",
-        proposedCategoryId: category.id,
-        proposedCategoryName: category.name,
-        awaitingCorrection: false,
-        headerText: expenseHeaderFor(from, {
-          amount: expense.amount,
-          description: expense.description,
-          date: expense.date,
-          categoryId: expense.category_id,
-          paymentMethodId: expense.payment_method_id,
-        }),
-      };
-      clearEditConfirmations(from);
-      setPendingCorrectCategory(from, pendingCategory);
-      logActivity(
-        from,
-        "correct_category",
-        `pediu confirmacao: ${expense.description} de "${previousCategory?.name ?? "sem categoria"}" pra "${category.name}"`
-      );
-      await sendText(from, buildCategoryPreview(pendingCategory));
+      const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
+      if (expenseId === null) break;
+      await startExpenseEdits(from, [{ expense: getExpenseById(from, expenseId)!, rawChanges: rawChangesOf(interpretation) }]);
       break;
     }
     case "set_default_payment": {
@@ -4271,73 +4413,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "edit_expense": {
-      // RN01: valida "o que mudar" ANTES de listar candidatos -- o usuario nao escolhe
-      // o item pra so depois descobrir que o pedido estava incompleto
-      const newValueText = String(interpretation.value ?? "").trim();
-      if (!newValueText) {
-        await sendText(from, 'Não entendi o que mudar. Me diga o novo valor, ex: "muda o valor do mercado pra 45".');
+      const rawChanges = normalizeExpenseChanges(interpretation);
+      const problem = rawChanges.length === 0 ? NOT_UNDERSTOOD_CHANGE_TEXT : earlyEditError(rawChanges);
+      if (problem) {
+        await sendText(from, problem);
         break;
       }
-      if (interpretation.field === "amount") {
-        const parsedAmount = parseBrazilianAmountDetailed(newValueText);
-        if (!parsedAmount.ok) {
-          await sendText(from, parsedAmount.reason === "not_positive" ? "O valor precisa ser maior que R$ 0,00." : `Não entendi o valor "${newValueText}".`);
-          break;
-        }
-      }
-
-      let expense: ExpenseRecord | null;
-      if (resolvedTargetId !== undefined || !interpretation.list_ref) {
-        const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
-        if (expenseId === null) break;
-        expense = getExpenseById(from, expenseId)!;
-      } else {
-        const ids = getLastShownExpenses(from);
-        if (ids === null) {
-          // RN07: lista expirada -- nunca aplica o numero a outra lista
-          await offerRecentExpensesForExpiredList(from, interpretation);
-          break;
-        }
-        const id = ids[interpretation.list_ref - 1];
-        expense = id ? getExpenseById(from, id) : null;
-        if (!expense) {
-          logActivity(from, "edit_expense", `referencia "${interpretation.list_ref}" sem lista valida`);
-          await sendText(
-            from,
-            `Não sei a que gasto o número "${interpretation.list_ref}" se refere. De qual dia são as compras que você quer editar?`
-          );
-          break;
-        }
-      }
-
-      const baseParams: EditExpenseParams = {
-        amount: expense.amount,
-        description: expense.description,
-        date: expense.date,
-        categoryId: expense.category_id,
-        paymentMethodId: expense.payment_method_id,
-      };
-      const result = parseEditFieldValue(from, interpretation.field, interpretation.value, baseParams);
-      if ("error" in result) {
-        logActivity(from, "edit_expense", result.error);
-        await sendText(from, result.error);
-        break;
-      }
-
-      const pendingExpense = {
-        expenseId: expense.id,
-        field: interpretation.field,
-        description: expense.description,
-        previous: baseParams,
-        proposedParams: result.params,
-        changeText: result.changeText,
-        awaitingCorrection: false,
-        headerText: expenseHeaderFor(from, baseParams),
-      };
-      clearEditConfirmations(from);
-      setPendingEditExpense(from, pendingExpense);
-      logActivity(from, "edit_expense", `pediu confirmacao: #${expense.id} ${expense.description}: ${result.changeText}`);
-      await sendText(from, buildExpensePreview(from, pendingExpense));
+      const expense = await resolveEditExpenseTarget(from, interpretation, resolvedTargetId);
+      if (!expense) break;
+      await startExpenseEdits(from, [{ expense, rawChanges }]);
       break;
     }
     case "set_recurring_expense": {
@@ -4676,6 +4760,26 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           logActivity(from, "undo", `gasto revertido: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz a última alteração em "${undo.description}".`);
           break;
+        case "restore_expenses_batch": {
+          const missing: string[] = [];
+          let restored = 0;
+          withTransaction(() => {
+            for (const item of undo.items) {
+              if (!getExpenseById(from, item.expenseId)) {
+                missing.push(item.description);
+                continue;
+              }
+              updateExpense(from, item.expenseId, item.previous);
+              restored++;
+            }
+          });
+          logActivity(from, "undo", `edicao em lote desfeita: ${undo.description}`);
+          await sendText(
+            from,
+            `↩️ Prontinho, desfiz as alterações em ${restored} gasto(s).${missing.length ? ` Não achei mais: ${missing.map((m) => `"${m}"`).join(", ")}.` : ""}`
+          );
+          break;
+        }
         case "restore_category":
           updateExpenseCategory(from, undo.expenseId, undo.previousCategoryId);
           logActivity(from, "undo", `categoria revertida: ${undo.description}`);

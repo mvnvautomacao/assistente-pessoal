@@ -521,7 +521,7 @@ test("correct_category: corrige a categoria do gasto mais recente e aprende a pa
 
   const expense = findRecentExpense(C, "cabeleireiro corrigir");
   assert.equal(expense?.category_id, cat.id);
-  assert.match(sent[1].text, /corrigida/);
+  assert.match(sent[1].text, /atualizado: categoria Lazer-correct/);
 });
 
 test("orcamento estourado: a confirmacao do gasto vem com o alerta junto", async (t) => {
@@ -1982,29 +1982,25 @@ test("edit_expense: editar a descricao/nome de um gasto (bug reportado -- so fal
   assert.equal(findRecentExpense(EED, "Feira")?.amount, 40); // resto do gasto preservado
 });
 
-// Achado da auditoria: 13 dos 17 tipos de pendencia checados aqui nao tinham
-// try/catch nenhum -- um erro em qualquer um deles sumia em silencio total
-// (so console.error, sem log no /admin nem resposta pro cliente). Agora o
-// bloco inteiro tem uma rede de seguranca por fora. Esse teste usa um valor
-// absurdamente alto (rejeitado por insertExpense/updateExpense, ver
-// src/validation.ts) pra forcar um throw dentro de resolveEditExpenseConfirmation,
-// que nao tinha tratamento proprio.
-test("edit_expense: valor absurdamente alto na confirmacao responde erro em vez de sumir em silencio", async (t) => {
+// Card 3 (RN05): valor absurdo e recusado ANTES da previa -- nao chega a pedir
+// confirmacao nem a gravar nada (antes o erro so aparecia depois do "sim").
+test("edit_expense: valor absurdamente alto e recusado antes da confirmacao, sem mexer no gasto", async (t) => {
   const EEV = "551100090097";
   seed(EEV);
   const cat = getOrCreateCategory(EEV, "Edit-valor-absurdo");
   insertExpense({ fromNumber: EEV, amount: 40, description: "gasto edit absurdo", categoryId: cat.id, paymentMethodId: null, date: today() });
 
   const { sent, queueReply } = withMocks(t);
-  queueReply([{ type: "edit_expense", query: "gasto edit absurdo", field: "amount", value: "99999999" }]);
-  await handleIncomingMessage(evolutionMessage(EEV, "muda o gasto edit absurdo pra 99999999"));
-  assert.match(sent[0].text, /[Cc]onfirma/); // pergunta normal, valor em si nao e validado aqui ainda
-
-  await handleIncomingMessage(evolutionMessage(EEV, "sim"));
-  assert.equal(sent.length, 2);
-  assert.match(sent[1].text, /limite/);
+  queueReply([{ type: "edit_expense", query: "gasto edit absurdo", changes: [{ field: "amount", value: "2000000" }] }]);
+  await handleIncomingMessage(evolutionMessage(EEV, "muda o gasto edit absurdo pra 2000000"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /muito alto \(limite R\$ 1\.000\.000,00\)/);
   assert.equal(findRecentExpense(EEV, "gasto edit absurdo")?.amount, 40); // nao mudou
-  assert.ok(getRecentActivity(20).find((a) => a.from_number === EEV && a.type === "error"));
+
+  // e nao ficou nada pendente: o "sim" seguinte nao confirma coisa nenhuma
+  queueReply([{ type: "unknown" }]);
+  await handleIncomingMessage(evolutionMessage(EEV, "sim"));
+  assert.equal(findRecentExpense(EEV, "gasto edit absurdo")?.amount, 40);
 });
 
 // Pedido do usuario: excluir categoria pelo WhatsApp (nao existia), com
@@ -3674,4 +3670,261 @@ test("escolha de alvo: mais de 8 correspondencias mostra 8 e avisa que tem mais;
   await handleIncomingMessage(evolutionMessage(TC11, "muda o ultimo gasto pra 9"));
   assert.match(sent[sent.length - 1].text, /✏️ Ultimo gasto — R\$ 2,00/);
   assert.doesNotMatch(sent[sent.length - 1].text, /Achei/);
+});
+
+// ---------------------------------------------------------------------------
+// Card 3: editar varios campos (e varios gastos) numa so mensagem, com validacao
+// antes da confirmacao
+// ---------------------------------------------------------------------------
+
+test("card 3: varios campos de um gasto numa so confirmacao; categoria nova so nasce no '1'; desfaz volta tudo", async (t) => {
+  const M1 = "551100091201";
+  seed(M1);
+  const alim = getOrCreateCategory(M1, "Alimentação");
+  const dinheiro = getOrCreatePaymentMethod(M1, "Dinheiro");
+  const pix = getOrCreatePaymentMethod(M1, "Pix");
+  const exp = insertExpense({ fromNumber: M1, amount: 38, description: "Mercado multi", categoryId: alim.id, paymentMethodId: dinheiro.id, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    {
+      type: "edit_expense",
+      query: "mercado multi",
+      changes: [
+        { field: "amount", value: "45" },
+        { field: "category", value: "Lazer multi" },
+        { field: "payment_method", value: "pix" },
+      ],
+    },
+  ]);
+  await handleIncomingMessage(evolutionMessage(M1, "muda o mercado pra 45, categoria lazer multi e pix"));
+  const preview = sent[0].text;
+  assert.match(preview, /^✏️ Mercado multi — R\$ 38,00 · \d{2}\/\d{2} · Dinheiro\n/);
+  assert.match(preview, /Valor: R\$ 38,00 → R\$ 45,00\n/);
+  assert.match(preview, /Categoria: Alimentação → Lazer multi \(nova\)\n/);
+  assert.match(preview, /Pagamento: Dinheiro → Pix\n/);
+  assert.match(preview, /1 ✅ Confirmar\n2 ✏️ Corrigir\n3 ❌ Cancelar$/);
+  // nada gravado ainda -- nem o gasto, nem a categoria nova
+  assert.equal(getExpenseById(M1, exp.id)?.amount, 38);
+  assert.equal(findCategoryByName(M1, "Lazer multi"), null);
+
+  await handleIncomingMessage(evolutionMessage(M1, "1"));
+  assert.equal(sent[1].text, '✏️ "Mercado multi" atualizado: valor R$ 45,00; categoria Lazer multi; pagamento Pix.');
+  const after = getExpenseById(M1, exp.id)!;
+  assert.equal(after.amount, 45);
+  assert.equal(after.payment_method_id, pix.id);
+  assert.equal(after.category_id, findCategoryByName(M1, "Lazer multi")?.id);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(M1, "desfaz isso"));
+  const undone = getExpenseById(M1, exp.id)!;
+  assert.equal(undone.amount, 38);
+  assert.equal(undone.category_id, alim.id);
+  assert.equal(undone.payment_method_id, dinheiro.id);
+});
+
+test("card 3: cancelar a previa nao cria categoria nova nem muda o gasto", async (t) => {
+  const M2 = "551100091202";
+  seed(M2);
+  const cat = getOrCreateCategory(M2, "Alimentação");
+  const exp = insertExpense({ fromNumber: M2, amount: 10, description: "Padaria cancela", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "correct_category", category: "Categoria fantasma", query: "padaria cancela" }]);
+  await handleIncomingMessage(evolutionMessage(M2, "padaria cancela é categoria fantasma"));
+  assert.match(sent[0].text, /Categoria: Alimentação → Categoria fantasma \(nova\)/);
+  await handleIncomingMessage(evolutionMessage(M2, "3"));
+  assert.match(sent[1].text, /não mexi em nada/);
+  assert.equal(findCategoryByName(M2, "Categoria fantasma"), null);
+  assert.equal(getExpenseById(M2, exp.id)?.category_id, cat.id);
+});
+
+test("card 3: dois gastos na mesma mensagem = UMA confirmacao e UM desfazer", async (t) => {
+  const M3 = "551100091203";
+  seed(M3);
+  const cat = getOrCreateCategory(M3, "Alimentação");
+  const dinheiro = getOrCreatePaymentMethod(M3, "Dinheiro");
+  const pix = getOrCreatePaymentMethod(M3, "Pix");
+  const e1 = insertExpense({ fromNumber: M3, amount: 20, description: "Mercado lote", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+  const e2 = insertExpense({ fromNumber: M3, amount: 30, description: "Uber lote", categoryId: cat.id, paymentMethodId: pix.id, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "edit_expense", query: "mercado lote", changes: [{ field: "payment_method", value: "Pix" }] },
+    { type: "edit_expense", query: "uber lote", changes: [{ field: "payment_method", value: "Dinheiro" }] },
+  ]);
+  await handleIncomingMessage(evolutionMessage(M3, "o mercado foi no pix e o uber no dinheiro"));
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].text,
+    "✏️ Vou fazer 2 alterações:\n1. Mercado lote — Pagamento: Dinheiro → Pix\n2. Uber lote — Pagamento: Pix → Dinheiro\n\n1 ✅ Confirmar tudo\n2 ✏️ Corrigir\n3 ❌ Cancelar"
+  );
+
+  await handleIncomingMessage(evolutionMessage(M3, "1"));
+  assert.equal(sent[1].text, "✏️ 2 gastos atualizados.");
+  assert.equal(getExpenseById(M3, e1.id)?.payment_method_id, pix.id);
+  assert.equal(getExpenseById(M3, e2.id)?.payment_method_id, dinheiro.id);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(M3, "desfaz isso"));
+  assert.match(sent[2].text, /desfiz as alterações em 2 gasto/);
+  assert.equal(getExpenseById(M3, e1.id)?.payment_method_id, dinheiro.id);
+  assert.equal(getExpenseById(M3, e2.id)?.payment_method_id, pix.id);
+});
+
+test("card 3 RN09: se um gasto do lote mudou durante a confirmacao, nada e aplicado (tudo ou nada)", async (t) => {
+  const M4 = "551100091204";
+  seed(M4);
+  const cat = getOrCreateCategory(M4, "Alimentação");
+  const pix = getOrCreatePaymentMethod(M4, "Pix");
+  const dinheiro = getOrCreatePaymentMethod(M4, "Dinheiro");
+  const e1 = insertExpense({ fromNumber: M4, amount: 20, description: "Feira atomica", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+  const e2 = insertExpense({ fromNumber: M4, amount: 30, description: "Onibus atomico", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "edit_expense", query: "feira atomica", changes: [{ field: "payment_method", value: "Pix" }] },
+    { type: "edit_expense", query: "onibus atomico", changes: [{ field: "payment_method", value: "Pix" }] },
+  ]);
+  await handleIncomingMessage(evolutionMessage(M4, "feira e onibus foram no pix"));
+  assert.match(sent[0].text, /Vou fazer 2 alterações/);
+
+  // enquanto a confirmacao espera, o gasto 2 e alterado por fora
+  expensesService.updateExpense(M4, e2.id, { amount: 40, description: "Onibus atomico", date: today(), categoryId: cat.id, paymentMethodId: dinheiro.id });
+  await handleIncomingMessage(evolutionMessage(M4, "1"));
+  assert.equal(sent[1].text, 'O gasto "Onibus atomico" mudou enquanto a gente conversava (agora está R$ 40,00). Me pede a alteração de novo.');
+  assert.equal(getExpenseById(M4, e1.id)?.payment_method_id, dinheiro.id); // o 1 tambem nao foi aplicado
+  assert.notEqual(getExpenseById(M4, e2.id)?.payment_method_id, pix.id);
+});
+
+test("card 3 RN07: mais de 5 gastos numa mensagem pede pra mandar 5 por vez e nao cria nada", async (t) => {
+  const M5 = "551100091205";
+  seed(M5);
+  const cat = getOrCreateCategory(M5, "Alimentação");
+  const names = ["Abacate", "Banana", "Cenoura", "Damasco", "Espinafre", "Figo"];
+  for (const n of names) insertExpense({ fromNumber: M5, amount: 5, description: `${n} lote6`, categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply(names.map((n) => ({ type: "edit_expense" as const, query: `${n.toLowerCase()} lote6`, changes: [{ field: "amount" as const, value: "9" }] })));
+  await handleIncomingMessage(evolutionMessage(M5, "muda os seis pra 9"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "Faço até 5 alterações por vez. Me manda as primeiras 5 e depois as outras.");
+  await handleIncomingMessage(evolutionMessage(M5, "sim")); // nao ha confirmacao pendente
+  assert.equal(findRecentExpense(M5, "abacate lote6")?.amount, 5);
+});
+
+test("card 3: no lote, gasto ambiguo recusa tudo e pede pra ser especifico", async (t) => {
+  const M6 = "551100091206";
+  seed(M6);
+  const cat = getOrCreateCategory(M6, "Transporte");
+  insertExpense({ fromNumber: M6, amount: 20, description: "Uber ida", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: M6, amount: 25, description: "Uber volta", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: M6, amount: 8, description: "Pedagio unico", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "edit_expense", query: "uber", changes: [{ field: "amount", value: "30" }] },
+    { type: "edit_expense", query: "pedagio unico", changes: [{ field: "amount", value: "9" }] },
+  ]);
+  await handleIncomingMessage(evolutionMessage(M6, "uber 30 e pedagio 9"));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /Achei mais de um gasto parecido com "uber"/);
+  assert.equal(findRecentExpense(M6, "pedagio unico")?.amount, 8);
+});
+
+test("card 3 RN05/RN06: valor e data invalidos sao recusados antes da previa", async (t) => {
+  const M7 = "551100091207";
+  seed(M7);
+  const cat = getOrCreateCategory(M7, "Alimentação");
+  const exp = insertExpense({ fromNumber: M7, amount: 12, description: "Almoco valida", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+
+  const ask = async (changes: { field: "amount" | "date"; value: string }[], text: string) => {
+    queueReply([{ type: "edit_expense", query: "almoco valida", changes }]);
+    await handleIncomingMessage(evolutionMessage(M7, text));
+    return sent[sent.length - 1].text;
+  };
+
+  assert.equal(await ask([{ field: "amount", value: "0" }], "muda pra 0"), "O valor precisa ser maior que R$ 0,00.");
+  assert.equal(await ask([{ field: "amount", value: "-5" }], "muda pra -5"), "O valor precisa ser maior que R$ 0,00.");
+  assert.match(await ask([{ field: "amount", value: "2000000" }], "muda pra 2000000"), /muito alto \(limite R\$ 1\.000\.000,00\)/);
+  assert.equal(
+    await ask([{ field: "date", value: "31/02" }], "foi dia 31/02"),
+    `Essa data não parece certa (31/02/${today().slice(0, 4)}). Me manda o dia de novo, ex: 15/10 ou ontem.`
+  );
+  assert.match(await ask([{ field: "date", value: "01/01/2010" }], "foi em 2010"), /Essa data não parece certa \(01\/01\/2010\)/);
+  assert.equal(getExpenseById(M7, exp.id)?.amount, 12);
+
+  // dentro da janela vale: "ontem"
+  const yesterday = addDaysToDateString(today(), -1);
+  const preview = await ask([{ field: "date", value: "ontem" }], "foi ontem");
+  assert.match(preview, new RegExp(`Data: \\d{2}/\\d{2} → ${yesterday.slice(8, 10)}/${yesterday.slice(5, 7)}`));
+  await handleIncomingMessage(evolutionMessage(M7, "1"));
+  assert.equal(getExpenseById(M7, exp.id)?.date, yesterday);
+});
+
+test("card 3: pedido que nao muda nada responde 'Ja esta assim' e nao deixa pendencia", async (t) => {
+  const M8 = "551100091208";
+  seed(M8);
+  const cat = getOrCreateCategory(M8, "Lazer");
+  insertExpense({ fromNumber: M8, amount: 50, description: "Cinema igual", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "cinema igual", changes: [{ field: "amount", value: "50" }, { field: "category", value: "lazer" }] }]);
+  await handleIncomingMessage(evolutionMessage(M8, "cinema igual 50 lazer"));
+  assert.equal(sent[0].text, "Já está assim, não mexi em nada.");
+});
+
+test("card 3 RN03: opcao 2 com varias mudancas pergunta QUAL corrigir e depois o novo valor", async (t) => {
+  const M9 = "551100091209";
+  seed(M9);
+  const cat = getOrCreateCategory(M9, "Alimentação");
+  const dinheiro = getOrCreatePaymentMethod(M9, "Dinheiro");
+  const exp = insertExpense({ fromNumber: M9, amount: 38, description: "Mercado corrige", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "mercado corrige", changes: [{ field: "amount", value: "45" }, { field: "payment_method", value: "Pix" }] }]);
+  await handleIncomingMessage(evolutionMessage(M9, "mercado 45 no pix"));
+
+  await handleIncomingMessage(evolutionMessage(M9, "2"));
+  assert.equal(sent[1].text, "Qual você quer corrigir?\n1 Valor\n2 Pagamento\n\nOu responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(M9, "xyz"));
+  assert.match(sent[2].text, /Não entendi/);
+  await handleIncomingMessage(evolutionMessage(M9, "1"));
+  assert.match(sent[3].text, /Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(M9, "2000000")); // valor invalido: repete a pergunta
+  assert.match(sent[4].text, /muito alto[\s\S]*Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(M9, "50"));
+  assert.match(sent[5].text, /Valor: R\$ 38,00 → R\$ 50,00\nPagamento: Dinheiro → Pix/);
+  await handleIncomingMessage(evolutionMessage(M9, "1"));
+  assert.equal(getExpenseById(M9, exp.id)?.amount, 50);
+});
+
+test("card 3 RN10: edicao de evento na mesma mensagem fica pra depois quando ja ha confirmacao pendente", async (t) => {
+  const M10 = "551100091210";
+  seed(M10);
+  const cat = getOrCreateCategory(M10, "Saúde");
+  insertExpense({ fromNumber: M10, amount: 80, description: "Remedio rn10", categoryId: cat.id, paymentMethodId: null, date: today() });
+  createEvent({ fromNumber: M10, title: "Consulta", start: `${nearFutureDateString()}T10:00:00-03:00` });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([
+    { type: "edit_expense", query: "remedio rn10", changes: [{ field: "amount", value: "90" }] },
+    { type: "edit_event", query: "Consulta", new_title: "Consulta nova" },
+  ]);
+  await handleIncomingMessage(evolutionMessage(M10, "remedio 90 e muda a consulta pra consulta nova"));
+  assert.match(sent[0].text, /Valor: R\$ 80,00 → R\$ 90,00/);
+  assert.equal(sent[1].text, 'Deixei a alteração de "Consulta" pra depois: confirma a de "Remedio rn10" primeiro e me pede de novo.');
+  await handleIncomingMessage(evolutionMessage(M10, "1"));
+  assert.equal(findRecentExpense(M10, "remedio rn10")?.amount, 90);
+});
+
+test("card 3: formato antigo field/value continua funcionando", async (t) => {
+  const M11 = "551100091211";
+  seed(M11);
+  const cat = getOrCreateCategory(M11, "Alimentação");
+  const exp = insertExpense({ fromNumber: M11, amount: 10, description: "Legado antigo", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "legado antigo", field: "description", value: "Legado novo" }]);
+  await handleIncomingMessage(evolutionMessage(M11, "renomeia o legado antigo pra legado novo"));
+  assert.match(sent[0].text, /Nome: Legado antigo → Legado novo/);
+  await handleIncomingMessage(evolutionMessage(M11, "1"));
+  assert.equal(getExpenseById(M11, exp.id)?.description, "Legado novo");
 });

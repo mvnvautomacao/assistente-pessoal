@@ -26,3 +26,18 @@ export function assertValidAmount(amount: number): void {
   if (!Number.isFinite(amount) || amount <= 0) throw new InvalidAmountError(amount, "not_positive");
   if (amount > MAX_REASONABLE_AMOUNT) throw new InvalidAmountError(amount, "too_high");
 }
+
+export type AmountCheck = { ok: true } | { ok: false; reason: "not_positive" | "too_high"; message: string };
+
+// mesma regra de assertValidAmount, mas SEM lancar: pra mostrar o motivo ja na
+// previa de uma edicao, antes de o usuario confirmar (assertValidAmount continua
+// valendo na camada de dados como ultima defesa).
+export function validateAmount(amount: number): AmountCheck {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, reason: "not_positive", message: "O valor precisa ser maior que R$ 0,00." };
+  }
+  if (amount > MAX_REASONABLE_AMOUNT) {
+    return { ok: false, reason: "too_high", message: "Esse valor é muito alto (limite R$ 1.000.000,00). Confere e me manda de novo?" };
+  }
+  return { ok: true };
+}

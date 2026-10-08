@@ -16,7 +16,6 @@ import {
 } from "../../src/confirmation/preview";
 import { EDIT_PENDING_TTL_MS } from "../../src/confirmation/constants";
 import { setPendingEditExpense, getPendingEditExpense } from "../../src/expenses/pendingEditExpense";
-import { setPendingCorrectCategory, getPendingCorrectCategory } from "../../src/expenses/pendingCorrectCategory";
 import { setPendingEditEvent, getPendingEditEvent } from "../../src/events/pendingEditEvent";
 import { setPendingEditReminder, getPendingEditReminder } from "../../src/reminders/pendingEditReminder";
 import { setPendingEditRecurring, getPendingEditRecurring } from "../../src/expenses/pendingEditRecurring";
@@ -158,14 +157,16 @@ test("perguntas da opcao 2 (corrigir) e mensagem de 'nao entendi'", () => {
   assert.equal(NOT_UNDERSTOOD_TEXT, "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.");
 });
 
-// RN09: TTL unico de 10 minutos, o mesmo nas cinco pendencias de edicao
+// RN09: TTL unico de 10 minutos, o mesmo nas quatro pendencias de edicao
 test("pendencias de edicao expiram todas com o mesmo TTL de 10 minutos", () => {
   assert.equal(EDIT_PENDING_TTL_MS, 10 * 60 * 1000);
   const N = "551100150001";
   const params = { amount: 1, description: "x", date: "2026-10-01", categoryId: null, paymentMethodId: null };
-  setPendingEditExpense(N, { expenseId: 1, field: "amount", description: "x", previous: params, proposedParams: params, changeText: "", awaitingCorrection: false, headerText: "" });
-  setPendingCorrectCategory(N, {
-    expenseId: 1, description: "x", amount: 1, previousCategoryId: null, previousCategoryName: "a", proposedCategoryId: 2, proposedCategoryName: "b", awaitingCorrection: false, headerText: "",
+  setPendingEditExpense(N, {
+    items: [{ expenseId: 1, description: "x", headerText: "", previous: params, proposed: params, rawChanges: [], newCategoryName: null, newPaymentMethodName: null, views: [] }],
+    awaitingCorrection: false,
+    correctionStage: "pick",
+    correctionTarget: null,
   });
   const prevEvent = { title: "e", start: "2030-01-01T10:00:00-03:00", end: "2030-01-01T11:00:00-03:00", location: null, reminderMinutes: 60 };
   setPendingEditEvent(N, { eventId: 1, title: "e", previous: prevEvent, proposedTitle: "e", proposedStart: prevEvent.start, proposedEnd: prevEvent.end, proposedReminderMinutes: 60, isDateTimeChange: false, changeText: "", awaitingCorrection: false, headerText: "" });
@@ -173,7 +174,7 @@ test("pendencias de edicao expiram todas com o mesmo TTL de 10 minutos", () => {
   const recurring = { description: "r", amount: 1, categoryId: null, paymentMethodId: null, dayOfMonth: 1 };
   setPendingEditRecurring(N, { recurringId: 1, previous: recurring, proposedParams: recurring, changeText: "", awaitingCorrection: false, headerText: "" });
 
-  const getters = [getPendingEditExpense, getPendingCorrectCategory, getPendingEditEvent, getPendingEditReminder, getPendingEditRecurring];
+  const getters = [getPendingEditExpense, getPendingEditEvent, getPendingEditReminder, getPendingEditRecurring];
   for (const get of getters) assert.ok(get(N));
 
   const realNow = Date.now;

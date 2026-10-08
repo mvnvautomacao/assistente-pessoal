@@ -26,6 +26,12 @@ export type UndoAction =
       previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null };
       description: string;
     }
+  | {
+      // editar 2+ gastos numa confirmacao so -- desfazer volta todos de uma vez
+      kind: "restore_expenses_batch";
+      items: { expenseId: number; previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null }; description: string }[];
+      description: string;
+    }
   | { kind: "restore_category"; expenseId: number; previousCategoryId: number; description: string }
   | { kind: "delete_event"; eventId: number; description: string }
   | {
