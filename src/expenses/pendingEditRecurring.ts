@@ -16,6 +16,9 @@ export interface PendingEditRecurring {
   recurringId: number;
   previous: RecurringExpenseParams;
   proposedParams: RecurringExpenseParams;
+  // categoria / forma de pagamento que ainda nao existem: so sao criadas na confirmacao
+  newCategoryName?: string | null;
+  newPaymentMethodName?: string | null;
   changeText: string;
   awaitingCorrection: boolean;
   headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao

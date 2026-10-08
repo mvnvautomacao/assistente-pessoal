@@ -109,13 +109,27 @@ import {
   ExpenseEditItem,
 } from "./expenses/pendingEditExpense";
 import { ExpenseEditField, MAX_EDIT_BATCH, RawChange, mergeRawChanges, normalizeExpenseChanges } from "./expenses/editChanges";
-import { buildExpenseEditItem } from "./expenses/editItem";
+import { buildExpenseEditItem, headerFor } from "./expenses/editItem";
+import { FIELD_REGISTRY, FieldDef, MenuKind } from "./fieldMenu/registry";
+import { parseFieldSelection } from "./fieldMenu/select";
+import {
+  FIELD_SELECTION_RETRY,
+  MAX_CHOICE_OPTIONS,
+  formatFieldMenu,
+  formatFieldQuestion,
+  formatFieldRetry,
+  isChoiceQuestion,
+} from "./fieldMenu/format";
+import { DateTimeAnswer, validateFieldAnswer } from "./fieldMenu/validate";
+import { setPendingFieldMenu, getPendingFieldMenu, clearPendingFieldMenu, PendingFieldMenu } from "./fieldMenu/pending";
 import { invalidDateMessage, parseExpenseDate } from "./expenses/parseDate";
 import { correctionOptions, formatCorrectionPicker, formatExpenseEditPreview, formatExpenseEditSuccess } from "./confirmation/expensePreview";
 import {
   createRecurringExpense,
   listRecurringExpenses,
   findActiveRecurringExpenseByDescription,
+  findActiveRecurringCandidates,
+  getRecurringExpenseById,
   deactivateRecurringExpense,
   updateRecurringExpense,
 } from "./expenses/recurring";
@@ -156,7 +170,7 @@ import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
-import { classifyConfirmationReply, isCancelWord } from "./confirmation/classify";
+import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
 import {
@@ -165,6 +179,7 @@ import {
   TargetListHeader,
   eventLine,
   reminderLine,
+  recurringLine,
   expenseLine,
   formatTargetList,
   targetNotUnderstoodText,
@@ -390,7 +405,9 @@ Eu também mando um resumo automático toda sexta-feira às 9h, e outro no últi
     case "edit_expense":
       return `✏️ Como corrigir um gasto que você já registrou:
 
-Primeiro, peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje".
+O jeito mais fácil: diga só "editar" (ou "edita o mercado", "edita o 2"). Eu mostro as opções do que dá pra mudar (valor, nome, categoria, data, pagamento) e você escolhe uma ou mais, tipo "1 e 5". Funciona do mesmo jeito pra evento, lembrete e gasto fixo.
+
+Se preferir frases prontas: peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje".
 
 Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número, tipo "muda o valor do 2 pra 45".
 
@@ -649,6 +666,13 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingTargetChoice = getPendingTargetChoice(from);
     if (pendingTargetChoice) {
       await resolveTargetChoiceReply(from, pendingTargetChoice, text);
+      return;
+    }
+
+    // menu guiado de campos (Card 4): item ja escolhido, falta dizer o que mudar
+    const pendingFieldMenu = getPendingFieldMenu(from);
+    if (pendingFieldMenu) {
+      await resolveFieldMenuReply(from, pendingFieldMenu, text);
       return;
     }
 
@@ -1065,7 +1089,7 @@ const BARE_EDIT_COMMAND =
   /^\s*((quero|preciso|queria|gostaria\s+de|vou|posso)\s+)?(edit(ar|a)|alter(ar|a)|ajust(ar|a)|troc(ar|a)|mud(ar|a|e)|corrig(ir|e)|modific(ar|a)|atualiz(ar|a))(\s+(algo|alguma\s+coisa|uma\s+coisa|isso|tudo|um\s+registro|um\s+item|um\s+dado))?\s*[.!?]*\s*$/i;
 
 const EDIT_TARGET_MENU =
-  'O que você quer editar?\n\n1. Gasto\n2. Categoria\n3. Forma de pagamento\n4. Evento na agenda\n5. Lembrete\n6. Conta fixa\n\nResponde com o número ou o nome (ou "cancelar").';
+  'O que você quer editar?\n\n1. Gasto\n2. Categoria\n3. Forma de pagamento\n4. Evento na agenda\n5. Lembrete\n6. Alerta de conta (vencimento)\n7. Gasto fixo (lançado todo mês)\n\nResponde com o número ou o nome (ou "cancelar").';
 
 type EditTarget = "expense" | "category" | "payment_method" | "event" | "reminder" | "bill_alert" | "recurring";
 
@@ -1075,8 +1099,8 @@ function parseEditTarget(answer: string): EditTarget | null {
     .replace(/[̀-ͯ]/g, "")
     .trim()
     .toLowerCase();
-  if (/^[1-6]\D*$/.test(t)) {
-    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert"] as const)[Number(t.replace(/\D/g, "")) - 1];
+  if (/^[1-7]\D*$/.test(t)) {
+    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert", "recurring"] as const)[Number(t.replace(/\D/g, "")) - 1];
   }
   if (/gasto\s+fixo|despesa\s+fixa|recorrente/.test(t)) return "recurring";
   if (/conta|alerta|boleto|fatura/.test(t)) return "bill_alert";
@@ -1088,8 +1112,9 @@ function parseEditTarget(answer: string): EditTarget | null {
   return null;
 }
 
-// resposta ao "o que voce quer editar?": mostra o que existe daquele tipo e
-// ensina a frase pra editar -- a edicao em si segue pelos fluxos normais.
+// resposta ao "o que voce quer editar?": gasto, evento, lembrete e gasto fixo
+// mostram a lista numerada (escolha do item -> menu de campos); categoria, forma
+// de pagamento e alerta de conta continuam mostrando o que existe + frase de exemplo.
 async function resolveEditTargetChoice(from: string, answerText: string) {
   const target = parseEditTarget(answerText);
   if (!target) {
@@ -1099,20 +1124,8 @@ async function resolveEditTargetChoice(from: string, answerText: string) {
   clearPendingEditTarget(from);
   logActivity(from, "help", `escolheu editar: ${target}`);
 
-  if (target === "expense") {
-    const items = getRecentExpensesList(from, 8);
-    if (!items.length) {
-      await sendText(from, "Você ainda não tem nenhum gasto registrado pra editar.");
-      return;
-    }
-    setLastShownExpenses(from, items.map((i) => i.id), "últimos gastos");
-    const lines = items.map(
-      (item, idx) => `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${item.category ?? "sem categoria"}) — ${formatDateOnly(item.date)}`
-    );
-    await sendText(
-      from,
-      `Esses são seus últimos gastos:\n\n${lines.join("\n")}\n\nDiz o número e o que mudar, ex: "muda o valor do 2 pra 45", "muda o nome do 1 pra Feira", "a forma de pagamento do 3 foi pix" ou "muda a categoria do 4 pra lazer".`
-    );
+  if (target === "expense" || target === "event" || target === "reminder" || target === "recurring") {
+    await offerBrowseList(from, target);
     return;
   }
   if (target === "category") {
@@ -1133,37 +1146,14 @@ async function resolveEditTargetChoice(from: string, answerText: string) {
     );
     return;
   }
-  if (target === "event") {
-    const events = listUpcomingEvents(from, 90).slice(0, 8);
-    const lines = events.length ? events.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n") : "(nenhum evento futuro)";
-    await sendText(
-      from,
-      `Seus próximos eventos:\n\n${lines}\n\nEx: "muda a consulta pra sexta às 16h", "muda o nome da consulta pra Dentista" ou "me avisa 2 horas antes da consulta".`
-    );
-    return;
-  }
-  if (target === "reminder") {
-    const reminders = getRemindersWithinDays(from, 365).slice(0, 8);
-    const lines = reminders.length ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n") : "(nenhum lembrete pendente)";
-    await sendText(from, `Seus lembretes:\n\n${lines}\n\nEx: "muda o lembrete do remédio pra amanhã às 21h" ou "o lembrete agora é Pagar o boleto".`);
-    return;
-  }
-  if (target === "bill_alert") {
-    const bills = listBillAlerts(from);
-    const lines = bills.length
-      ? bills.map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`).join("\n")
-      : "(nenhuma conta fixa cadastrada)";
-    await sendText(
-      from,
-      `Suas contas fixas (alertas):\n\n${lines}\n\nEx: "muda o alerta da água pro dia 8" ou "renomeia o alerta da luz pra Energia". Pra gastos fixos lançados sozinhos: "muda o valor do gasto fixo da academia pra 99".`
-    );
-    return;
-  }
-  const recurring = listRecurringExpenses(from);
-  const lines = recurring.length
-    ? recurring.map((r) => `• ${r.description} — R$${r.amount.toFixed(2)}, todo dia ${r.day_of_month}`).join("\n")
-    : "(nenhum gasto fixo)";
-  await sendText(from, `Seus gastos fixos:\n\n${lines}\n\nEx: "muda o valor do gasto fixo da academia pra 99,90" ou "o aluguel agora vence dia 8".`);
+  const bills = listBillAlerts(from);
+  const lines = bills.length
+    ? bills.map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`).join("\n")
+    : "(nenhuma conta fixa cadastrada)";
+  await sendText(
+    from,
+    `Seus alertas de conta (vencimento):\n\n${lines}\n\nEx: "muda o alerta da água pro dia 8" ou "renomeia o alerta da luz pra Energia". Pra gastos fixos lançados sozinhos, escolha a opção 7 do menu "editar".`
+  );
 }
 
 function looksLikeExplicitDifferentRequest(message: string): boolean {
@@ -1208,6 +1198,7 @@ function cancelAllPendings(from: string): number {
     [getPendingEditRecurring(from), () => clearPendingEditRecurring(from)],
     [getPendingEditTarget(from) || null, () => clearPendingEditTarget(from)],
     [getPendingTargetChoice(from), () => clearPendingTargetChoice(from)],
+    [getPendingFieldMenu(from), () => clearPendingFieldMenu(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
   ];
@@ -2615,9 +2606,18 @@ function targetActionVerb(action: Interpretation): string {
   }
 }
 
+// "editar" -> tipo, sem nada cadastrado
+const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
+  expense: "Você ainda não tem nenhum gasto registrado pra editar.",
+  event: "Você não tem nenhum evento futuro pra editar.",
+  reminder: "Você não tem nenhum lembrete pendente pra editar.",
+  recurring: "Você não tem nenhum gasto fixo pra editar.",
+};
+
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
-  if (kind === "event") return `Não encontrei nenhum evento futuro parecido com "${query}".`;
-  if (kind === "reminder") return `Não encontrei nenhum lembrete parecido com "${query}".`;
+  if (kind === "event") return query ? `Não encontrei nenhum evento futuro parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.event;
+  if (kind === "reminder") return query ? `Não encontrei nenhum lembrete parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.reminder;
+  if (kind === "recurring") return query ? `Não achei nenhum gasto fixo parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.recurring;
   const similar = query ? ` parecido com "${query}"` : "";
   if (action.type === "delete_expense") return `Não achei nenhum gasto${query ? similar : " registrado"} pra apagar.`;
   if (action.type === "correct_category") return `Não achei nenhum gasto recente${similar} pra corrigir.`;
@@ -2638,6 +2638,8 @@ function searchTargets(from: string, kind: TargetKind, query: string): TargetSea
     entries = findUpcomingEvents(from, query).map((e) => ({ id: e.id, line: eventLine(e) }));
   } else if (kind === "reminder") {
     entries = findPendingRemindersByText(from, query).map((r) => ({ id: r.id, line: reminderLine(r) }));
+  } else if (kind === "recurring") {
+    entries = findActiveRecurringCandidates(from, query).map((r) => ({ id: r.id, line: recurringLine(r) }));
   } else {
     entries = findExpenseCandidates(from, query).map((e) => ({
       id: e.id,
@@ -2648,9 +2650,41 @@ function searchTargets(from: string, kind: TargetKind, query: string): TargetSea
   return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
 }
 
+// os itens de um tipo, sem busca (o usuario escolheu "editar" -> tipo)
+function browseTargets(from: string, kind: TargetKind): TargetSearch {
+  let entries: { id: number; line: string }[];
+  if (kind === "event") entries = listUpcomingEvents(from, 90).map((e) => ({ id: e.id, line: eventLine(e) }));
+  else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
+  else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
+  else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
+  const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
+  return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
+}
+
+// acao "vazia" de edicao de cada tipo: ao escolher o item, cai no menu de campos
+function emptyEditAction(kind: TargetKind): Interpretation {
+  if (kind === "event") return { type: "edit_event", query: "" };
+  if (kind === "reminder") return { type: "edit_reminder", query: "" };
+  if (kind === "recurring") return { type: "edit_recurring_expense", query: "" };
+  return { type: "edit_expense" };
+}
+
+// "editar" -> tipo: lista numerada dos itens daquele tipo; o numero escolhido abre o menu de campos
+async function offerBrowseList(from: string, kind: TargetKind) {
+  const found = browseTargets(from, kind);
+  if (found.total === 0) {
+    await sendText(from, NOTHING_TO_EDIT_TEXT[kind]);
+    return;
+  }
+  // continua valendo "muda o valor do 2 pra 45" em cima dessa lista (RN10)
+  if (kind === "expense") setLastShownExpenses(from, found.ids, "últimos gastos");
+  await sendTargetList(from, kind, emptyEditAction(kind), found, { type: "browse" });
+}
+
 function targetExists(from: string, kind: TargetKind, id: number): boolean {
   if (kind === "event") return Boolean(getEventById(from, id));
   if (kind === "reminder") return Boolean(getReminderById(from, id));
+  if (kind === "recurring") return Boolean(getRecurringExpenseById(from, id)?.active);
   return Boolean(getExpenseById(from, id));
 }
 
@@ -2688,7 +2722,7 @@ async function chooseTarget(
   }
 
   // gasto sem texto de busca ("muda o ultimo gasto..."): usa o mais recente, sem lista (RN08)
-  if (!query) {
+  if (!query && kind === "expense") {
     const last = findRecentExpense(from);
     if (!last) {
       logActivity(from, action.type, "nenhum gasto encontrado para \"mais recente\"");
@@ -2696,6 +2730,18 @@ async function chooseTarget(
       return null;
     }
     return last.id;
+  }
+  // os outros tipos sem texto de busca ("edita o gasto fixo"): lista os itens do tipo
+  if (!query) {
+    const all = browseTargets(from, kind);
+    if (all.total === 0) {
+      logActivity(from, action.type, "nenhum item cadastrado");
+      await sendText(from, targetNotFoundText(action, kind));
+      return null;
+    }
+    if (all.total === 1) return all.ids[0];
+    await sendTargetList(from, kind, action, all, { type: "browse" });
+    return null;
   }
 
   const found = searchTargets(from, kind, query);
@@ -2776,6 +2822,8 @@ async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoi
 // confirmacao de edicao ativa pra esse numero (se houver): rotulo pra mensagens,
 // se esta em "aguardando correcao" e que tipo de valor a correcao espera
 function describeActiveEditConfirmation(from: string): { label: string; awaitingCorrection: boolean; kind: CorrectionKind } | null {
+  const menu = getPendingFieldMenu(from);
+  if (menu) return { label: menu.label, awaitingCorrection: menu.stage === "ask_value", kind: "text" };
   const expense = getPendingEditExpense(from);
   if (expense) return { label: expenseEditLabel(expense.items), awaitingCorrection: expense.awaitingCorrection, kind: expenseEditKind(expense) };
   const event = getPendingEditEvent(from);
@@ -2791,6 +2839,7 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
 
 // RN07: no maximo uma confirmacao de edicao ativa por numero
 function clearEditConfirmations(from: string) {
+  clearPendingFieldMenu(from);
   clearPendingEditExpense(from);
   clearPendingEditEvent(from);
   clearPendingEditReminder(from);
@@ -2837,6 +2886,170 @@ async function interpretCorrection(kind: CorrectionKind, text: string): Promise<
 // data/hora (ou dia do mes); campo de texto NUNCA recebe o texto livre
 function acceptsFreeText(kind: CorrectionKind): boolean {
   return kind === "amount" || kind === "date" || kind === "datetime" || kind === "day";
+}
+
+// ---------------------------------------------------------------------------
+// Menu guiado de campos: depois de escolher o item, o usuario escolhe o(s)
+// campo(s) a mudar e responde uma pergunta curta por campo; no fim cai na
+// previa 1/2/3 normal (handleInterpretation com o id do item ja resolvido).
+// Nada e gravado nem criado antes do "1" da previa.
+// ---------------------------------------------------------------------------
+
+const MENU_ACTIVITY: Record<MenuKind, string> = {
+  expense: "edit_expense",
+  event: "edit_event",
+  reminder: "edit_reminder",
+  recurring: "edit_recurring_expense",
+};
+
+// cabecalho do item (1a linha do menu); null quando o item nao existe mais
+function fieldMenuHeader(from: string, kind: MenuKind, itemId: number): { header: string; label: string } | null {
+  if (kind === "expense") {
+    const expense = getExpenseById(from, itemId);
+    return expense ? { header: headerFor(from, expenseParamsOf(expense)), label: expense.description } : null;
+  }
+  if (kind === "event") {
+    const event = getEventById(from, itemId);
+    return event ? { header: eventLine(event), label: event.title } : null;
+  }
+  if (kind === "reminder") {
+    const reminder = getReminderById(from, itemId);
+    return reminder ? { header: reminderLine(reminder), label: reminder.message } : null;
+  }
+  const recurring = getRecurringExpenseById(from, itemId);
+  if (!recurring || !recurring.active) return null;
+  return {
+    header: recurringHeader({ description: recurring.description, amount: recurring.amount, dayOfMonth: recurring.day_of_month }),
+    label: recurring.description,
+  };
+}
+
+// opcoes numeradas da pergunta de categoria / forma de pagamento (ate 8 existentes)
+function fieldChoices(from: string, def: FieldDef): string[] {
+  if (def.question === "category") return listCategories(from).slice(0, MAX_CHOICE_OPTIONS).map((c) => c.name);
+  if (def.question === "payment_method") return listPaymentMethods(from).slice(0, MAX_CHOICE_OPTIONS).map((m) => m.name);
+  return [];
+}
+
+// RN08: um menu por numero; abrir outro limpa as confirmacoes de edicao e a escolha de alvo
+async function openFieldMenu(from: string, kind: MenuKind, itemId: number) {
+  const info = fieldMenuHeader(from, kind, itemId);
+  if (!info) {
+    await sendText(from, TARGET_GONE_TEXT);
+    return;
+  }
+  clearEditConfirmations(from);
+  clearPendingTargetChoice(from);
+  setPendingFieldMenu(from, { kind, itemId, header: info.header, label: info.label, stage: "choose_fields", queue: [], step: 0, collected: {}, choices: [] });
+  logActivity(from, MENU_ACTIVITY[kind], `menu de campos aberto: "${info.label}"`);
+  await sendText(from, formatFieldMenu(info.header, kind));
+}
+
+// monta a acao de edicao equivalente as respostas e entrega pro fluxo normal (previa 1/2/3)
+async function dispatchFieldMenuEdit(from: string, pending: PendingFieldMenu) {
+  const c = pending.collected;
+  const dateTime = c.datetime as DateTimeAnswer | undefined;
+  let action: Interpretation;
+  if (pending.kind === "expense") {
+    const changes = pending.queue.map((key) => {
+      const value = c[key];
+      // valor em formato brasileiro ("45,9"), igual ao que o usuario digitaria
+      return { field: key as ExpenseEditField, value: key === "amount" ? String(value).replace(".", ",") : String(value) };
+    });
+    action = { type: "edit_expense", changes };
+  } else if (pending.kind === "event") {
+    action = {
+      type: "edit_event",
+      query: "",
+      new_title: c.title as string | undefined,
+      new_date: dateTime?.newDate,
+      new_time: dateTime?.newTime,
+      new_reminder_minutes: c.lead as number | undefined,
+    };
+  } else if (pending.kind === "reminder") {
+    action = { type: "edit_reminder", query: "", new_message: c.message as string | undefined, new_date: dateTime?.newDate, new_time: dateTime?.newTime };
+  } else {
+    action = {
+      type: "edit_recurring_expense",
+      query: "",
+      new_description: c.description as string | undefined,
+      new_amount: c.amount as number | undefined,
+      new_category: c.category as string | undefined,
+      new_day_of_month: c.day as number | undefined,
+      new_payment_method: c.payment_method as string | undefined,
+    };
+  }
+  logActivity(from, MENU_ACTIVITY[pending.kind], `campos respondidos (${pending.queue.join(", ")}) -- indo pra previa`);
+  await handleInterpretation(from, action, pending.itemId);
+}
+
+async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, answerText: string) {
+  const activity = MENU_ACTIVITY[pending.kind];
+  const fields = FIELD_REGISTRY[pending.kind];
+
+  const cancel = async (why: string) => {
+    clearPendingFieldMenu(from);
+    logActivity(from, activity, `menu de campos cancelado ${why}: "${pending.label}"`);
+    await sendText(from, "Beleza, não mexi em nada.");
+  };
+
+  // RN09: item sumiu no meio do caminho
+  if (!fieldMenuHeader(from, pending.kind, pending.itemId)) {
+    clearPendingFieldMenu(from);
+    logActivity(from, activity, `menu de campos: "${pending.label}" nao existe mais`);
+    await sendText(from, TARGET_GONE_TEXT);
+    return;
+  }
+
+  if (pending.stage === "choose_fields") {
+    const selection = parseFieldSelection(answerText, pending.kind);
+    if (!selection.ok) {
+      if (classifyConfirmationReply(answerText) === "cancel") {
+        await cancel("na escolha de campos");
+        return;
+      }
+      logActivity(from, activity, "menu de campos: selecao invalida");
+      await sendText(from, FIELD_SELECTION_RETRY);
+      return;
+    }
+    const first = fields.find((f) => f.key === selection.keys[0])!;
+    const choices = fieldChoices(from, first);
+    setPendingFieldMenu(from, { ...pending, stage: "ask_value", queue: selection.keys, step: 0, collected: {}, choices });
+    logActivity(from, activity, `campos escolhidos: ${selection.keys.join(", ")}`);
+    await sendText(from, formatFieldQuestion({ def: first, step: 1, total: selection.keys.length, options: choices }));
+    return;
+  }
+
+  // ask_value: so a palavra "cancelar" cancela; "1", "3" e "nao" sao valores (RN04)
+  if (isCancelWord(answerText) || normalizeReply(answerText) === "cancela") {
+    await cancel("numa pergunta");
+    return;
+  }
+  const def = fields.find((f) => f.key === pending.queue[pending.step])!;
+  const params = { def, step: pending.step + 1, total: pending.queue.length, options: pending.choices };
+
+  let raw = answerText.trim();
+  if (isChoiceQuestion(def.question) && /^\d+$/.test(raw)) {
+    const picked = pending.choices[Number(raw) - 1];
+    if (picked) raw = picked;
+  }
+  const answer = await validateFieldAnswer(def, raw, from);
+  if (!answer.ok) {
+    logActivity(from, activity, `menu de campos: resposta invalida em ${def.label}`);
+    await sendText(from, formatFieldRetry(answer.error, params));
+    return;
+  }
+
+  const collected = { ...pending.collected, [def.key]: answer.value };
+  if (pending.step + 1 < pending.queue.length) {
+    const next = fields.find((f) => f.key === pending.queue[pending.step + 1])!;
+    const choices = fieldChoices(from, next);
+    setPendingFieldMenu(from, { ...pending, step: pending.step + 1, collected, choices });
+    await sendText(from, formatFieldQuestion({ def: next, step: pending.step + 2, total: pending.queue.length, options: choices }));
+    return;
+  }
+  clearPendingFieldMenu(from);
+  await dispatchFieldMenuEdit(from, { ...pending, collected });
 }
 
 // ---- gasto(s) ------------------------------------------------------------
@@ -2970,7 +3183,7 @@ function rawChangesOf(action: ExpenseEditAction): RawChange[] {
   return action.type === "correct_category" ? normalizeExpenseChanges({ field: "category", value: action.category }) : normalizeExpenseChanges(action);
 }
 
-const NOT_UNDERSTOOD_CHANGE_TEXT = 'Não entendi o que mudar. Me diga o novo valor, ex: "muda o valor do mercado pra 45".';
+const BATCH_NEEDS_CHANGES_TEXT = 'Me diz o que mudar em cada gasto, ex: "o mercado foi no pix e o uber no dinheiro".';
 
 // 2+ pedidos de edicao de gasto na mesma mensagem: UMA confirmacao pro lote todo.
 // Aqui nao tem lista de candidatos (cada gasto precisa ser identificado sem
@@ -2979,7 +3192,7 @@ async function startExpenseEditBatch(from: string, actions: ExpenseEditAction[])
   const changesByAction: RawChange[][] = [];
   for (const action of actions) {
     const changes = rawChangesOf(action);
-    const problem = changes.length === 0 ? NOT_UNDERSTOOD_CHANGE_TEXT : earlyEditError(changes);
+    const problem = changes.length === 0 ? BATCH_NEEDS_CHANGES_TEXT : earlyEditError(changes);
     if (problem) {
       logActivity(from, "edit_expense", `lote recusado: ${problem}`);
       await sendText(from, problem);
@@ -3476,7 +3689,7 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
 // ---- gasto fixo ------------------------------------------------------------
 
 // qual campo a opcao 2 (corrigir) pergunta: o primeiro que mudou, nessa ordem
-function recurringCorrectionTarget(pending: Pick<PendingEditRecurring, "previous" | "proposedParams">): {
+function recurringCorrectionTarget(pending: Pick<PendingEditRecurring, "previous" | "proposedParams" | "newCategoryName" | "newPaymentMethodName">): {
   kind: CorrectionKind;
   noun: string;
   field: "amount" | "dayOfMonth" | "description" | "categoryId" | "paymentMethodId";
@@ -3486,7 +3699,7 @@ function recurringCorrectionTarget(pending: Pick<PendingEditRecurring, "previous
   if (n.amount !== p.amount) return { kind: "amount", noun: "valor", field: "amount" };
   if (n.dayOfMonth !== p.dayOfMonth) return { kind: "day", noun: "dia", field: "dayOfMonth" };
   if (n.description !== p.description) return { kind: "text", noun: "nome", field: "description" };
-  if (n.categoryId !== p.categoryId) return { kind: "text", noun: "categoria", field: "categoryId" };
+  if (n.categoryId !== p.categoryId || pending.newCategoryName) return { kind: "text", noun: "categoria", field: "categoryId" };
   return { kind: "text", noun: "forma de pagamento", field: "paymentMethodId" };
 }
 
@@ -3501,22 +3714,31 @@ function buildRecurringPreview(from: string, pending: Omit<PendingEditRecurring,
   if (n.description !== p.description) changes.push({ label: "Nome", from: p.description, to: n.description });
   if (n.amount !== p.amount) changes.push({ label: "Valor", from: formatBRL(p.amount), to: formatBRL(n.amount) });
   if (n.dayOfMonth !== p.dayOfMonth) changes.push({ label: "Dia do mês", from: String(p.dayOfMonth), to: String(n.dayOfMonth) });
-  if (n.categoryId !== p.categoryId) changes.push({ label: "Categoria", from: categoryLabel(from, p.categoryId), to: categoryLabel(from, n.categoryId) });
-  if (n.paymentMethodId !== p.paymentMethodId) {
-    changes.push({ label: "Forma de pagamento", from: paymentMethodLabel(from, p.paymentMethodId), to: paymentMethodLabel(from, n.paymentMethodId) });
+  if (n.categoryId !== p.categoryId || pending.newCategoryName) {
+    const to = pending.newCategoryName ? `${pending.newCategoryName} (nova)` : categoryLabel(from, n.categoryId);
+    changes.push({ label: "Categoria", from: categoryLabel(from, p.categoryId), to });
+  }
+  if (n.paymentMethodId !== p.paymentMethodId || pending.newPaymentMethodName) {
+    const to = pending.newPaymentMethodName ? `${pending.newPaymentMethodName} (nova)` : paymentMethodLabel(from, n.paymentMethodId);
+    changes.push({ label: "Forma de pagamento", from: paymentMethodLabel(from, p.paymentMethodId), to });
   }
   return formatEditPreview(pending.headerText, changes);
 }
 
-function buildRecurringChangeText(from: string, pending: Pick<PendingEditRecurring, "previous" | "proposedParams">): string {
+function buildRecurringChangeText(
+  from: string,
+  pending: Pick<PendingEditRecurring, "previous" | "proposedParams" | "newCategoryName" | "newPaymentMethodName">
+): string {
   const p = pending.previous;
   const n = pending.proposedParams;
   const parts: string[] = [];
   if (n.description !== p.description) parts.push(`nome "${p.description}" → "${n.description}"`);
   if (n.amount !== p.amount) parts.push(`valor R$${p.amount.toFixed(2)} → R$${n.amount.toFixed(2)}`);
-  if (n.categoryId !== p.categoryId) parts.push(`categoria → ${categoryLabel(from, n.categoryId)}`);
+  if (n.categoryId !== p.categoryId || pending.newCategoryName) parts.push(`categoria → ${pending.newCategoryName ?? categoryLabel(from, n.categoryId)}`);
   if (n.dayOfMonth !== p.dayOfMonth) parts.push(`dia do mês ${p.dayOfMonth} → ${n.dayOfMonth}`);
-  if (n.paymentMethodId !== p.paymentMethodId) parts.push(`forma de pagamento → ${paymentMethodLabel(from, n.paymentMethodId)}`);
+  if (n.paymentMethodId !== p.paymentMethodId || pending.newPaymentMethodName) {
+    parts.push(`forma de pagamento → ${pending.newPaymentMethodName ?? paymentMethodLabel(from, n.paymentMethodId)}`);
+  }
   return parts.join("; ");
 }
 
@@ -3526,14 +3748,22 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
 
   const applyCorrection = async (value: CorrectionValue) => {
     const proposedParams = { ...pending.proposedParams };
+    let newCategoryName = pending.newCategoryName ?? null;
+    let newPaymentMethodName = pending.newPaymentMethodName ?? null;
     if (value.kind === "amount") proposedParams.amount = value.amount;
     else if (value.kind === "day") proposedParams.dayOfMonth = value.day;
     else if (value.kind === "text" && target.field === "description") proposedParams.description = value.text;
-    else if (value.kind === "text" && target.field === "categoryId") proposedParams.categoryId = getOrCreateCategory(from, value.text).id;
-    else if (value.kind === "text") {
-      proposedParams.paymentMethodId = autoResolvePaymentMethod(from, value.text)?.id ?? pending.proposedParams.paymentMethodId;
+    else if (value.kind === "text" && target.field === "categoryId") {
+      // RN07: nada e criado antes do "1"
+      const found = findCategoryByName(from, value.text);
+      newCategoryName = found ? null : value.text;
+      proposedParams.categoryId = found ? found.id : pending.previous.categoryId;
+    } else if (value.kind === "text") {
+      const found = findPaymentMethodByName(from, value.text);
+      newPaymentMethodName = found ? null : value.text;
+      proposedParams.paymentMethodId = found ? found.id : pending.previous.paymentMethodId;
     }
-    const next = { ...pending, proposedParams, awaitingCorrection: false, changeText: "" };
+    const next = { ...pending, proposedParams, newCategoryName, newPaymentMethodName, awaitingCorrection: false, changeText: "" };
     next.changeText = buildRecurringChangeText(from, next);
     setPendingEditRecurring(from, next);
     logActivity(from, "edit_recurring_expense", `correcao: "${pending.previous.description}": ${next.changeText}`);
@@ -3561,7 +3791,17 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
 
   if (reply === "confirm") {
     clearPendingEditRecurring(from);
-    const updated = updateRecurringExpense(from, pending.recurringId, pending.proposedParams);
+    if (!getRecurringExpenseById(from, pending.recurringId)?.active) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    // criacao adiada: categoria / forma de pagamento novas nascem junto com a edicao
+    const finalParams = { ...pending.proposedParams };
+    const updated = withTransaction(() => {
+      if (pending.newPaymentMethodName) finalParams.paymentMethodId = getOrCreatePaymentMethod(from, pending.newPaymentMethodName).id;
+      if (pending.newCategoryName) finalParams.categoryId = getOrCreateCategory(from, pending.newCategoryName).id;
+      return updateRecurringExpense(from, pending.recurringId, finalParams);
+    });
     if (!updated) {
       await sendText(from, "Não achei mais esse item.");
       return;
@@ -3767,10 +4007,6 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "edit_event": {
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
-      if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined) {
-        await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário, título ou a nova antecedência do aviso.");
-        break;
-      }
       if (
         interpretation.new_reminder_minutes !== undefined &&
         (interpretation.new_reminder_minutes < 0 || interpretation.new_reminder_minutes > 43200)
@@ -3781,6 +4017,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
 
       const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
       if (eventId === null) break;
+      // RN01: sem mudanca explicita abre o menu de campos
+      if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined) {
+        await openFieldMenu(from, "event", eventId);
+        break;
+      }
       const event = getEventById(from, eventId)!;
       // preenche so o que foi pedido -- "muda so o dia" mantem o horario
       // original, "muda so o horario" mantem a data original (ver mergeDateTime).
@@ -3794,10 +4035,20 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const proposedTitle = interpretation.new_title ?? event.title;
       const proposedReminderMinutes = interpretation.new_reminder_minutes ?? event.reminder_minutes;
 
+      // so conta o que realmente muda (mesmo valor que ja esta la nao e mudanca)
+      const startChanged = hasDateTimeChange && new Date(newStart).getTime() !== new Date(event.start).getTime();
+      const titleChanged = proposedTitle !== event.title;
+      const leadChanged = proposedReminderMinutes !== event.reminder_minutes;
+      if (!startChanged && !titleChanged && !leadChanged) {
+        logActivity(from, "edit_event", `pedido sem nenhuma mudanca real em "${event.title}"`);
+        await sendText(from, NO_CHANGE_TEXT);
+        break;
+      }
+
       const changeParts: string[] = [];
-      if (hasDateTimeChange) changeParts.push(`de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`);
-      if (interpretation.new_title) changeParts.push(`título "${event.title}" → "${interpretation.new_title}"`);
-      if (interpretation.new_reminder_minutes !== undefined) changeParts.push(`aviso ${formatMinutesBefore(proposedReminderMinutes)} antes`);
+      if (startChanged) changeParts.push(`de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`);
+      if (titleChanged) changeParts.push(`título "${event.title}" → "${proposedTitle}"`);
+      if (leadChanged) changeParts.push(`aviso ${formatMinutesBefore(proposedReminderMinutes)} antes`);
       const changeText = changeParts.join("; ");
 
       const pendingEvent = {
@@ -3814,7 +4065,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         proposedStart: newStart,
         proposedEnd: newEnd,
         proposedReminderMinutes,
-        isDateTimeChange: hasDateTimeChange,
+        isDateTimeChange: startChanged,
         changeText,
         awaitingCorrection: false,
         headerText: event.title,
@@ -3908,15 +4159,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "edit_reminder": {
-
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
-      if (!hasDateTimeChange && !interpretation.new_message) {
-        await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário ou o novo texto do lembrete.");
-        break;
-      }
 
       const reminderId = await chooseTarget(from, "reminder", interpretation, interpretation.query, resolvedTargetId);
       if (reminderId === null) break;
+      // RN01: sem mudanca explicita abre o menu de campos
+      if (!hasDateTimeChange && !interpretation.new_message) {
+        await openFieldMenu(from, "reminder", reminderId);
+        break;
+      }
       const reminder = getReminderById(from, reminderId)!;
       // so chama mergeDateTime quando a edicao realmente envolve data/hora --
       // ele reconstroi a string via Date, o que reformataria um horario que o
@@ -3924,9 +4175,17 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const newDueAt = hasDateTimeChange ? mergeDateTime(reminder.due_at, interpretation.new_date, interpretation.new_time) : reminder.due_at;
       const proposedMessage = interpretation.new_message ?? reminder.message;
 
+      const dueChanged = hasDateTimeChange && new Date(newDueAt).getTime() !== new Date(reminder.due_at).getTime();
+      const messageChanged = proposedMessage !== reminder.message;
+      if (!dueChanged && !messageChanged) {
+        logActivity(from, "edit_reminder", `pedido sem nenhuma mudanca real em "${reminder.message}"`);
+        await sendText(from, NO_CHANGE_TEXT);
+        break;
+      }
+
       const changeParts: string[] = [];
-      if (hasDateTimeChange) changeParts.push(`de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`);
-      if (interpretation.new_message) changeParts.push(`texto "${reminder.message}" → "${interpretation.new_message}"`);
+      if (dueChanged) changeParts.push(`de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`);
+      if (messageChanged) changeParts.push(`texto "${reminder.message}" → "${proposedMessage}"`);
       const changeText = changeParts.join("; ");
 
       const pendingReminder = {
@@ -3935,7 +4194,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         previousDueAt: reminder.due_at,
         proposedMessage,
         proposedDueAt: newDueAt,
-        isDateTimeChange: hasDateTimeChange,
+        isDateTimeChange: dueChanged,
         changeText,
         awaitingCorrection: false,
         headerText: reminder.message,
@@ -4414,13 +4673,23 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "edit_expense": {
       const rawChanges = normalizeExpenseChanges(interpretation);
-      const problem = rawChanges.length === 0 ? NOT_UNDERSTOOD_CHANGE_TEXT : earlyEditError(rawChanges);
+      const problem = earlyEditError(rawChanges);
       if (problem) {
         await sendText(from, problem);
         break;
       }
+      // sem dizer o que mudar nem qual gasto ("editar gasto"): lista os gastos pra escolher
+      if (rawChanges.length === 0 && !interpretation.list_ref && !interpretation.query && resolvedTargetId === undefined) {
+        await offerBrowseList(from, "expense");
+        break;
+      }
       const expense = await resolveEditExpenseTarget(from, interpretation, resolvedTargetId);
       if (!expense) break;
+      // RN01: sem mudanca explicita abre o menu de campos
+      if (rawChanges.length === 0) {
+        await openFieldMenu(from, "expense", expense.id);
+        break;
+      }
       await startExpenseEdits(from, [{ expense, rawChanges }]);
       break;
     }
@@ -4490,27 +4759,29 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "edit_recurring_expense": {
-      const recurring = findActiveRecurringExpenseByDescription(from, interpretation.query);
-      if (!recurring) {
-        logActivity(from, "edit_recurring_expense", `nenhum gasto fixo encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não achei nenhum gasto fixo parecido com "${interpretation.query}".`);
-        break;
-      }
       if (interpretation.new_day_of_month !== undefined && (interpretation.new_day_of_month < 1 || interpretation.new_day_of_month > 31)) {
         await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.new_day_of_month}" não é um dia válido.`);
         break;
       }
+      if (interpretation.new_amount !== undefined) {
+        const check = validateAmount(interpretation.new_amount);
+        if (!check.ok) {
+          await sendText(from, check.message);
+          break;
+        }
+      }
+      const recurringId = await chooseTarget(from, "recurring", interpretation, interpretation.query, resolvedTargetId);
+      if (recurringId === null) break;
+      const recurring = getRecurringExpenseById(from, recurringId)!;
       const hasAnyChange =
         interpretation.new_description !== undefined ||
         interpretation.new_amount !== undefined ||
         interpretation.new_category !== undefined ||
         interpretation.new_day_of_month !== undefined ||
         interpretation.new_payment_method !== undefined;
+      // RN01: sem mudanca explicita abre o menu de campos
       if (!hasAnyChange) {
-        await sendText(
-          from,
-          `O que você quer mudar em "${recurring.description}"? Pode ser o nome, o valor, a categoria, o dia do mês ou a forma de pagamento.`
-        );
+        await openFieldMenu(from, "recurring", recurring.id);
         break;
       }
 
@@ -4522,36 +4793,36 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         dayOfMonth: recurring.day_of_month,
       };
       const proposedParams: RecurringExpenseParams = { ...previous };
-      const changeParts: string[] = [];
+      // RN07: categoria / forma de pagamento que ainda nao existem so sao criadas no "1"
+      let newCategoryName: string | null = null;
+      let newPaymentMethodName: string | null = null;
 
-      if (interpretation.new_description) {
-        proposedParams.description = interpretation.new_description;
-        changeParts.push(`nome "${previous.description}" → "${interpretation.new_description}"`);
-      }
-      if (interpretation.new_amount !== undefined) {
-        proposedParams.amount = interpretation.new_amount;
-        changeParts.push(`valor R$${previous.amount.toFixed(2)} → R$${interpretation.new_amount.toFixed(2)}`);
-      }
+      if (interpretation.new_description) proposedParams.description = interpretation.new_description.trim();
+      if (interpretation.new_amount !== undefined) proposedParams.amount = interpretation.new_amount;
       if (interpretation.new_category) {
-        const category = getOrCreateCategory(from, interpretation.new_category);
-        proposedParams.categoryId = category.id;
-        changeParts.push(`categoria → ${category.name}`);
+        const found = findCategoryByName(from, interpretation.new_category);
+        if (found) proposedParams.categoryId = found.id;
+        else newCategoryName = interpretation.new_category.trim();
       }
-      if (interpretation.new_day_of_month !== undefined) {
-        proposedParams.dayOfMonth = interpretation.new_day_of_month;
-        changeParts.push(`dia do mês ${previous.dayOfMonth} → ${interpretation.new_day_of_month}`);
-      }
+      if (interpretation.new_day_of_month !== undefined) proposedParams.dayOfMonth = interpretation.new_day_of_month;
       if (interpretation.new_payment_method) {
-        const paymentMethod = autoResolvePaymentMethod(from, interpretation.new_payment_method);
-        proposedParams.paymentMethodId = paymentMethod?.id ?? previous.paymentMethodId;
-        changeParts.push(`forma de pagamento → ${paymentMethod?.name ?? interpretation.new_payment_method}`);
+        const found = findPaymentMethodByName(from, interpretation.new_payment_method);
+        if (found) proposedParams.paymentMethodId = found.id;
+        else newPaymentMethodName = interpretation.new_payment_method.trim();
       }
 
-      const changeText = changeParts.join("; ");
+      const changeText = buildRecurringChangeText(from, { previous, proposedParams, newCategoryName, newPaymentMethodName });
+      if (!changeText) {
+        logActivity(from, "edit_recurring_expense", `pedido sem nenhuma mudanca real em "${recurring.description}"`);
+        await sendText(from, NO_CHANGE_TEXT);
+        break;
+      }
       const pendingRecurring = {
         recurringId: recurring.id,
         previous,
         proposedParams,
+        newCategoryName,
+        newPaymentMethodName,
         changeText,
         awaitingCorrection: false,
         headerText: recurringHeader({ description: previous.description, amount: previous.amount, dayOfMonth: previous.dayOfMonth }),

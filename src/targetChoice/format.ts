@@ -6,7 +6,15 @@ import type { TargetKind } from "./pending";
 // no maximo isso de candidatos por lista (RN02)
 export const MAX_TARGET_CANDIDATES = 8;
 
-const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos" };
+const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos" };
+
+// titulo da lista "navegar" (usuario escolheu editar um tipo, sem citar nenhum item)
+const BROWSE_TITLE: Record<TargetKind, string> = {
+  expense: "Seus últimos gastos:",
+  event: "Seus próximos eventos:",
+  reminder: "Seus lembretes:",
+  recurring: "Seus gastos fixos:",
+};
 
 export function eventLine(event: { title: string; start: string }): string {
   return `${event.title} — ${formatWhen(event.start)}`;
@@ -14,6 +22,11 @@ export function eventLine(event: { title: string; start: string }): string {
 
 export function reminderLine(reminder: { message: string; due_at: string }): string {
   return `${reminder.message} — ${formatWhen(reminder.due_at)}`;
+}
+
+// "Academia — R$ 89,90 · todo dia 5"
+export function recurringLine(recurring: { description: string; amount: number; day_of_month: number }): string {
+  return `${recurring.description} — ${formatBRL(recurring.amount)} · todo dia ${recurring.day_of_month}`;
 }
 
 // "Mercado — R$ 38,00 · 07/10 · Pix" (forma de pagamento so se houver)
@@ -25,7 +38,8 @@ export function expenseLine(expense: { description: string; amount: number; date
 export type TargetListHeader =
   | { type: "found"; query: string } // 'Achei 3 lembretes com "remedio":'
   | { type: "refined"; query: string } // 'Ainda tenho 2 opcoes com "pressao":'
-  | { type: "expired" }; // lista de gastos que expirou
+  | { type: "expired" } // lista de gastos que expirou
+  | { type: "browse" }; // "editar" -> tipo: os itens do tipo, sem busca
 
 // lines = os candidatos MOSTRADOS (ja cortados em MAX_TARGET_CANDIDATES);
 // total = quantos bateram de verdade (pra avisar que tem mais)
@@ -34,7 +48,9 @@ export function formatTargetList(params: { kind: TargetKind; header: TargetListH
   const title =
     header.type === "expired"
       ? "Essa lista já expirou, então não vou adivinhar pelo número. Seus últimos gastos:"
-      : header.type === "refined"
+      : header.type === "browse"
+        ? BROWSE_TITLE[kind]
+        : header.type === "refined"
         ? `Ainda tenho ${lines.length} opções com "${header.query}":`
         : `Achei ${total} ${NOUN_PLURAL[kind]} com "${header.query}":`;
   const numbered = lines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");

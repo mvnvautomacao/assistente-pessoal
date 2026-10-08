@@ -77,6 +77,21 @@ export function findActiveRecurringExpenseByDescription(fromNumber: string, quer
   return row ?? null;
 }
 
+// TODOS os gastos fixos ativos cujo nome bate com o texto (sem diferenciar acento
+// nem maiuscula), na ordem do dia do mes -- pra o bot poder perguntar qual
+// quando "academia" bate com mais de um.
+export function findActiveRecurringCandidates(fromNumber: string, query: string): RecurringExpense[] {
+  const norm = (text: string) =>
+    text
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .trim();
+  const target = norm(query);
+  if (!target) return [];
+  return listRecurringExpenses(fromNumber).filter((r) => norm(r.description).includes(target));
+}
+
 export function markRecurringExpenseRunForMonth(fromNumber: string, id: number, yearMonth: string) {
   db.prepare(`UPDATE recurring_expenses SET last_run_month = ? WHERE id = ? AND from_number = ?`).run(yearMonth, id, fromNumber);
 }

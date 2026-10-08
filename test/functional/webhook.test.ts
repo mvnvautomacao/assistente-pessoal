@@ -39,7 +39,7 @@ import { insertIncome } from "../../src/incomes/service";
 import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents, listEventReminderMinutes, addEventExtraReminder, deleteEvent } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
-import { listRecurringExpenses } from "../../src/expenses/recurring";
+import { listRecurringExpenses, createRecurringExpense, getRecurringExpenseById } from "../../src/expenses/recurring";
 import { listBillAlerts, getBillAlertById, createBillAlert } from "../../src/bills/service";
 import { setPendingBillCheckin } from "../../src/bills/pendingCheckin";
 
@@ -3092,16 +3092,17 @@ test("palavra solta de edicao ('editar', 'alterar'...) pergunta o que editar, se
   const { sent } = withMocks(t); // sem queueReply: se chamasse a IA, o teste mostraria no log/assert
   await handleIncomingMessage(evolutionMessage(ET1, "editar"));
   assert.match(sent[0].text, /O que você quer editar/);
-  for (const opt of ["Gasto", "Categoria", "Forma de pagamento", "Evento na agenda", "Lembrete", "Conta fixa"]) assert.match(sent[0].text, new RegExp(opt));
+  for (const opt of ["Gasto", "Categoria", "Forma de pagamento", "Evento na agenda", "Lembrete", "Alerta de conta", "Gasto fixo"]) assert.match(sent[0].text, new RegExp(opt));
+  assert.match(sent[0].text, /6\. Alerta de conta \(vencimento\)\n7\. Gasto fixo \(lançado todo mês\)/);
 
   await handleIncomingMessage(evolutionMessage(ET1, "1")); // por numero
-  assert.match(sent[1].text, /pao e leite/);
-  assert.match(sent[1].text, /muda o valor do 2 pra 45/);
+  assert.match(sent[1].text, /^Seus últimos gastos:\n1\. pao e leite — R\$ 25,00/);
+  assert.match(sent[1].text, /Qual deles você quer editar\? Responde com o número ou \*cancelar\*\./);
 
   await handleIncomingMessage(evolutionMessage(ET1, "Alterar")); // outra palavra
   assert.match(sent[2].text, /O que você quer editar/);
   await handleIncomingMessage(evolutionMessage(ET1, "o evento da agenda")); // por nome
-  assert.match(sent[3].text, /Consulta da Ana/);
+  assert.match(sent[3].text, /^Seus próximos eventos:\n1\. Consulta da Ana/);
 
   for (const [word, pattern] of [
     ["ajustar", /O que você quer editar/],
@@ -3129,9 +3130,10 @@ test("palavra solta de edicao: resposta que nao e nenhuma opcao pergunta de novo
 
   const cases: [string, RegExp][] = [
     ["2", /Suas categorias/],
-    ["5", /Seus lembretes/],
-    ["6", /Suas contas fixas/],
-    ["gasto fixo", /Seus gastos fixos/],
+    ["5", /Você não tem nenhum lembrete pendente pra editar\./],
+    ["6", /Seus alertas de conta \(vencimento\)/],
+    ["7", /Você não tem nenhum gasto fixo pra editar\./],
+    ["gasto fixo", /Você não tem nenhum gasto fixo pra editar\./],
   ];
   for (const [answer, expected] of cases) {
     await handleIncomingMessage(evolutionMessage(ET2, "editar"));
@@ -3490,11 +3492,13 @@ test("escolha de alvo: com exatamente 1 candidato nenhuma lista e enviada; pedid
   assert.match(sent[0].text, /✏️ Reuniao unica\nNome: Reuniao unica → Reuniao importante/);
   await handleIncomingMessage(evolutionMessage(TC4, "3")); // cancela essa edicao
 
-  // 2 eventos batem com "consulta", mas o pedido nao diz o que mudar: valida ANTES de listar
+  // 2 eventos batem com "consulta" e o pedido nao diz o que mudar: lista pra escolher e depois abre o menu de campos
   queueReply([{ type: "edit_event", query: "consulta" }]);
   await handleIncomingMessage(evolutionMessage(TC4, "muda a consulta"));
-  assert.match(sent[sent.length - 1].text, /Não entendi o que mudar/);
-  assert.doesNotMatch(sent[sent.length - 1].text, /Achei/);
+  assert.match(sent[sent.length - 1].text, /Achei 2 eventos com "consulta":/);
+  await handleIncomingMessage(evolutionMessage(TC4, "1"));
+  assert.match(sent[sent.length - 1].text, /O que você quer mudar\?\n1 Dia e hora\n2 Título\n3 Aviso/);
+  await handleIncomingMessage(evolutionMessage(TC4, "cancelar"));
 });
 
 test("escolha de alvo: refino por texto (1 acha -> segue; 2+ -> lista renumerada; 0 -> nao entendi mantendo a lista)", async (t) => {
@@ -3927,4 +3931,286 @@ test("card 3: formato antigo field/value continua funcionando", async (t) => {
   assert.match(sent[0].text, /Nome: Legado antigo → Legado novo/);
   await handleIncomingMessage(evolutionMessage(M11, "1"));
   assert.equal(getExpenseById(M11, exp.id)?.description, "Legado novo");
+});
+
+// ---------------------------------------------------------------------------
+// Card 4: menu guiado de campos (gasto, evento, lembrete e gasto fixo)
+// ---------------------------------------------------------------------------
+
+test("card 4 (a): editar -> Gasto -> numero -> '1 e 5' -> valor + pagamento -> previa -> 1 aplica e desfaz volta", async (t) => {
+  const G1 = "551100091301";
+  seed(G1);
+  const cat = getOrCreateCategory(G1, "Alimentação");
+  const dinheiro = getOrCreatePaymentMethod(G1, "Dinheiro");
+  const pix = getOrCreatePaymentMethod(G1, "Pix");
+  const padaria = insertExpense({ fromNumber: G1, amount: 12, description: "Padaria menu", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+  insertExpense({ fromNumber: G1, amount: 38, description: "Mercado menu", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(G1, "editar"));
+  assert.match(sent[0].text, /7\. Gasto fixo \(lançado todo mês\)/);
+  await handleIncomingMessage(evolutionMessage(G1, "1"));
+  assert.match(sent[1].text, /^Seus últimos gastos:\n1\. Mercado menu — R\$ 38,00 · \d{2}\/\d{2} · Dinheiro\n2\. Padaria menu — R\$ 12,00/);
+
+  await handleIncomingMessage(evolutionMessage(G1, "2"));
+  assert.match(sent[2].text, /^✏️ Padaria menu — R\$ 12,00 · \d{2}\/\d{2} · Dinheiro\nO que você quer mudar\?\n1 Valor\n2 Nome\n3 Categoria\n4 Data\n5 Pagamento\n/);
+
+  await handleIncomingMessage(evolutionMessage(G1, "1 e 5"));
+  assert.equal(sent[3].text, "(1 de 2) Qual é o valor certo? (ex: 45 ou 45,90) Ou responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(G1, "45"));
+  assert.match(sent[4].text, /^\(2 de 2\) Qual forma de pagamento\?\n1\. /);
+  assert.match(sent[4].text, /\n\d\. Pix\n/);
+  await handleIncomingMessage(evolutionMessage(G1, "Pix"));
+  assert.match(sent[5].text, /^✏️ Padaria menu — R\$ 12,00 · \d{2}\/\d{2} · Dinheiro\nValor: R\$ 12,00 → R\$ 45,00\nPagamento: Dinheiro → Pix\n\n1 ✅ Confirmar\n2 ✏️ Corrigir\n3 ❌ Cancelar$/);
+  // nada foi gravado ate o "1"
+  assert.equal(getExpenseById(G1, padaria.id)?.amount, 12);
+
+  await handleIncomingMessage(evolutionMessage(G1, "1"));
+  assert.equal(getExpenseById(G1, padaria.id)?.amount, 45);
+  assert.equal(getExpenseById(G1, padaria.id)?.payment_method_id, pix.id);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(G1, "desfaz isso"));
+  assert.equal(getExpenseById(G1, padaria.id)?.amount, 12);
+  assert.equal(getExpenseById(G1, padaria.id)?.payment_method_id, dinheiro.id);
+});
+
+test("card 4: escolher a opcao de pagamento pelo numero da lista", async (t) => {
+  const G2 = "551100091302";
+  seed(G2);
+  const cat = getOrCreateCategory(G2, "Alimentação");
+  const dinheiro = getOrCreatePaymentMethod(G2, "Dinheiro");
+  getOrCreatePaymentMethod(G2, "Pix");
+  const exp = insertExpense({ fromNumber: G2, amount: 12, description: "Lanche numero", categoryId: cat.id, paymentMethodId: dinheiro.id, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "lanche numero" }]);
+  await handleIncomingMessage(evolutionMessage(G2, "edita o lanche numero"));
+  assert.match(sent[0].text, /O que você quer mudar\?/);
+  await handleIncomingMessage(evolutionMessage(G2, "pagamento"));
+  const lines = sent[1].text.split("\n");
+  const pixLine = lines.find((l) => /^\d+\. Pix$/.test(l))!;
+  await handleIncomingMessage(evolutionMessage(G2, pixLine.split(".")[0]));
+  assert.match(sent[2].text, /Pagamento: Dinheiro → Pix/);
+  await handleIncomingMessage(evolutionMessage(G2, "1"));
+  assert.equal(getExpenseById(G2, exp.id)?.payment_method_id, findPaymentMethodByName(G2, "Pix")?.id);
+});
+
+test("card 4: selecao invalida repete o menu; resposta invalida repete a pergunta; '3' e valor; cancelar nao muda nada", async (t) => {
+  const G3 = "551100091303";
+  seed(G3);
+  const cat = getOrCreateCategory(G3, "Alimentação");
+  const exp = insertExpense({ fromNumber: G3, amount: 20, description: "Almoco menu", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "almoco menu" }]);
+  await handleIncomingMessage(evolutionMessage(G3, "edita o almoco menu"));
+
+  await handleIncomingMessage(evolutionMessage(G3, "1 e 9"));
+  assert.equal(sent[1].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(G3, "xyz"));
+  assert.equal(sent[2].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.");
+
+  await handleIncomingMessage(evolutionMessage(G3, "valor, pagamento")); // equivale a "1 e 5"
+  assert.match(sent[3].text, /^\(1 de 2\) Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(G3, "abc"));
+  assert.match(sent[4].text, /^Não entendi o valor "abc"\.\n\(1 de 2\) Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(G3, "2000000"));
+  assert.match(sent[5].text, /muito alto[\s\S]*\(1 de 2\) Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(G3, "3")); // "3" aqui e o valor R$ 3,00, nao "cancelar"
+  assert.match(sent[6].text, /^\(2 de 2\) Qual forma de pagamento\?/);
+
+  await handleIncomingMessage(evolutionMessage(G3, "cancelar"));
+  assert.equal(sent[7].text, "Beleza, não mexi em nada.");
+  assert.equal(getExpenseById(G3, exp.id)?.amount, 20);
+  // nada ficou pendente
+  queueReply([]);
+  await handleIncomingMessage(evolutionMessage(G3, "1"));
+  assert.equal(getExpenseById(G3, exp.id)?.amount, 20);
+});
+
+test("card 4: cancelar logo no menu de campos, e item apagado no meio do caminho", async (t) => {
+  const G4 = "551100091304";
+  seed(G4);
+  const cat = getOrCreateCategory(G4, "Alimentação");
+  insertExpense({ fromNumber: G4, amount: 20, description: "Item some menu", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "item some menu" }]);
+  await handleIncomingMessage(evolutionMessage(G4, "edita o item some menu"));
+  await handleIncomingMessage(evolutionMessage(G4, "cancelar"));
+  assert.equal(sent[1].text, "Beleza, não mexi em nada.");
+
+  queueReply([{ type: "edit_expense", query: "item some menu" }]);
+  await handleIncomingMessage(evolutionMessage(G4, "edita o item some menu"));
+  const gone = expensesService.findRecentExpense(G4, "item some menu")!;
+  expensesService.deleteExpense(G4, gone.id);
+  await handleIncomingMessage(evolutionMessage(G4, "1"));
+  assert.equal(sent[sent.length - 1].text, "Esse item não existe mais.");
+});
+
+test("card 4 (a)+(b): evento -- lista numerada, menu de 3 campos, dia e hora + aviso, previa e aplica", async (t) => {
+  const E1 = "551100091305";
+  seed(E1);
+  const a = createEvent({ fromNumber: E1, title: "Consulta A menu", start: futureAt(2, 10) });
+  createEvent({ fromNumber: E1, title: "Consulta B menu", start: futureAt(3, 10) });
+
+  const { sent } = withMocks(t);
+  t.mock.method(aiInterpret, "extractDateTimeFromAnswer", async () => ({ newTime: "16:00" }));
+  await handleIncomingMessage(evolutionMessage(E1, "editar"));
+  await handleIncomingMessage(evolutionMessage(E1, "4"));
+  assert.match(sent[1].text, /^Seus próximos eventos:\n1\. Consulta A menu — .*\n2\. Consulta B menu — /);
+  assert.match(sent[1].text, /Qual deles você quer editar\?/);
+
+  await handleIncomingMessage(evolutionMessage(E1, "1"));
+  assert.match(sent[2].text, /^✏️ Consulta A menu — .*\nO que você quer mudar\?\n1 Dia e hora\n2 Título\n3 Aviso\n/);
+
+  await handleIncomingMessage(evolutionMessage(E1, "dia e hora e aviso"));
+  assert.match(sent[3].text, /^\(1 de 2\) Qual é a data e hora certas\?/);
+  await handleIncomingMessage(evolutionMessage(E1, "16h"));
+  assert.match(sent[4].text, /^\(2 de 2\) Quanto tempo antes devo avisar\?/);
+  await handleIncomingMessage(evolutionMessage(E1, "40 dias")); // fora de 0 a 30 dias
+  assert.match(sent[5].text, /Não entendi a antecedência "40 dias"[\s\S]*\(2 de 2\)/);
+  await handleIncomingMessage(evolutionMessage(E1, "2 horas"));
+  assert.match(sent[6].text, /^✏️ Consulta A menu\nQuando: .* → .*16:00\nAviso: 1 hora antes → 2 horas antes\n\n1 ✅ Confirmar/);
+
+  await handleIncomingMessage(evolutionMessage(E1, "1"));
+  const updated = getEventById(E1, a.id)!;
+  assert.equal(updated.reminder_minutes, 120);
+  assert.match(updated.start, /T16:00/);
+});
+
+test("card 4 (b): 'edita a consulta' com um so evento abre o menu direto; sem mudar nada de verdade avisa", async (t) => {
+  const E2 = "551100091306";
+  seed(E2);
+  createEvent({ fromNumber: E2, title: "Dentista unico menu", start: futureAt(2, 10) });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "dentista" }]);
+  await handleIncomingMessage(evolutionMessage(E2, "edita o dentista"));
+  assert.doesNotMatch(sent[0].text, /Achei/);
+  assert.match(sent[0].text, /^✏️ Dentista unico menu — .*\nO que você quer mudar\?/);
+  await handleIncomingMessage(evolutionMessage(E2, "titulo"));
+  assert.match(sent[1].text, /^Qual é o novo título\?/);
+  await handleIncomingMessage(evolutionMessage(E2, "Dentista unico menu")); // igual ao atual
+  assert.equal(sent[2].text, "Já está assim, não mexi em nada.");
+});
+
+test("card 4: lembrete -- editar -> Lembrete -> numero -> Texto -> previa -> aplica", async (t) => {
+  const R1 = "551100091307";
+  seed(R1);
+  const id = createReminder(R1, "Pagar luz menu", futureAt(1, 9));
+  const { sent } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(R1, "editar"));
+  await handleIncomingMessage(evolutionMessage(R1, "5"));
+  assert.match(sent[1].text, /^Seus lembretes:\n1\. Pagar luz menu — /);
+  await handleIncomingMessage(evolutionMessage(R1, "1"));
+  assert.match(sent[2].text, /O que você quer mudar\?\n1 Dia e hora\n2 Texto\n/);
+  await handleIncomingMessage(evolutionMessage(R1, "2"));
+  assert.match(sent[3].text, /^Qual é o novo texto\?/);
+  await handleIncomingMessage(evolutionMessage(R1, "Pagar energia menu"));
+  assert.match(sent[4].text, /Texto: Pagar luz menu → Pagar energia menu/);
+  await handleIncomingMessage(evolutionMessage(R1, "1"));
+  assert.equal(getReminderById(R1, id)?.message, "Pagar energia menu");
+});
+
+test("card 4: gasto fixo -- lista numerada quando 2 batem; categoria nova so e criada no '1' (e cancelar nao cria)", async (t) => {
+  const F1 = "551100091308";
+  seed(F1);
+  const saude = getOrCreateCategory(F1, "Saúde");
+  const smart = createRecurringExpense({ fromNumber: F1, description: "Academia Smart", amount: 89.9, categoryId: saude.id, paymentMethodId: null, dayOfMonth: 5 });
+  createRecurringExpense({ fromNumber: F1, description: "Academia Kids", amount: 50, categoryId: saude.id, paymentMethodId: null, dayOfMonth: 10 });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_recurring_expense", query: "academia" }]);
+  await handleIncomingMessage(evolutionMessage(F1, "edita o gasto fixo da academia"));
+  assert.match(sent[0].text, /^Achei 2 gastos fixos com "academia":\n1\. Academia Smart — R\$ 89,90 · todo dia 5\n2\. Academia Kids — R\$ 50,00 · todo dia 10/);
+  await handleIncomingMessage(evolutionMessage(F1, "1"));
+  assert.match(sent[1].text, /^✏️ Academia Smart — R\$ 89,90 · todo dia 5\nO que você quer mudar\?\n1 Nome\n2 Valor\n3 Categoria\n4 Dia do mês\n5 Pagamento/);
+
+  await handleIncomingMessage(evolutionMessage(F1, "3 e 4"));
+  assert.match(sent[2].text, /^\(1 de 2\) Qual categoria\?\n1\. /);
+  await handleIncomingMessage(evolutionMessage(F1, "Fitness novo menu"));
+  assert.match(sent[3].text, /^\(2 de 2\) Qual é o dia do mês certo\?/);
+  await handleIncomingMessage(evolutionMessage(F1, "12"));
+  assert.match(sent[4].text, /Dia do mês: 5 → 12\nCategoria: Saúde → Fitness novo menu \(nova\)\n/);
+  assert.equal(findCategoryByName(F1, "Fitness novo menu"), null);
+
+  await handleIncomingMessage(evolutionMessage(F1, "3")); // cancela
+  assert.equal(findCategoryByName(F1, "Fitness novo menu"), null);
+  assert.equal(getRecurringExpenseById(F1, smart.id)?.day_of_month, 5);
+
+  // mesmo fluxo pelo caminho da IA (frase pronta): so cria no "1"
+  queueReply([{ type: "edit_recurring_expense", query: "academia smart", new_category: "Fitness novo menu", new_payment_method: "Cripto menu" }]);
+  await handleIncomingMessage(evolutionMessage(F1, "muda a categoria da academia smart pra fitness novo menu e pagamento cripto menu"));
+  assert.match(sent[sent.length - 1].text, /Categoria: Saúde → Fitness novo menu \(nova\)\nForma de pagamento: — → Cripto menu \(nova\)/);
+  assert.equal(findCategoryByName(F1, "Fitness novo menu"), null);
+  assert.equal(findPaymentMethodByName(F1, "Cripto menu"), null);
+  await handleIncomingMessage(evolutionMessage(F1, "1"));
+  const after = getRecurringExpenseById(F1, smart.id)!;
+  assert.equal(after.category_id, findCategoryByName(F1, "Fitness novo menu")?.id);
+  assert.equal(after.payment_method_id, findPaymentMethodByName(F1, "Cripto menu")?.id);
+});
+
+test("card 4 (c): lista de gastos aberta + 'edita o 2' sem dizer o que mudar abre o menu do gasto 2", async (t) => {
+  const L1 = "551100091309";
+  seed(L1);
+  const cat = getOrCreateCategory(L1, "Alimentação");
+  insertExpense({ fromNumber: L1, amount: 10, description: "Primeiro lista menu", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: L1, amount: 20, description: "Segundo lista menu", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_expenses", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(L1, "quais gastos eu tive hoje"));
+  queueReply([{ type: "edit_expense", list_ref: 2 }]);
+  await handleIncomingMessage(evolutionMessage(L1, "edita o 2"));
+  // lista mostra o mais recente primeiro: o 2 e o "Primeiro lista menu"
+  assert.match(sent[1].text, /^✏️ Primeiro lista menu — R\$ 10,00/);
+  assert.match(sent[1].text, /O que você quer mudar\?/);
+  await handleIncomingMessage(evolutionMessage(L1, "cancelar"));
+});
+
+test("card 4: pedido novo e longo com verbo de edicao descarta o menu com aviso de uma linha", async (t) => {
+  const D1 = "551100091310";
+  seed(D1);
+  const cat = getOrCreateCategory(D1, "Alimentação");
+  insertExpense({ fromNumber: D1, amount: 30, description: "Mercado descarta", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: D1, amount: 8, description: "Cafe descarta", categoryId: cat.id, paymentMethodId: null, date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "mercado descarta" }]);
+  await handleIncomingMessage(evolutionMessage(D1, "edita o mercado descarta"));
+  assert.match(sent[0].text, /O que você quer mudar\?/);
+
+  queueReply([{ type: "edit_expense", query: "cafe descarta", changes: [{ field: "amount", value: "9" }] }]);
+  await handleIncomingMessage(evolutionMessage(D1, "muda o valor do cafe descarta pra 9"));
+  assert.equal(sent[1].text, 'Cancelei a alteração de "Mercado descarta" e entendi seu novo pedido.');
+  assert.match(sent[2].text, /Valor: R\$ 8,00 → R\$ 9,00/);
+  await handleIncomingMessage(evolutionMessage(D1, "3"));
+});
+
+test("card 4: 'editar' sem nada cadastrado, e mais de 8 itens mostra 8 e avisa que tem mais", async (t) => {
+  const N1 = "551100091311";
+  const N2 = "551100091312";
+  seed(N1, N2);
+  for (let i = 1; i <= 10; i++) createEvent({ fromNumber: N2, title: `Aula menu ${i}`, start: futureAt(i, 10) });
+
+  const { sent } = withMocks(t);
+  for (const [option, text] of [
+    ["1", "Você ainda não tem nenhum gasto registrado pra editar."],
+    ["4", "Você não tem nenhum evento futuro pra editar."],
+    ["5", "Você não tem nenhum lembrete pendente pra editar."],
+    ["7", "Você não tem nenhum gasto fixo pra editar."],
+  ] as const) {
+    await handleIncomingMessage(evolutionMessage(N1, "editar"));
+    await handleIncomingMessage(evolutionMessage(N1, option));
+    assert.equal(sent[sent.length - 1].text, text);
+  }
+
+  await handleIncomingMessage(evolutionMessage(N2, "editar"));
+  await handleIncomingMessage(evolutionMessage(N2, "4"));
+  const list = sent[sent.length - 1].text;
+  assert.match(list, /8\. Aula menu 8/);
+  assert.doesNotMatch(list, /9\. Aula menu 9/);
+  assert.match(list, /Tem mais opções\. Diga o nome mais específico ou \*cancelar\*\./);
+  await handleIncomingMessage(evolutionMessage(N2, "cancelar"));
 });

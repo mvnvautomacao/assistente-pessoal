@@ -29,7 +29,7 @@ export function headerFor(from: string, params: EditExpenseParams): string {
   });
 }
 
-async function resolveDate(value: string, today: string): Promise<DateParse> {
+export async function resolveDate(value: string, today: string): Promise<DateParse> {
   const parsed = parseExpenseDate(value, today);
   if (parsed.ok || parsed.reason !== "unrecognized") return parsed;
   // nenhum formato comum casou: ultima tentativa com a IA ja usada nos eventos
