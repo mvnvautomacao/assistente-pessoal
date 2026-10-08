@@ -2,7 +2,8 @@
 // quer mudar X pra Y?" antes de editar um gasto de verdade, pra resolver a
 // resposta ("sim"/"nao"/um valor ajustado) na proxima mensagem. Mesma ideia dos
 // outros caches de conversa (pendingDeletion.ts etc).
-const TTL_MS = 5 * 60 * 1000;
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface EditExpenseParams {
   amount: number;
@@ -19,6 +20,8 @@ export interface PendingEditExpense {
   previous: EditExpenseParams;
   proposedParams: EditExpenseParams;
   changeText: string;
+  awaitingCorrection: boolean;
+  headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
   createdAt: number;
 }
 

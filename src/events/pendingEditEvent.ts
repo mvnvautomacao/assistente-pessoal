@@ -1,7 +1,8 @@
 // Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
 // quer mudar o evento X pra data/hora Y?" antes de aplicar de verdade. Mesma
 // ideia dos outros caches de conversa (pendingDeletion.ts etc).
-const TTL_MS = 5 * 60 * 1000;
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditEvent {
   eventId: number;
@@ -17,6 +18,8 @@ export interface PendingEditEvent {
   // gera "nao entendi", sem tentar achar data nenhuma nela.
   isDateTimeChange: boolean;
   changeText: string;
+  awaitingCorrection: boolean;
+  headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
   createdAt: number;
 }
 

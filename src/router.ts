@@ -157,6 +157,21 @@ import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
+import { classifyConfirmationReply, isCancelWord } from "./confirmation/classify";
+import { parseBrazilianAmountDetailed, parseLeadTimeMinutes, parseDayOfMonthAnswer } from "./confirmation/parsers";
+import {
+  NOT_UNDERSTOOD_TEXT,
+  CorrectionKind,
+  PreviewChange,
+  formatBRL,
+  formatShortDate,
+  formatWhen,
+  formatEditPreview,
+  expenseHeader,
+  recurringHeader,
+  correctionQuestion,
+  correctionRetry,
+} from "./confirmation/preview";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
@@ -197,6 +212,7 @@ import {
   searchExpenses,
   deleteCategory,
   renameCategory,
+  getPaymentMethodById,
   findPaymentMethodByName,
   findPaymentMethodMentionedIn,
   renamePaymentMethod,
@@ -368,7 +384,7 @@ Eu mostro os gastos numerados. Depois, é só dizer o que mudar usando o número
 
 Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia foi no pix, não em dinheiro". Isso vale pra qualquer campo — valor, data, forma de pagamento e também o nome/descrição, tipo "muda o nome do último gasto pra Feira".
 
-Antes de mudar de verdade, eu sempre confirmo com você mostrando o que vai virar o quê — se eu errar, é só me dizer o valor certo antes de confirmar.`;
+Antes de mudar de verdade, eu mostro "antes → depois" e você responde: *1* confirma, *2* corrige (eu pergunto o valor certo) ou *3* cancela.`;
     case "category":
       return `🏷️ Como funcionam as categorias:
 
@@ -557,7 +573,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
     // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
     // resposta dele deve resolver essa, nao uma categoria mais antiga na fila.
-    if (CANCEL_COMMAND.test(text)) {
+    // com confirmacao de edicao ativa, "cancelar"/"cancela" fica com o resolver
+    // dela (responde "Beleza, nao mexi em nada." / cancela a correcao) em vez do
+    // cancelamento geral; as outras saidas de emergencia (esquece, chega...) seguem iguais.
+    const activeEdit = describeActiveEditConfirmation(from);
+    const deferCancelToEdit = activeEdit !== null && /^s*cancel(a|ar)s*[.!]*s*$/i.test(text);
+    if (CANCEL_COMMAND.test(text) && !deferCancelToEdit) {
       const cancelled = cancelAllPendings(from);
       if (cancelled > 0) {
         logActivity(from, "cancel", `${cancelled} pendencia(s) cancelada(s) pelo usuario`);
@@ -587,10 +608,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // pendencia (sem avisar "cancelei", ja que o usuario nem sabia que algo
     // tava pendente) e deixa cair na classificacao normal mais abaixo, como
     // se fosse uma mensagem nova -- nao retorna aqui de proposito.
-    if (looksLikeExplicitDifferentRequest(text)) {
-      const cancelled = cancelAllPendings(from);
-      if (cancelled > 0) {
-        logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
+    // Em "aguardando correcao" a mensagem e o novo valor, entao nunca e pedido novo.
+    // Com previa de edicao ativa, a frase primeiro e testada como correcao (valor ou
+    // data/hora); so se nao der e que a edicao e descartada -- e avisa numa linha.
+    if (looksLikeExplicitDifferentRequest(text) && !activeEdit?.awaitingCorrection) {
+      const asCorrection =
+        activeEdit !== null && acceptsFreeText(activeEdit.kind) ? await interpretCorrection(activeEdit.kind, text) : null;
+      if (!asCorrection || "error" in asCorrection) {
+        const cancelled = cancelAllPendings(from);
+        if (cancelled > 0) {
+          logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
+          if (activeEdit) await sendText(from, `Cancelei a alteração de "${activeEdit.label}" e entendi seu novo pedido.`);
+        }
       }
     }
 
@@ -2505,11 +2534,12 @@ function parseEditFieldValue(
 ): { params: EditExpenseParams; changeText: string } | { error: string } {
   const params = { ...baseParams };
   if (field === "amount") {
-    const amount = Number(rawValue.replace(",", "."));
-    if (Number.isFinite(amount) && amount <= 0) return { error: `O valor precisa ser maior que R$ 0,00.` };
-    if (!Number.isFinite(amount)) return { error: `Não entendi o valor "${rawValue}".` };
-    params.amount = amount;
-    return { params, changeText: `valor agora é R$${amount.toFixed(2)}` };
+    const parsed = parseBrazilianAmountDetailed(rawValue);
+    if (!parsed.ok) {
+      return { error: parsed.reason === "not_positive" ? `O valor precisa ser maior que R$ 0,00.` : `Não entendi o valor "${rawValue}".` };
+    }
+    params.amount = parsed.value;
+    return { params, changeText: `valor agora é R${parsed.value.toFixed(2)}` };
   }
   if (field === "date") {
     params.date = rawValue;
@@ -2524,16 +2554,165 @@ function parseEditFieldValue(
   return { params, changeText: `forma de pagamento agora é "${paymentMethod.name}"` };
 }
 
-// resposta a "vou mudar X, confirma?" -- "sim" aplica, "nao" cancela, qualquer
-// outra coisa e tratada como um AJUSTE (novo valor pro mesmo campo) e volta a
-// pedir confirmacao com o valor corrigido, em vez de assumir ou travar
-async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
+// ---------------------------------------------------------------------------
+// Confirmacao de edicao: previa "antes -> depois" com opcoes 1/2/3.
+// A leitura da resposta (sim/nao/corrigir/texto livre) vem toda de
+// src/confirmation/classify.ts -- nenhuma regex yes/no aqui.
+// ---------------------------------------------------------------------------
 
-  if (yes) {
+// confirmacao de edicao ativa pra esse numero (se houver): rotulo pra mensagens,
+// se esta em "aguardando correcao" e que tipo de valor a correcao espera
+function describeActiveEditConfirmation(from: string): { label: string; awaitingCorrection: boolean; kind: CorrectionKind } | null {
+  const expense = getPendingEditExpense(from);
+  if (expense) return { label: expense.description, awaitingCorrection: expense.awaitingCorrection, kind: expenseCorrectionKind(expense.field) };
+  const category = getPendingCorrectCategory(from);
+  if (category) return { label: category.description, awaitingCorrection: category.awaitingCorrection, kind: "text" };
+  const event = getPendingEditEvent(from);
+  if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventCorrectionKind(event) };
+  const reminder = getPendingEditReminder(from);
+  if (reminder) return { label: reminder.message, awaitingCorrection: reminder.awaitingCorrection, kind: reminderCorrectionKind(reminder) };
+  const recurring = getPendingEditRecurring(from);
+  if (recurring) {
+    return { label: recurring.previous.description, awaitingCorrection: recurring.awaitingCorrection, kind: recurringCorrectionTarget(recurring).kind };
+  }
+  return null;
+}
+
+// RN07: no maximo uma confirmacao de edicao ativa por numero
+function clearEditConfirmations(from: string) {
+  clearPendingEditExpense(from);
+  clearPendingCorrectCategory(from);
+  clearPendingEditEvent(from);
+  clearPendingEditReminder(from);
+  clearPendingEditRecurring(from);
+}
+
+type CorrectionValue =
+  | { kind: "amount"; amount: number }
+  | { kind: "date"; date: string }
+  | { kind: "datetime"; newDate?: string; newTime?: string }
+  | { kind: "day"; day: number }
+  | { kind: "lead"; minutes: number }
+  | { kind: "text"; text: string };
+
+// interpreta o texto como o tipo de valor pedido; devolve o motivo se nao der
+async function interpretCorrection(kind: CorrectionKind, text: string): Promise<{ value: CorrectionValue } | { error: string }> {
+  const trimmed = text.trim();
+  if (kind === "amount") {
+    const parsed = parseBrazilianAmountDetailed(trimmed);
+    if (parsed.ok) return { value: { kind, amount: parsed.value } };
+    return { error: parsed.reason === "not_positive" ? "O valor precisa ser maior que R$ 0,00." : `Não entendi o valor "${trimmed}".` };
+  }
+  if (kind === "day") {
+    const day = parseDayOfMonthAnswer(trimmed);
+    return day === null ? { error: "O dia do mês precisa ser de 1 a 31." } : { value: { kind, day } };
+  }
+  if (kind === "lead") {
+    const minutes = parseLeadTimeMinutes(trimmed);
+    return minutes === null ? { error: `Não entendi a antecedência "${trimmed}".` } : { value: { kind, minutes } };
+  }
+  if (kind === "text") {
+    return trimmed ? { value: { kind, text: trimmed } } : { error: "Não recebi nada." };
+  }
+  const extracted = await extractDateTimeFromAnswer(trimmed);
+  if (kind === "date") {
+    return extracted?.newDate ? { value: { kind, date: extracted.newDate } } : { error: `Não entendi a data "${trimmed}".` };
+  }
+  return extracted && (extracted.newDate || extracted.newTime)
+    ? { value: { kind, newDate: extracted.newDate, newTime: extracted.newTime } }
+    : { error: `Não entendi a data e hora "${trimmed}".` };
+}
+
+// RN04: texto livre so vira nova previa quando o campo pendente e valor ou
+// data/hora (ou dia do mes); campo de texto NUNCA recebe o texto livre
+function acceptsFreeText(kind: CorrectionKind): boolean {
+  return kind === "amount" || kind === "date" || kind === "datetime" || kind === "day";
+}
+
+// ---- gasto ---------------------------------------------------------------
+
+function expenseCorrectionKind(field: PendingEditExpense["field"]): CorrectionKind {
+  return field === "amount" ? "amount" : field === "date" ? "date" : "text";
+}
+
+const EXPENSE_FIELD_NOUN: Record<PendingEditExpense["field"], string> = {
+  amount: "valor",
+  date: "data",
+  description: "nome",
+  payment_method: "forma de pagamento",
+};
+
+function paymentMethodLabel(from: string, id: number | null): string {
+  return (id !== null ? getPaymentMethodById(from, id)?.name : null) ?? "—";
+}
+
+function buildExpensePreview(from: string, pending: Omit<PendingEditExpense, "createdAt">): string {
+  const p = pending.previous;
+  const n = pending.proposedParams;
+  const change: PreviewChange =
+    pending.field === "amount"
+      ? { label: "Valor", from: formatBRL(p.amount), to: formatBRL(n.amount) }
+      : pending.field === "date"
+        ? { label: "Data", from: formatShortDate(p.date), to: formatShortDate(n.date) }
+        : pending.field === "description"
+          ? { label: "Descrição", from: p.description, to: n.description }
+          : { label: "Forma de pagamento", from: paymentMethodLabel(from, p.paymentMethodId), to: paymentMethodLabel(from, n.paymentMethodId) };
+  return formatEditPreview(pending.headerText, [change]);
+}
+
+function expenseHeaderFor(from: string, params: EditExpenseParams): string {
+  return expenseHeader({
+    description: params.description,
+    amount: params.amount,
+    date: params.date,
+    paymentMethodName: params.paymentMethodId !== null ? getPaymentMethodById(from, params.paymentMethodId)?.name : null,
+  });
+}
+
+async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
+  const kind = expenseCorrectionKind(pending.field);
+  const noun = EXPENSE_FIELD_NOUN[pending.field];
+
+  // aplica um novo valor vindo da correcao e reenvia a previa
+  const applyCorrection = async (value: CorrectionValue): Promise<boolean> => {
+    const raw = value.kind === "amount" ? String(value.amount) : value.kind === "date" ? value.date : value.kind === "text" ? value.text : "";
+    const result = parseEditFieldValue(from, pending.field, raw, pending.previous);
+    if ("error" in result) {
+      await sendText(from, correctionRetry(result.error, kind, noun));
+      return false;
+    }
+    const next = { ...pending, proposedParams: result.params, changeText: result.changeText, awaitingCorrection: false };
+    setPendingEditExpense(from, next);
+    logActivity(from, "edit_expense", `correcao: #${pending.expenseId} ${result.changeText}`);
+    await sendText(from, buildExpensePreview(from, next));
+    return true;
+  };
+
+  if (pending.awaitingCorrection) {
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    if (isCancelWord(answerText)) {
+      clearPendingEditExpense(from);
+      logActivity(from, "edit_expense", `correcao de #${pending.expenseId} cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    const interpreted = await interpretCorrection(kind, answerText);
+    if ("error" in interpreted) {
+      await sendText(from, correctionRetry(interpreted.error, kind, noun));
+      return;
+    }
+    await applyCorrection(interpreted.value);
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+
+  if (reply === "confirm") {
     clearPendingEditExpense(from);
+    if (!getExpenseById(from, pending.expenseId)) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
     updateExpense(from, pending.expenseId, pending.proposedParams);
     setPendingUndo(from, {
       kind: "restore_expense",
@@ -2545,32 +2724,68 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
     await sendText(from, `✏️ Gasto "${pending.description}" atualizado: ${pending.changeText}`);
     return;
   }
-  if (no) {
+  if (reply === "cancel") {
     clearPendingEditExpense(from);
     logActivity(from, "edit_expense", `edicao de #${pending.expenseId} nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
-
-  const result = parseEditFieldValue(from, pending.field, answerText.trim(), pending.previous);
-  if ("error" in result) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga o valor certo.`);
+  if (reply === "correct") {
+    setPendingEditExpense(from, { ...pending, awaitingCorrection: true });
+    logActivity(from, "edit_expense", `pediu pra corrigir ${noun} de #${pending.expenseId}`);
+    await sendText(from, correctionQuestion(kind, noun));
     return;
   }
-  setPendingEditExpense(from, { ...pending, proposedParams: result.params, changeText: result.changeText });
-  await sendText(from, `Ok, vou alterar "${pending.description}": ${result.changeText}. Confirma? Responde "sim" ou "não".`);
+
+  if (acceptsFreeText(kind)) {
+    const interpreted = await interpretCorrection(kind, answerText);
+    if (!("error" in interpreted)) {
+      await applyCorrection(interpreted.value);
+      return;
+    }
+  }
+  logActivity(from, "edit_expense", `resposta nao entendida na confirmacao de #${pending.expenseId}`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
-// mesma ideia da confirmacao de edicao, mas pra correct_category: "nao" ou
-// texto ambiguo tenta reinterpretar como uma categoria diferente, igual
-// resolvePendingCategorization ja faz pra gasto pendente de categoria
-async function resolveCorrectCategoryConfirmation(from: string, pending: PendingCorrectCategory, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
+// ---- categoria de um gasto -------------------------------------------------
 
-  if (yes) {
+function buildCategoryPreview(pending: Omit<PendingCorrectCategory, "createdAt">): string {
+  return formatEditPreview(pending.headerText, [{ label: "Categoria", from: pending.previousCategoryName, to: pending.proposedCategoryName }]);
+}
+
+async function resolveCorrectCategoryConfirmation(from: string, pending: PendingCorrectCategory, answerText: string) {
+  if (pending.awaitingCorrection) {
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    if (isCancelWord(answerText)) {
+      clearPendingCorrectCategory(from);
+      logActivity(from, "correct_category", `correcao de ${pending.description} cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    const trimmed = answerText.trim();
+    if (!trimmed) {
+      await sendText(from, correctionRetry("Não recebi nada.", "text", "categoria"));
+      return;
+    }
+    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+    const categoryName = findCategoryMentionedIn(from, trimmed)?.name ?? (wordCount <= 3 ? trimmed : await extractCategoryFromAnswer(trimmed));
+    const newCategory = getOrCreateCategory(from, categoryName);
+    const next = { ...pending, proposedCategoryId: newCategory.id, proposedCategoryName: newCategory.name, awaitingCorrection: false };
+    setPendingCorrectCategory(from, next);
+    logActivity(from, "correct_category", `correcao: ${pending.description} -> "${newCategory.name}"`);
+    await sendText(from, buildCategoryPreview(next));
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+
+  if (reply === "confirm") {
     clearPendingCorrectCategory(from);
+    if (!getExpenseById(from, pending.expenseId)) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
     updateExpenseCategory(from, pending.expenseId, pending.proposedCategoryId);
     learnKeyword(from, pending.description, pending.proposedCategoryId);
     if (pending.previousCategoryId != null) {
@@ -2585,32 +2800,102 @@ async function resolveCorrectCategoryConfirmation(from: string, pending: Pending
     await sendText(from, `✏️ Categoria de "${pending.description}" (R$${pending.amount.toFixed(2)}) corrigida para "${pending.proposedCategoryName}"`);
     return;
   }
-  if (no) {
+  if (reply === "cancel") {
     clearPendingCorrectCategory(from);
     logActivity(from, "correct_category", `correcao de ${pending.description} nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
+  if (reply === "correct") {
+    setPendingCorrectCategory(from, { ...pending, awaitingCorrection: true });
+    logActivity(from, "correct_category", `pediu pra corrigir a categoria de ${pending.description}`);
+    await sendText(from, correctionQuestion("text", "categoria"));
+    return;
+  }
 
-  const wordCount = answerText.trim().split(/\s+/).filter(Boolean).length;
-  const categoryName =
-    findCategoryMentionedIn(from, answerText)?.name ?? (wordCount <= 3 ? answerText.trim() : await extractCategoryFromAnswer(answerText));
-  const newCategory = getOrCreateCategory(from, categoryName);
-  setPendingCorrectCategory(from, { ...pending, proposedCategoryId: newCategory.id, proposedCategoryName: newCategory.name });
-  await sendText(from, `Ok, vou mudar a categoria de "${pending.description}" pra "${newCategory.name}" então. Confirma? Responde "sim" ou "não".`);
+  // categoria e campo de texto: texto livre nunca vira o novo valor (RN04)
+  logActivity(from, "correct_category", `resposta nao entendida na confirmacao de ${pending.description}`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
-// resposta a "vou remarcar o evento X pra data/hora Y, confirma?" -- ajuste (nem
-// sim nem nao) tenta reinterpretar a resposta como uma NOVA data/hora via IA
-// (extractDateTimeFromAnswer), pra funcionar mesmo com frase livre tipo "na
-// verdade e sexta as 16h", nao so um ISO exato
-async function resolveEditEventConfirmation(from: string, pending: PendingEditEvent, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
+// ---- evento ----------------------------------------------------------------
 
-  if (yes) {
+function leadLabel(minutes: number): string {
+  return minutes === 0 ? "na hora" : `${formatMinutesBefore(minutes)} antes`;
+}
+
+function eventCorrectionKind(pending: Pick<PendingEditEvent, "isDateTimeChange" | "proposedTitle" | "previous">): CorrectionKind {
+  if (pending.isDateTimeChange) return "datetime";
+  if (pending.proposedTitle !== pending.previous.title) return "text";
+  return "lead";
+}
+
+function buildEventPreview(pending: Omit<PendingEditEvent, "createdAt">): string {
+  const changes: PreviewChange[] = [];
+  if (pending.isDateTimeChange) changes.push({ label: "Quando", from: formatWhen(pending.previous.start), to: formatWhen(pending.proposedStart) });
+  if (pending.proposedTitle !== pending.previous.title) changes.push({ label: "Nome", from: pending.previous.title, to: pending.proposedTitle });
+  if (pending.proposedReminderMinutes !== pending.previous.reminderMinutes) {
+    changes.push({ label: "Aviso", from: leadLabel(pending.previous.reminderMinutes), to: leadLabel(pending.proposedReminderMinutes) });
+  }
+  return formatEditPreview(pending.headerText, changes);
+}
+
+function buildEventChangeText(pending: Pick<PendingEditEvent, "isDateTimeChange" | "previous" | "proposedStart" | "proposedTitle" | "proposedReminderMinutes">): string {
+  const parts: string[] = [];
+  if (pending.isDateTimeChange) parts.push(`de ${formatDateTime(pending.previous.start)} pra ${formatDateTime(pending.proposedStart)}`);
+  if (pending.proposedTitle !== pending.previous.title) parts.push(`título "${pending.previous.title}" → "${pending.proposedTitle}"`);
+  if (pending.proposedReminderMinutes !== pending.previous.reminderMinutes) parts.push(`aviso ${formatMinutesBefore(pending.proposedReminderMinutes)} antes`);
+  return parts.join("; ");
+}
+
+async function resolveEditEventConfirmation(from: string, pending: PendingEditEvent, answerText: string) {
+  const kind = eventCorrectionKind(pending);
+  const noun = kind === "text" ? "nome" : "aviso";
+
+  const applyCorrection = async (value: CorrectionValue) => {
+    const next = { ...pending, awaitingCorrection: false };
+    if (value.kind === "datetime") {
+      // mescla com o valor JA PROPOSTO (nao o original do evento) -- se a correcao so
+      // mencionar o dia, mantem a hora que ja tinha sido proposta antes
+      next.proposedStart = mergeDateTime(pending.proposedStart, value.newDate, value.newTime);
+      const durationMs = new Date(pending.previous.end).getTime() - new Date(pending.previous.start).getTime();
+      next.proposedEnd = new Date(new Date(next.proposedStart).getTime() + durationMs).toISOString();
+    } else if (value.kind === "text") {
+      next.proposedTitle = value.text;
+    } else if (value.kind === "lead") {
+      next.proposedReminderMinutes = value.minutes;
+    }
+    next.changeText = buildEventChangeText(next);
+    setPendingEditEvent(from, next);
+    logActivity(from, "edit_event", `correcao: "${pending.title}": ${next.changeText}`);
+    await sendText(from, buildEventPreview(next));
+  };
+
+  if (pending.awaitingCorrection) {
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    if (isCancelWord(answerText)) {
+      clearPendingEditEvent(from);
+      logActivity(from, "edit_event", `correcao de "${pending.title}" cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    const interpreted = await interpretCorrection(kind, answerText);
+    if ("error" in interpreted) {
+      await sendText(from, correctionRetry(interpreted.error, kind, noun));
+      return;
+    }
+    await applyCorrection(interpreted.value);
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+
+  if (reply === "confirm") {
     clearPendingEditEvent(from);
+    if (!getEventById(from, pending.eventId)) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
     updateEvent(from, pending.eventId, {
       title: pending.proposedTitle,
       start: pending.proposedStart,
@@ -2628,43 +2913,89 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
     await sendText(from, `✏️ "${pending.title}" alterado: ${pending.changeText}`);
     return;
   }
-  if (no) {
+  if (reply === "cancel") {
     clearPendingEditEvent(from);
     logActivity(from, "edit_event", `alteracao de "${pending.title}" nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
+  if (reply === "correct") {
+    setPendingEditEvent(from, { ...pending, awaitingCorrection: true });
+    logActivity(from, "edit_event", `pediu pra corrigir "${pending.title}"`);
+    await sendText(from, correctionQuestion(kind, noun));
+    return;
+  }
 
-  // resposta livre (nem "sim" nem "nao") so tenta virar uma NOVA data/hora
-  // quando a mudanca em questao ja envolvia data/hora -- pra edicao de
-  // titulo/antecedencia, tentar reinterpretar como data so confundiria mais.
-  if (!pending.isDateTimeChange) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
-    return;
+  if (acceptsFreeText(kind)) {
+    const interpreted = await interpretCorrection(kind, answerText);
+    if (!("error" in interpreted)) {
+      await applyCorrection(interpreted.value);
+      return;
+    }
   }
-  const extracted = await extractDateTimeFromAnswer(answerText);
-  if (!extracted) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
-    return;
-  }
-  // mescla com o valor JA PROPOSTO (nao o original do evento) -- se o ajuste so
-  // mencionar o dia, mantem a hora que ja tinha sido proposta antes, nao a antiga
-  const newStart = mergeDateTime(pending.proposedStart, extracted.newDate, extracted.newTime);
-  const durationMs = new Date(pending.previous.end).getTime() - new Date(pending.previous.start).getTime();
-  const newEnd = new Date(new Date(newStart).getTime() + durationMs).toISOString();
-  const changeText = `de ${formatDateTime(pending.previous.start)} pra ${formatDateTime(newStart)}`;
-  setPendingEditEvent(from, { ...pending, proposedStart: newStart, proposedEnd: newEnd, changeText });
-  await sendText(from, `Ok, vou remarcar "${pending.title}": ${changeText}. Confirma? Responde "sim" ou "não".`);
+  logActivity(from, "edit_event", `resposta nao entendida na confirmacao de "${pending.title}"`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
-// mesma ideia de resolveEditEventConfirmation, pra lembrete
-async function resolveEditReminderConfirmation(from: string, pending: PendingEditReminder, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
+// ---- lembrete --------------------------------------------------------------
 
-  if (yes) {
+function reminderCorrectionKind(pending: Pick<PendingEditReminder, "isDateTimeChange">): CorrectionKind {
+  return pending.isDateTimeChange ? "datetime" : "text";
+}
+
+function buildReminderPreview(pending: Omit<PendingEditReminder, "createdAt">): string {
+  const changes: PreviewChange[] = [];
+  if (pending.isDateTimeChange) changes.push({ label: "Quando", from: formatWhen(pending.previousDueAt), to: formatWhen(pending.proposedDueAt) });
+  if (pending.proposedMessage !== pending.message) changes.push({ label: "Texto", from: pending.message, to: pending.proposedMessage });
+  return formatEditPreview(pending.headerText, changes);
+}
+
+function buildReminderChangeText(pending: Pick<PendingEditReminder, "isDateTimeChange" | "previousDueAt" | "proposedDueAt" | "message" | "proposedMessage">): string {
+  const parts: string[] = [];
+  if (pending.isDateTimeChange) parts.push(`de ${formatDateTime(pending.previousDueAt)} pra ${formatDateTime(pending.proposedDueAt)}`);
+  if (pending.proposedMessage !== pending.message) parts.push(`texto "${pending.message}" → "${pending.proposedMessage}"`);
+  return parts.join("; ");
+}
+
+async function resolveEditReminderConfirmation(from: string, pending: PendingEditReminder, answerText: string) {
+  const kind = reminderCorrectionKind(pending);
+  const noun = "texto";
+
+  const applyCorrection = async (value: CorrectionValue) => {
+    const next = { ...pending, awaitingCorrection: false };
+    if (value.kind === "datetime") next.proposedDueAt = mergeDateTime(pending.proposedDueAt, value.newDate, value.newTime);
+    else if (value.kind === "text") next.proposedMessage = value.text;
+    next.changeText = buildReminderChangeText(next);
+    setPendingEditReminder(from, next);
+    logActivity(from, "edit_reminder", `correcao: "${pending.message}": ${next.changeText}`);
+    await sendText(from, buildReminderPreview(next));
+  };
+
+  if (pending.awaitingCorrection) {
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    if (isCancelWord(answerText)) {
+      clearPendingEditReminder(from);
+      logActivity(from, "edit_reminder", `correcao de "${pending.message}" cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    const interpreted = await interpretCorrection(kind, answerText);
+    if ("error" in interpreted) {
+      await sendText(from, correctionRetry(interpreted.error, kind, noun));
+      return;
+    }
+    await applyCorrection(interpreted.value);
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+
+  if (reply === "confirm") {
     clearPendingEditReminder(from);
+    if (!getReminderById(from, pending.reminderId)) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
     updateReminder(from, pending.reminderId, { message: pending.proposedMessage, dueAt: pending.proposedDueAt });
     setPendingUndo(from, {
       kind: "restore_reminder_time",
@@ -2676,26 +3007,28 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
     await sendText(from, `✏️ Lembrete "${pending.message}" alterado: ${pending.changeText}`);
     return;
   }
-  if (no) {
+  if (reply === "cancel") {
     clearPendingEditReminder(from);
     logActivity(from, "edit_reminder", `alteracao de "${pending.message}" nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
+  if (reply === "correct") {
+    setPendingEditReminder(from, { ...pending, awaitingCorrection: true });
+    logActivity(from, "edit_reminder", `pediu pra corrigir "${pending.message}"`);
+    await sendText(from, correctionQuestion(kind, noun));
+    return;
+  }
 
-  if (!pending.isDateTimeChange) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
-    return;
+  if (acceptsFreeText(kind)) {
+    const interpreted = await interpretCorrection(kind, answerText);
+    if (!("error" in interpreted)) {
+      await applyCorrection(interpreted.value);
+      return;
+    }
   }
-  const extracted = await extractDateTimeFromAnswer(answerText);
-  if (!extracted) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim"/"não", ou me diga a data/hora certa.`);
-    return;
-  }
-  const newDueAt = mergeDateTime(pending.proposedDueAt, extracted.newDate, extracted.newTime);
-  const changeText = `de ${formatDateTime(pending.previousDueAt)} pra ${formatDateTime(newDueAt)}`;
-  setPendingEditReminder(from, { ...pending, proposedDueAt: newDueAt, changeText });
-  await sendText(from, `Ok, vou remarcar o lembrete "${pending.message}": ${changeText}. Confirma? Responde "sim" ou "não".`);
+  logActivity(from, "edit_reminder", `resposta nao entendida na confirmacao de "${pending.message}"`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
 // resposta a "confirma que quer remover o orcamento de X?" -- so remove de
@@ -2763,37 +3096,131 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
   await sendText(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
 }
 
-// mesma ideia de resolveRemoveRecurringConfirmation, mas pra editar campos em vez de remover
-async function resolveEditRecurringConfirmation(from: string, pending: PendingEditRecurring, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
+// ---- gasto fixo ------------------------------------------------------------
 
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma "${pending.changeText}"? Responde "sim" ou "não".`);
+// qual campo a opcao 2 (corrigir) pergunta: o primeiro que mudou, nessa ordem
+function recurringCorrectionTarget(pending: Pick<PendingEditRecurring, "previous" | "proposedParams">): {
+  kind: CorrectionKind;
+  noun: string;
+  field: "amount" | "dayOfMonth" | "description" | "categoryId" | "paymentMethodId";
+} {
+  const p = pending.previous;
+  const n = pending.proposedParams;
+  if (n.amount !== p.amount) return { kind: "amount", noun: "valor", field: "amount" };
+  if (n.dayOfMonth !== p.dayOfMonth) return { kind: "day", noun: "dia", field: "dayOfMonth" };
+  if (n.description !== p.description) return { kind: "text", noun: "nome", field: "description" };
+  if (n.categoryId !== p.categoryId) return { kind: "text", noun: "categoria", field: "categoryId" };
+  return { kind: "text", noun: "forma de pagamento", field: "paymentMethodId" };
+}
+
+function categoryLabel(from: string, id: number | null): string {
+  return (id !== null ? getCategoryById(from, id)?.name : null) ?? "—";
+}
+
+function buildRecurringPreview(from: string, pending: Omit<PendingEditRecurring, "createdAt">): string {
+  const p = pending.previous;
+  const n = pending.proposedParams;
+  const changes: PreviewChange[] = [];
+  if (n.description !== p.description) changes.push({ label: "Nome", from: p.description, to: n.description });
+  if (n.amount !== p.amount) changes.push({ label: "Valor", from: formatBRL(p.amount), to: formatBRL(n.amount) });
+  if (n.dayOfMonth !== p.dayOfMonth) changes.push({ label: "Dia do mês", from: String(p.dayOfMonth), to: String(n.dayOfMonth) });
+  if (n.categoryId !== p.categoryId) changes.push({ label: "Categoria", from: categoryLabel(from, p.categoryId), to: categoryLabel(from, n.categoryId) });
+  if (n.paymentMethodId !== p.paymentMethodId) {
+    changes.push({ label: "Forma de pagamento", from: paymentMethodLabel(from, p.paymentMethodId), to: paymentMethodLabel(from, n.paymentMethodId) });
+  }
+  return formatEditPreview(pending.headerText, changes);
+}
+
+function buildRecurringChangeText(from: string, pending: Pick<PendingEditRecurring, "previous" | "proposedParams">): string {
+  const p = pending.previous;
+  const n = pending.proposedParams;
+  const parts: string[] = [];
+  if (n.description !== p.description) parts.push(`nome "${p.description}" → "${n.description}"`);
+  if (n.amount !== p.amount) parts.push(`valor R$${p.amount.toFixed(2)} → R$${n.amount.toFixed(2)}`);
+  if (n.categoryId !== p.categoryId) parts.push(`categoria → ${categoryLabel(from, n.categoryId)}`);
+  if (n.dayOfMonth !== p.dayOfMonth) parts.push(`dia do mês ${p.dayOfMonth} → ${n.dayOfMonth}`);
+  if (n.paymentMethodId !== p.paymentMethodId) parts.push(`forma de pagamento → ${paymentMethodLabel(from, n.paymentMethodId)}`);
+  return parts.join("; ");
+}
+
+// mesma ideia das outras confirmacoes de edicao, pra gasto fixo
+async function resolveEditRecurringConfirmation(from: string, pending: PendingEditRecurring, answerText: string) {
+  const target = recurringCorrectionTarget(pending);
+
+  const applyCorrection = async (value: CorrectionValue) => {
+    const proposedParams = { ...pending.proposedParams };
+    if (value.kind === "amount") proposedParams.amount = value.amount;
+    else if (value.kind === "day") proposedParams.dayOfMonth = value.day;
+    else if (value.kind === "text" && target.field === "description") proposedParams.description = value.text;
+    else if (value.kind === "text" && target.field === "categoryId") proposedParams.categoryId = getOrCreateCategory(from, value.text).id;
+    else if (value.kind === "text") {
+      proposedParams.paymentMethodId = autoResolvePaymentMethod(from, value.text)?.id ?? pending.proposedParams.paymentMethodId;
+    }
+    const next = { ...pending, proposedParams, awaitingCorrection: false, changeText: "" };
+    next.changeText = buildRecurringChangeText(from, next);
+    setPendingEditRecurring(from, next);
+    logActivity(from, "edit_recurring_expense", `correcao: "${pending.previous.description}": ${next.changeText}`);
+    await sendText(from, buildRecurringPreview(from, next));
+  };
+
+  if (pending.awaitingCorrection) {
+    // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
+    if (isCancelWord(answerText)) {
+      clearPendingEditRecurring(from);
+      logActivity(from, "edit_recurring_expense", `correcao de "${pending.previous.description}" cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    const interpreted = await interpretCorrection(target.kind, answerText);
+    if ("error" in interpreted) {
+      await sendText(from, correctionRetry(interpreted.error, target.kind, target.noun));
+      return;
+    }
+    await applyCorrection(interpreted.value);
     return;
   }
 
-  clearPendingEditRecurring(from);
-  if (no) {
+  const reply = classifyConfirmationReply(answerText);
+
+  if (reply === "confirm") {
+    clearPendingEditRecurring(from);
+    const updated = updateRecurringExpense(from, pending.recurringId, pending.proposedParams);
+    if (!updated) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    setPendingUndo(from, {
+      kind: "restore_recurring_expense_fields",
+      recurringId: pending.recurringId,
+      previous: pending.previous,
+      description: pending.previous.description,
+    });
+    logActivity(from, "edit_recurring_expense", `confirmado: "${updated.description}": ${pending.changeText}`);
+    await sendText(from, `✏️ Gasto fixo "${updated.description}" alterado: ${pending.changeText}`);
+    return;
+  }
+  if (reply === "cancel") {
+    clearPendingEditRecurring(from);
     logActivity(from, "edit_recurring_expense", `alteracao de "${pending.previous.description}" nao confirmada`);
     await sendText(from, "Beleza, não mexi em nada.");
     return;
   }
-
-  const updated = updateRecurringExpense(from, pending.recurringId, pending.proposedParams);
-  if (!updated) {
-    await sendText(from, "Não consegui editar esse gasto fixo.");
+  if (reply === "correct") {
+    setPendingEditRecurring(from, { ...pending, awaitingCorrection: true });
+    logActivity(from, "edit_recurring_expense", `pediu pra corrigir "${pending.previous.description}"`);
+    await sendText(from, correctionQuestion(target.kind, target.noun));
     return;
   }
-  setPendingUndo(from, {
-    kind: "restore_recurring_expense_fields",
-    recurringId: pending.recurringId,
-    previous: pending.previous,
-    description: pending.previous.description,
-  });
-  logActivity(from, "edit_recurring_expense", `confirmado: "${updated.description}": ${pending.changeText}`);
-  await sendText(from, `✏️ Gasto fixo "${updated.description}" alterado: ${pending.changeText}`);
+
+  if (acceptsFreeText(target.kind)) {
+    const interpreted = await interpretCorrection(target.kind, answerText);
+    if (!("error" in interpreted)) {
+      await applyCorrection(interpreted.value);
+      return;
+    }
+  }
+  logActivity(from, "edit_recurring_expense", `resposta nao entendida na confirmacao de "${pending.previous.description}"`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
 }
 
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
@@ -2937,7 +3364,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      setPendingCorrectCategory(from, {
+      const pendingCategory = {
         expenseId: expense.id,
         description: expense.description,
         amount: expense.amount,
@@ -2945,16 +3372,23 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         previousCategoryName: previousCategory?.name ?? "sem categoria",
         proposedCategoryId: category.id,
         proposedCategoryName: category.name,
-      });
+        awaitingCorrection: false,
+        headerText: expenseHeaderFor(from, {
+          amount: expense.amount,
+          description: expense.description,
+          date: expense.date,
+          categoryId: expense.category_id,
+          paymentMethodId: expense.payment_method_id,
+        }),
+      };
+      clearEditConfirmations(from);
+      setPendingCorrectCategory(from, pendingCategory);
       logActivity(
         from,
         "correct_category",
         `pediu confirmacao: ${expense.description} de "${previousCategory?.name ?? "sem categoria"}" pra "${category.name}"`
       );
-      await sendText(
-        from,
-        `Vou mudar a categoria de "${expense.description}" (R$${expense.amount.toFixed(2)}) de "${previousCategory?.name ?? "sem categoria"}" pra "${category.name}". Confirma? Responde "sim"/"não", ou diga a categoria certa.`
-      );
+      await sendText(from, buildCategoryPreview(pendingCategory));
       break;
     }
     case "set_default_payment": {
@@ -3038,7 +3472,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       if (interpretation.new_reminder_minutes !== undefined) changeParts.push(`aviso ${formatMinutesBefore(proposedReminderMinutes)} antes`);
       const changeText = changeParts.join("; ");
 
-      setPendingEditEvent(from, {
+      const pendingEvent = {
         eventId: event.id,
         title: event.title,
         previous: {
@@ -3054,12 +3488,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         proposedReminderMinutes,
         isDateTimeChange: hasDateTimeChange,
         changeText,
-      });
+        awaitingCorrection: false,
+        headerText: event.title,
+      };
+      clearEditConfirmations(from);
+      setPendingEditEvent(from, pendingEvent);
       logActivity(from, "edit_event", `pediu confirmacao: "${event.title}" ${changeText}`);
-      await sendText(
-        from,
-        `Vou alterar "${event.title}": ${changeText}. Confirma? Responde "sim"/"não"${hasDateTimeChange ? ", ou me diga a data/hora certa se eu errei" : ""}.`
-      );
+      await sendText(from, buildEventPreview(pendingEvent));
       break;
     }
     case "add_event_reminder": {
@@ -3204,7 +3639,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       if (interpretation.new_message) changeParts.push(`texto "${reminder.message}" → "${interpretation.new_message}"`);
       const changeText = changeParts.join("; ");
 
-      setPendingEditReminder(from, {
+      const pendingReminder = {
         reminderId: reminder.id,
         message: reminder.message,
         previousDueAt: reminder.due_at,
@@ -3212,12 +3647,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         proposedDueAt: newDueAt,
         isDateTimeChange: hasDateTimeChange,
         changeText,
-      });
+        awaitingCorrection: false,
+        headerText: reminder.message,
+      };
+      clearEditConfirmations(from);
+      setPendingEditReminder(from, pendingReminder);
       logActivity(from, "edit_reminder", `pediu confirmacao: "${reminder.message}" ${changeText}`);
-      await sendText(
-        from,
-        `Vou alterar o lembrete "${reminder.message}": ${changeText}. Confirma? Responde "sim"/"não"${hasDateTimeChange ? ", ou me diga a data/hora certa se eu errei" : ""}.`
-      );
+      await sendText(from, buildReminderPreview(pendingReminder));
       break;
     }
     case "report": {
@@ -3719,19 +4155,20 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      setPendingEditExpense(from, {
+      const pendingExpense = {
         expenseId: expense.id,
         field: interpretation.field,
         description: expense.description,
         previous: baseParams,
         proposedParams: result.params,
         changeText: result.changeText,
-      });
+        awaitingCorrection: false,
+        headerText: expenseHeaderFor(from, baseParams),
+      };
+      clearEditConfirmations(from);
+      setPendingEditExpense(from, pendingExpense);
       logActivity(from, "edit_expense", `pediu confirmacao: #${expense.id} ${expense.description}: ${result.changeText}`);
-      await sendText(
-        from,
-        `Vou alterar "${expense.description}": ${result.changeText}. Confirma? Responde "sim"/"não", ou me diga o valor certo se eu errei.`
-      );
+      await sendText(from, buildExpensePreview(from, pendingExpense));
       break;
     }
     case "set_recurring_expense": {
@@ -3858,9 +4295,18 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
 
       const changeText = changeParts.join("; ");
-      setPendingEditRecurring(from, { recurringId: recurring.id, previous, proposedParams, changeText });
+      const pendingRecurring = {
+        recurringId: recurring.id,
+        previous,
+        proposedParams,
+        changeText,
+        awaitingCorrection: false,
+        headerText: recurringHeader({ description: previous.description, amount: previous.amount, dayOfMonth: previous.dayOfMonth }),
+      };
+      clearEditConfirmations(from);
+      setPendingEditRecurring(from, pendingRecurring);
       logActivity(from, "edit_recurring_expense", `pediu confirmacao: "${recurring.description}": ${changeText}`);
-      await sendText(from, `Vou alterar o gasto fixo "${recurring.description}": ${changeText}. Confirma? Responde "sim" ou "não".`);
+      await sendText(from, buildRecurringPreview(from, pendingRecurring));
       break;
     }
     case "set_bill_alert": {

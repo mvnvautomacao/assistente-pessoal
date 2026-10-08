@@ -1,7 +1,8 @@
 // Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
 // quer mudar o lembrete X pra data/hora Y?" antes de aplicar de verdade. Mesma
 // ideia dos outros caches de conversa (pendingDeletion.ts etc).
-const TTL_MS = 5 * 60 * 1000;
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditReminder {
   reminderId: number;
@@ -13,6 +14,8 @@ export interface PendingEditReminder {
   // data/hora quando a mudanca pedida envolve data/hora.
   isDateTimeChange: boolean;
   changeText: string;
+  awaitingCorrection: boolean;
+  headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
   createdAt: number;
 }
 

@@ -1,7 +1,8 @@
 // Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
 // quer mudar X do gasto fixo Y?" antes de editar de verdade. Mesma ideia dos
 // outros caches de conversa (pendingEditExpense.ts etc).
-const TTL_MS = 5 * 60 * 1000;
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface RecurringExpenseParams {
   description: string;
@@ -16,6 +17,8 @@ export interface PendingEditRecurring {
   previous: RecurringExpenseParams;
   proposedParams: RecurringExpenseParams;
   changeText: string;
+  awaitingCorrection: boolean;
+  headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
   createdAt: number;
 }
 
