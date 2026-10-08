@@ -158,6 +158,18 @@ import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { classifyConfirmationReply, isCancelWord } from "./confirmation/classify";
+import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
+import { interpretTargetReply } from "./targetChoice/reply";
+import {
+  MAX_TARGET_CANDIDATES,
+  TARGET_GONE_TEXT,
+  TargetListHeader,
+  eventLine,
+  reminderLine,
+  expenseLine,
+  formatTargetList,
+  targetNotUnderstoodText,
+} from "./targetChoice/format";
 import { parseBrazilianAmountDetailed, parseLeadTimeMinutes, parseDayOfMonthAnswer } from "./confirmation/parsers";
 import {
   NOT_UNDERSTOOD_TEXT,
@@ -213,6 +225,7 @@ import {
   deleteCategory,
   renameCategory,
   getPaymentMethodById,
+  findExpenseCandidates,
   findPaymentMethodByName,
   findPaymentMethodMentionedIn,
   renamePaymentMethod,
@@ -577,7 +590,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // dela (responde "Beleza, nao mexi em nada." / cancela a correcao) em vez do
     // cancelamento geral; as outras saidas de emergencia (esquece, chega...) seguem iguais.
     const activeEdit = describeActiveEditConfirmation(from);
-    const deferCancelToEdit = activeEdit !== null && /^s*cancel(a|ar)s*[.!]*s*$/i.test(text);
+    const deferCancelToEdit = (activeEdit !== null || getPendingTargetChoice(from) !== null) && /^s*cancel(a|ar)s*[.!]*s*$/i.test(text);
     if (CANCEL_COMMAND.test(text) && !deferCancelToEdit) {
       const cancelled = cancelAllPendings(from);
       if (cancelled > 0) {
@@ -615,16 +628,26 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       const asCorrection =
         activeEdit !== null && acceptsFreeText(activeEdit.kind) ? await interpretCorrection(activeEdit.kind, text) : null;
       if (!asCorrection || "error" in asCorrection) {
+        const hadTargetChoice = getPendingTargetChoice(from) !== null;
         const cancelled = cancelAllPendings(from);
         if (cancelled > 0) {
           logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
           if (activeEdit) await sendText(from, `Cancelei a alteração de "${activeEdit.label}" e entendi seu novo pedido.`);
+          else if (hadTargetChoice) await sendText(from, "Cancelei a escolha anterior e entendi seu novo pedido.");
         }
       }
     }
 
     if (getPendingEditTarget(from)) {
       await resolveEditTargetChoice(from, text);
+      return;
+    }
+
+    // escolha de item (lista numerada de candidatos): checada ANTES da IA e das
+    // outras pendencias, pra "2" ser a escolha e nao outra coisa (RN10)
+    const pendingTargetChoice = getPendingTargetChoice(from);
+    if (pendingTargetChoice) {
+      await resolveTargetChoiceReply(from, pendingTargetChoice, text);
       return;
     }
 
@@ -1148,6 +1171,7 @@ function cancelAllPendings(from: string): number {
     [getPendingRemoveRecurring(from), () => clearPendingRemoveRecurring(from)],
     [getPendingEditRecurring(from), () => clearPendingEditRecurring(from)],
     [getPendingEditTarget(from) || null, () => clearPendingEditTarget(from)],
+    [getPendingTargetChoice(from), () => clearPendingTargetChoice(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
   ];
@@ -2560,6 +2584,189 @@ function parseEditFieldValue(
 // src/confirmation/classify.ts -- nenhuma regex yes/no aqui.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Escolha de alvo: quando o pedido cita um item pelo nome e ha mais de um
+// candidato, o bot manda uma lista numerada e o usuario responde so o numero --
+// o fluxo continua de onde parou (handleInterpretation com o id ja resolvido).
+// ---------------------------------------------------------------------------
+
+function targetActionVerb(action: Interpretation): string {
+  switch (action.type) {
+    case "edit_event":
+    case "edit_reminder":
+      return action.new_date || action.new_time ? "remarcar" : "editar";
+    case "delete_event":
+      return "cancelar";
+    case "delete_reminder":
+    case "delete_expense":
+      return "apagar";
+    case "add_event_reminder":
+      return "adicionar o aviso";
+    case "remove_event_reminder":
+      return "remover o aviso";
+    default:
+      return "editar";
+  }
+}
+
+function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
+  if (kind === "event") return `Não encontrei nenhum evento futuro parecido com "${query}".`;
+  if (kind === "reminder") return `Não encontrei nenhum lembrete parecido com "${query}".`;
+  const similar = query ? ` parecido com "${query}"` : "";
+  if (action.type === "delete_expense") return `Não achei nenhum gasto${query ? similar : " registrado"} pra apagar.`;
+  if (action.type === "correct_category") return `Não achei nenhum gasto recente${similar} pra corrigir.`;
+  return `Não achei nenhum gasto recente${similar} pra editar.`;
+}
+
+interface TargetSearch {
+  ids: number[];
+  lines: string[];
+  total: number;
+}
+
+// candidatos que batem com o texto (no maximo MAX_TARGET_CANDIDATES mostrados;
+// "total" diz quantos bateram de verdade, pra avisar que tem mais)
+function searchTargets(from: string, kind: TargetKind, query: string): TargetSearch {
+  let entries: { id: number; line: string }[];
+  if (kind === "event") {
+    entries = findUpcomingEvents(from, query).map((e) => ({ id: e.id, line: eventLine(e) }));
+  } else if (kind === "reminder") {
+    entries = findPendingRemindersByText(from, query).map((r) => ({ id: r.id, line: reminderLine(r) }));
+  } else {
+    entries = findExpenseCandidates(from, query).map((e) => ({
+      id: e.id,
+      line: expenseLine(e, e.payment_method_id !== null ? getPaymentMethodById(from, e.payment_method_id)?.name : null),
+    }));
+  }
+  const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
+  return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
+}
+
+function targetExists(from: string, kind: TargetKind, id: number): boolean {
+  if (kind === "event") return Boolean(getEventById(from, id));
+  if (kind === "reminder") return Boolean(getReminderById(from, id));
+  return Boolean(getExpenseById(from, id));
+}
+
+async function sendTargetList(
+  from: string,
+  kind: TargetKind,
+  action: Interpretation,
+  found: TargetSearch,
+  header: TargetListHeader
+) {
+  setPendingTargetChoice(from, { kind, action, candidateIds: found.ids });
+  logActivity(from, action.type, `${found.total} candidato(s), lista numerada enviada`);
+  await sendText(from, formatTargetList({ kind, header, verb: targetActionVerb(action), lines: found.lines, total: found.total }));
+}
+
+// Ponto de entrada unico dos 9 fluxos: devolve o id do item-alvo, ou null quando
+// ja respondeu ao usuario (nao achou nada, ou mandou a lista pra ele escolher --
+// nesse caso o fluxo continua quando ele responder, via handleInterpretation com
+// o id resolvido). "resolvedId" vem de uma escolha ja feita: so confere que o
+// item ainda existe (RN05).
+async function chooseTarget(
+  from: string,
+  kind: TargetKind,
+  action: Interpretation,
+  query: string | undefined,
+  resolvedId?: number
+): Promise<number | null> {
+  if (resolvedId !== undefined) {
+    if (!targetExists(from, kind, resolvedId)) {
+      logActivity(from, action.type, "item escolhido nao existe mais");
+      await sendText(from, TARGET_GONE_TEXT);
+      return null;
+    }
+    return resolvedId;
+  }
+
+  // gasto sem texto de busca ("muda o ultimo gasto..."): usa o mais recente, sem lista (RN08)
+  if (!query) {
+    const last = findRecentExpense(from);
+    if (!last) {
+      logActivity(from, action.type, "nenhum gasto encontrado para \"mais recente\"");
+      await sendText(from, targetNotFoundText(action, kind));
+      return null;
+    }
+    return last.id;
+  }
+
+  const found = searchTargets(from, kind, query);
+  if (found.total === 0) {
+    logActivity(from, action.type, `nenhum item encontrado para "${query}"`);
+    await sendText(from, targetNotFoundText(action, kind, query));
+    return null;
+  }
+  if (found.total === 1) return found.ids[0];
+  await sendTargetList(from, kind, action, found, { type: "found", query });
+  return null;
+}
+
+// RN07: "edita o 2" com a lista de gastos ja expirada -- nao reaproveita o numero
+// contra outra lista; oferece os ultimos gastos e continua a acao escolhida
+async function offerRecentExpensesForExpiredList(from: string, action: Interpretation) {
+  const items = getRecentExpensesList(from, MAX_TARGET_CANDIDATES);
+  if (!items.length) {
+    await sendText(from, targetNotFoundText(action, "expense"));
+    return;
+  }
+  // o numero digitado antes e descartado: a acao continua so com o gasto escolhido agora
+  const withoutListRef = { ...action, list_ref: undefined } as Interpretation;
+  await sendTargetList(
+    from,
+    "expense",
+    withoutListRef,
+    {
+      ids: items.map((i) => i.id),
+      lines: items.map((i) => expenseLine(i, i.payment_method)),
+      total: items.length,
+    },
+    { type: "expired" }
+  );
+}
+
+async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoice, answerText: string) {
+  const actionType = pending.action.type;
+  const reply = interpretTargetReply(answerText, pending.candidateIds.length);
+
+  if (reply.type === "cancel") {
+    clearPendingTargetChoice(from);
+    logActivity(from, actionType, "escolha de item cancelada");
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+  if (reply.type === "invalid") {
+    logActivity(from, actionType, "resposta nao entendida na escolha de item");
+    await sendText(from, targetNotUnderstoodText(pending.candidateIds.length));
+    return;
+  }
+  if (reply.type === "pick") {
+    clearPendingTargetChoice(from);
+    const id = pending.candidateIds[reply.index];
+    logActivity(from, actionType, `escolheu o item ${reply.index + 1} (#${id})`);
+    await handleInterpretation(from, pending.action, id);
+    return;
+  }
+
+  // refino: nova busca do mesmo tipo e da mesma acao, trocando so o texto de busca
+  const refinedAction = { ...pending.action, query: reply.query } as Interpretation;
+  const found = searchTargets(from, pending.kind, reply.query);
+  if (found.total === 0) {
+    logActivity(from, actionType, `refino "${reply.query}" nao achou nada`);
+    await sendText(from, targetNotUnderstoodText(pending.candidateIds.length));
+    return;
+  }
+  if (found.total === 1) {
+    clearPendingTargetChoice(from);
+    logActivity(from, actionType, `refino "${reply.query}" achou 1 item (#${found.ids[0]})`);
+    await handleInterpretation(from, refinedAction, found.ids[0]);
+    return;
+  }
+  logActivity(from, actionType, `refino "${reply.query}" ainda tem ${found.total} candidatos`);
+  await sendTargetList(from, pending.kind, refinedAction, found, { type: "refined", query: reply.query });
+}
+
 // confirmacao de edicao ativa pra esse numero (se houver): rotulo pra mensagens,
 // se esta em "aguardando correcao" e que tipo de valor a correcao espera
 function describeActiveEditConfirmation(from: string): { label: string; awaitingCorrection: boolean; kind: CorrectionKind } | null {
@@ -3285,7 +3492,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
   await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
 }
 
-async function handleInterpretation(from: string, interpretation: Interpretation) {
+async function handleInterpretation(from: string, interpretation: Interpretation, resolvedTargetId?: number) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
   if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense" && interpretation.type !== "total_last_list" && interpretation.type !== "delete_expense") {
@@ -3351,12 +3558,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "correct_category": {
-      const expense = findRecentExpense(from, interpretation.query);
-      if (!expense) {
-        logActivity(from, "correct_category", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
-        await sendText(from, `Não achei nenhum gasto recente${interpretation.query ? ` parecido com "${interpretation.query}"` : ""} pra corrigir.`);
-        break;
-      }
+      const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
+      if (expenseId === null) break;
+      const expense = getExpenseById(from, expenseId)!;
       const category = getOrCreateCategory(from, interpretation.category);
       const previousCategory = expense.category_id ? getCategoryById(from, expense.category_id) : null;
       if (previousCategory?.id === category.id) {
@@ -3408,38 +3612,18 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "delete_event": {
-      const matches = findUpcomingEvents(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "delete_event", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
-      } else if (matches.length === 1) {
-        const event = matches[0];
-        setPendingEventDeletion(from, event.id, event.title);
-        logActivity(from, "delete_event", `pediu confirmacao pra cancelar "${event.title}"`);
-        await sendText(
-          from,
-          `Encontrei "${event.title}" em ${formatDateTime(event.start)}. Confirma que quer cancelar? Responde "sim" ou "não".`
-        );
-      } else {
-        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
-        logActivity(from, "delete_event", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer cancelar.`);
-      }
+      const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
+      if (eventId === null) break;
+      const event = getEventById(from, eventId)!;
+      setPendingEventDeletion(from, event.id, event.title);
+      logActivity(from, "delete_event", `pediu confirmacao pra cancelar "${event.title}"`);
+      await sendText(
+        from,
+        `Encontrei "${event.title}" em ${formatDateTime(event.start)}. Confirma que quer cancelar? Responde "sim" ou "não".`
+      );
       break;
     }
     case "edit_event": {
-      const matches = findUpcomingEvents(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "edit_event", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
-        break;
-      }
-      if (matches.length > 1) {
-        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
-        logActivity(from, "edit_event", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remarcar.`);
-        break;
-      }
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
       if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined) {
         await sendText(from, "Não entendi o que mudar. Me diga o novo dia, horário, título ou a nova antecedência do aviso.");
@@ -3453,7 +3637,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      const event = matches[0];
+      const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
+      if (eventId === null) break;
+      const event = getEventById(from, eventId)!;
       // preenche so o que foi pedido -- "muda so o dia" mantem o horario
       // original, "muda so o horario" mantem a data original (ver mergeDateTime).
       // Se a edicao nem envolve data/hora (so titulo/antecedencia), NAO chama
@@ -3498,24 +3684,14 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "add_event_reminder": {
-      const matches = findUpcomingEvents(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "add_event_reminder", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
-        break;
-      }
-      if (matches.length > 1) {
-        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
-        logActivity(from, "add_event_reminder", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer adicionar o aviso.`);
-        break;
-      }
       if (interpretation.minutes_before < 0 || interpretation.minutes_before > 43200) {
         await sendText(from, "A antecedência do aviso precisa ser entre 0 (na hora) e 30 dias antes.");
         break;
       }
 
-      const event = matches[0];
+      const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
+      if (eventId === null) break;
+      const event = getEventById(from, eventId)!;
       const result = addEventExtraReminder(from, event.id, interpretation.minutes_before);
       if (!result.ok && result.reason === "duplicate") {
         await sendText(from, `"${event.title}" já tem um aviso de ${formatMinutesBefore(interpretation.minutes_before)} antes.`);
@@ -3532,20 +3708,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "remove_event_reminder": {
-      const matches = findUpcomingEvents(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "remove_event_reminder", `nenhum evento encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum evento futuro parecido com "${interpretation.query}".`);
-        break;
-      }
-      if (matches.length > 1) {
-        const list = matches.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n");
-        logActivity(from, "remove_event_reminder", `${matches.length} eventos parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um evento parecido com "${interpretation.query}":\n${list}\n\nMe diga o nome mais específico de qual quer remover o aviso.`);
-        break;
-      }
 
-      const event = matches[0];
+      const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
+      if (eventId === null) break;
+      const event = getEventById(from, eventId)!;
       const result = removeEventReminder(from, event.id, interpretation.minutes_before);
       if (!result.ok && result.reason === "not_found") {
         const current = listEventReminderMinutes(from, event.id).map(formatMinutesBefore).join(", ");
@@ -3588,38 +3754,18 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "delete_reminder": {
-      const matches = findPendingRemindersByText(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "delete_reminder", `nenhum lembrete encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum lembrete parecido com "${interpretation.query}".`);
-      } else if (matches.length === 1) {
-        const reminder = matches[0];
-        setPendingReminderDeletion(from, reminder.id, reminder.message);
-        logActivity(from, "delete_reminder", `pediu confirmacao pra apagar "${reminder.message}"`);
-        await sendText(
-          from,
-          `Encontrei o lembrete "${reminder.message}" pra ${formatDateTime(reminder.due_at)}. Confirma que quer apagar? Responde "sim" ou "não".`
-        );
-      } else {
-        const list = matches.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n");
-        logActivity(from, "delete_reminder", `${matches.length} lembretes parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um lembrete parecido com "${interpretation.query}":\n${list}\n\nMe diga o texto mais específico de qual quer apagar.`);
-      }
+      const reminderId = await chooseTarget(from, "reminder", interpretation, interpretation.query, resolvedTargetId);
+      if (reminderId === null) break;
+      const reminder = getReminderById(from, reminderId)!;
+      setPendingReminderDeletion(from, reminder.id, reminder.message);
+      logActivity(from, "delete_reminder", `pediu confirmacao pra apagar "${reminder.message}"`);
+      await sendText(
+        from,
+        `Encontrei o lembrete "${reminder.message}" pra ${formatDateTime(reminder.due_at)}. Confirma que quer apagar? Responde "sim" ou "não".`
+      );
       break;
     }
     case "edit_reminder": {
-      const matches = findPendingRemindersByText(from, interpretation.query);
-      if (matches.length === 0) {
-        logActivity(from, "edit_reminder", `nenhum lembrete encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não encontrei nenhum lembrete parecido com "${interpretation.query}".`);
-        break;
-      }
-      if (matches.length > 1) {
-        const list = matches.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n");
-        logActivity(from, "edit_reminder", `${matches.length} lembretes parecidos com "${interpretation.query}", pedi pra especificar`);
-        await sendText(from, `Achei mais de um lembrete parecido com "${interpretation.query}":\n${list}\n\nMe diga o texto mais específico de qual quer remarcar.`);
-        break;
-      }
 
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
       if (!hasDateTimeChange && !interpretation.new_message) {
@@ -3627,7 +3773,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      const reminder = matches[0];
+      const reminderId = await chooseTarget(from, "reminder", interpretation, interpretation.query, resolvedTargetId);
+      if (reminderId === null) break;
+      const reminder = getReminderById(from, reminderId)!;
       // so chama mergeDateTime quando a edicao realmente envolve data/hora --
       // ele reconstroi a string via Date, o que reformataria um horario que o
       // usuario nem pediu pra mudar (mesmo cuidado do edit_event acima).
@@ -4058,22 +4206,26 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "delete_expense": {
       let expense: ExpenseRecord | null;
-      if (interpretation.list_ref) {
+      if (resolvedTargetId !== undefined || !interpretation.list_ref) {
+        const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
+        if (expenseId === null) break;
+        expense = getExpenseById(from, expenseId)!;
+      } else {
         const ids = getLastShownExpenses(from);
-        const id = ids?.[interpretation.list_ref - 1];
+        if (ids === null) {
+          // RN07: lista expirada -- nunca aplica o numero a outra lista
+          await offerRecentExpensesForExpiredList(from, interpretation);
+          break;
+        }
+        const id = ids[interpretation.list_ref - 1];
         expense = id ? getExpenseById(from, id) : null;
         if (!expense) {
           await sendText(from, `Não sei a que gasto o número "${interpretation.list_ref}" se refere. Me pede a lista de novo, ex: "gastos de hoje".`);
           break;
         }
-      } else {
-        expense = findRecentExpense(from, interpretation.query);
-        if (!expense) {
-          logActivity(from, "delete_expense", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
-          await sendText(from, `Não achei nenhum gasto${interpretation.query ? ` parecido com "${interpretation.query}"` : " registrado"} pra apagar.`);
-          break;
-        }
       }
+      // gasto ja escolhido de uma lista (por numero ou depois de "qual deles?") nao oferece de novo "outro?"
+      const explicitTarget = resolvedTargetId !== undefined || Boolean(interpretation.list_ref) || Boolean(interpretation.query);
       const category = expense.category_id ? getCategoryById(from, expense.category_id) : null;
       setPendingDeleteExpense(from, {
         expenseId: expense.id,
@@ -4083,7 +4235,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         categoryId: expense.category_id,
         categoryName: category?.name ?? null,
         paymentMethodId: expense.payment_method_id,
-        offerChoices: !interpretation.list_ref && !interpretation.query,
+        offerChoices: !explicitTarget,
       });
       logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} R$${expense.amount.toFixed(2)} — ${expense.description}`);
       const installmentGroup = findInstallmentGroup(from, expense.id);
@@ -4099,7 +4251,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(
         from,
         `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). ${
-          interpretation.list_ref || interpretation.query ? 'Responde "sim" ou "não".' : 'Responde "sim", ou "não" se for outro (aí te mostro os últimos pra você escolher).'
+          explicitTarget ? 'Responde "sim" ou "não".' : 'Responde "sim", ou "não" se for outro (aí te mostro os últimos pra você escolher).'
         }`
       );
       break;
@@ -4119,10 +4271,34 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "edit_expense": {
+      // RN01: valida "o que mudar" ANTES de listar candidatos -- o usuario nao escolhe
+      // o item pra so depois descobrir que o pedido estava incompleto
+      const newValueText = String(interpretation.value ?? "").trim();
+      if (!newValueText) {
+        await sendText(from, 'Não entendi o que mudar. Me diga o novo valor, ex: "muda o valor do mercado pra 45".');
+        break;
+      }
+      if (interpretation.field === "amount") {
+        const parsedAmount = parseBrazilianAmountDetailed(newValueText);
+        if (!parsedAmount.ok) {
+          await sendText(from, parsedAmount.reason === "not_positive" ? "O valor precisa ser maior que R$ 0,00." : `Não entendi o valor "${newValueText}".`);
+          break;
+        }
+      }
+
       let expense: ExpenseRecord | null;
-      if (interpretation.list_ref) {
+      if (resolvedTargetId !== undefined || !interpretation.list_ref) {
+        const expenseId = await chooseTarget(from, "expense", interpretation, interpretation.query, resolvedTargetId);
+        if (expenseId === null) break;
+        expense = getExpenseById(from, expenseId)!;
+      } else {
         const ids = getLastShownExpenses(from);
-        const id = ids?.[interpretation.list_ref - 1];
+        if (ids === null) {
+          // RN07: lista expirada -- nunca aplica o numero a outra lista
+          await offerRecentExpensesForExpiredList(from, interpretation);
+          break;
+        }
+        const id = ids[interpretation.list_ref - 1];
         expense = id ? getExpenseById(from, id) : null;
         if (!expense) {
           logActivity(from, "edit_expense", `referencia "${interpretation.list_ref}" sem lista valida`);
@@ -4130,13 +4306,6 @@ async function handleInterpretation(from: string, interpretation: Interpretation
             from,
             `Não sei a que gasto o número "${interpretation.list_ref}" se refere. De qual dia são as compras que você quer editar?`
           );
-          break;
-        }
-      } else {
-        expense = findRecentExpense(from, interpretation.query);
-        if (!expense) {
-          logActivity(from, "edit_expense", `nenhum gasto encontrado para "${interpretation.query ?? "mais recente"}"`);
-          await sendText(from, `Não achei nenhum gasto recente${interpretation.query ? ` parecido com "${interpretation.query}"` : ""} pra editar.`);
           break;
         }
       }

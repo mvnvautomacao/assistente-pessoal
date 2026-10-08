@@ -417,6 +417,19 @@ export function findRecentExpense(fromNumber: string, query?: string): ExpenseRe
   return last ?? null;
 }
 
+// TODOS os gastos que batem com o texto entre os 20 mais recentes (mesma janela e
+// mesma normalizacao de findRecentExpense), mais recente primeiro -- pra o bot
+// poder perguntar qual deles quando "mercado" bate com mais de um. "limit" corta
+// quantos sao devolvidos (a janela de busca continua sendo 20).
+export function findExpenseCandidates(fromNumber: string, query: string, limit = 20): ExpenseRecord[] {
+  const target = normalize(query);
+  if (!target) return [];
+  const window = db
+    .prepare(`SELECT * FROM expenses WHERE from_number = ? ORDER BY id DESC LIMIT 20`)
+    .all(fromNumber) as unknown as ExpenseRecord[];
+  return window.filter((e) => normalize(e.description).includes(target)).slice(0, limit);
+}
+
 // categoryId aceita null pra permitir desfazer uma recategorizacao em lote que
 // tirou um gasto de "sem categoria" (ver bulk_recategorize / undo em router.ts)
 export function updateExpenseCategory(fromNumber: string, expenseId: number, categoryId: number | null) {
