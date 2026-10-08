@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
-import { listCategories, listPaymentMethods } from "../expenses/service";
+import { listCategories, listPaymentMethods, getExpenseById } from "../expenses/service";
+import { getLastShownExpenses } from "../expenses/listCache";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -428,7 +429,28 @@ const spNowFormatter = new Intl.DateTimeFormat("sv-SE", {
   second: "2-digit",
 });
 
-function buildSystemPrompt(fromNumber: string) {
+// Cada mensagem chega aqui sozinha, sem historico -- se o bot acabou de mostrar
+// uma lista numerada de gastos, a IA nao tem como saber que "muda valor de 1 para
+// 10,49" fala do item 1 dela. Esse trecho entrega o contexto (a mesma lista que o
+// router guarda em listCache pra resolver 'list_ref').
+function buildShownListContext(fromNumber: string): string {
+  const ids = getLastShownExpenses(fromNumber);
+  if (!ids || ids.length === 0) return "";
+  const lines = ids
+    .map((id, idx) => {
+      const e = getExpenseById(fromNumber, id);
+      return e ? `${idx + 1}. R$${e.amount.toFixed(2)} — ${e.description} (${e.date})` : null;
+    })
+    .filter((l): l is string => l !== null);
+  if (lines.length === 0) return "";
+  return `
+
+CONTEXTO DA CONVERSA: o usuario acabou de ver esta lista numerada de gastos (os numeros sao as referencias dele):
+${lines.join("\n")}
+Se a mensagem se referir a um desses itens por numero (ex: 'muda valor de 1 para 10,49', 'troca o valor do 1 por 10', 'edita o 2', 'apaga o 3', 'o 1 foi no pix'), use list_ref com esse numero (type=edit_expense ou delete_expense) e NUNCA classifique como unknown por falta de contexto -- o contexto e essa lista. O numero logo depois de 'de'/'do'/'o' e a referencia ao item; o numero depois de 'para'/'pra'/'por' e o novo valor.`;
+}
+
+export function buildSystemPrompt(fromNumber: string) {
   const now = spNowFormatter.format(new Date()).replace(" ", "T");
   const categoryNames = listCategories(fromNumber)
     .map((c) => c.name)
@@ -446,7 +468,7 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
 
-Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.`;
+Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.${buildShownListContext(fromNumber)}`;
 }
 
 async function classify(fromNumber: string, content: Anthropic.MessageParam["content"]): Promise<Interpretation[]> {
