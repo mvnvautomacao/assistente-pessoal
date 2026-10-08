@@ -4214,3 +4214,20 @@ test("card 4: 'editar' sem nada cadastrado, e mais de 8 itens mostra 8 e avisa q
   assert.match(list, /Tem mais opções\. Diga o nome mais específico ou \*cancelar\*\./);
   await handleIncomingMessage(evolutionMessage(N2, "cancelar"));
 });
+
+// Incidente real (556199210718): "1 e 5" respondido na LISTA de gastos (e nao no menu
+// de campos) caia em "refino" e o bot so dizia "Nao entendi".
+test("lista de itens: '1 e 5' pede um item por vez e mantem a lista", async (t) => {
+  const ML = "551100091401";
+  seed(ML);
+  const cat = getOrCreateCategory(ML, "Alimentação");
+  insertExpense({ fromNumber: ML, amount: 10, description: "Item multi lista", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(ML, "editar"));
+  await handleIncomingMessage(evolutionMessage(ML, "1"));
+  await handleIncomingMessage(evolutionMessage(ML, "1 e 5"));
+  assert.equal(sent[2].text, "Escolhe um item por vez: responde só um número de 1 a 1, ou *cancelar*. Depois eu mostro o que dá pra mudar.");
+  await handleIncomingMessage(evolutionMessage(ML, "1")); // a lista continua valendo
+  assert.match(sent[3].text, /O que você quer mudar\?/);
+  await handleIncomingMessage(evolutionMessage(ML, "cancelar"));
+});

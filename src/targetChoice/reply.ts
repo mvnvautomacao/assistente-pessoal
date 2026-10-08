@@ -6,6 +6,7 @@ import { classifyConfirmationReply, normalizeReply } from "../confirmation/class
 export type TargetReply =
   | { type: "pick"; index: number } // indice 0-based dentro dos candidatos
   | { type: "cancel" }
+  | { type: "multiple" } // "1 e 5", "1,2": mais de um numero -- a lista pede um item por vez
   | { type: "refine"; query: string }
   | { type: "invalid" };
 
@@ -37,6 +38,12 @@ export function stripLeadingArticles(text: string): string {
   return words.join(" ");
 }
 
+// "1 e 5", "1,2", "um e dois": so numeros (ou "e"), dois ou mais
+export function looksLikeMultipleNumbers(text: string): boolean {
+  const tokens = normalizeReply(text).split(" ").filter((t) => t && t !== "e");
+  return tokens.length >= 2 && tokens.every((t) => /^\d+$/.test(t) || t in NUMBER_WORDS);
+}
+
 export function interpretTargetReply(text: string, candidateCount: number): TargetReply {
   const number = parseChoiceNumber(text);
   if (number !== null) {
@@ -46,6 +53,7 @@ export function interpretTargetReply(text: string, candidateCount: number): Targ
     return { type: "invalid" };
   }
   if (classifyConfirmationReply(text) === "cancel") return { type: "cancel" };
+  if (looksLikeMultipleNumbers(text)) return { type: "multiple" };
   const query = stripLeadingArticles(text);
   return query ? { type: "refine", query } : { type: "invalid" };
 }

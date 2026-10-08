@@ -62,4 +62,10 @@ export function targetNotUnderstoodText(candidateCount: number): string {
   return `Não entendi 🤔 Responde com um número de 1 a ${candidateCount}, ou *cancelar*.`;
 }
 
+// mais de um numero na lista de itens ("1 e 5"): um item por vez
+export function targetMultipleText(candidateCount: number, thenShowsFields: boolean): string {
+  const next = thenShowsFields ? " Depois eu mostro o que dá pra mudar." : "";
+  return `Escolhe um item por vez: responde só um número de 1 a ${candidateCount}, ou *cancelar*.${next}`;
+}
+
 export const TARGET_GONE_TEXT = "Esse item não existe mais.";

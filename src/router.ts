@@ -183,6 +183,7 @@ import {
   expenseLine,
   formatTargetList,
   targetNotUnderstoodText,
+  targetMultipleText,
 } from "./targetChoice/format";
 import { parseBrazilianAmountDetailed, parseLeadTimeMinutes, parseDayOfMonthAnswer } from "./confirmation/parsers";
 import {
@@ -2786,6 +2787,11 @@ async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoi
     clearPendingTargetChoice(from);
     logActivity(from, actionType, "escolha de item cancelada");
     await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+  if (reply.type === "multiple") {
+    logActivity(from, actionType, "varios numeros na escolha de item -- pediu um por vez");
+    await sendText(from, targetMultipleText(pending.candidateIds.length, actionType.startsWith("edit_")));
     return;
   }
   if (reply.type === "invalid") {

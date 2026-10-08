@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { interpretTargetReply, parseChoiceNumber, stripLeadingArticles } from "../../src/targetChoice/reply";
+import { interpretTargetReply, looksLikeMultipleNumbers, parseChoiceNumber, stripLeadingArticles } from "../../src/targetChoice/reply";
 import {
   MAX_TARGET_CANDIDATES,
   TARGET_GONE_TEXT,
@@ -141,4 +141,15 @@ test("pendencia de escolha de alvo: uma por numero (a nova substitui), isolada e
   }
   clearPendingTargetChoice(N);
   assert.equal(getPendingTargetChoice(N), null);
+});
+
+test("interpretTargetReply: varios numeros ('1 e 5') pedem um item por vez, sem virar refino", () => {
+  for (const text of ["1 e 5", "1,5", "1 5", "um e dois", "2 e 3 e 4"]) {
+    assert.deepEqual(interpretTargetReply(text, 8), { type: "multiple" }, `"${text}"`);
+    assert.equal(looksLikeMultipleNumbers(text), true);
+  }
+  // uma palavra no meio ja e busca por texto; numero unico continua escolhendo
+  assert.deepEqual(interpretTargetReply("1 mercado", 8), { type: "refine", query: "1 mercado" });
+  assert.deepEqual(interpretTargetReply("2", 8), { type: "pick", index: 1 });
+  assert.equal(looksLikeMultipleNumbers("e"), false);
 });
