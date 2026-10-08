@@ -156,6 +156,7 @@ import {
 import { logActivity } from "./activity/service";
 import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
+import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
@@ -572,6 +573,16 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    // so a palavra "editar"/"alterar"/"ajustar"/"trocar"... sem dizer o que:
+    // pergunta o que editar (em vez de cair no "nao entendi" generico).
+    if (BARE_EDIT_COMMAND.test(text)) {
+      cancelAllPendings(from);
+      setPendingEditTarget(from);
+      logActivity(from, "help", "palavra solta de edicao -- perguntou o que editar");
+      await sendText(from, EDIT_TARGET_MENU);
+      return;
+    }
+
     // comando explicito diferente do que estava pendente: descarta a
     // pendencia (sem avisar "cancelei", ja que o usuario nem sabia que algo
     // tava pendente) e deixa cair na classificacao normal mais abaixo, como
@@ -581,6 +592,11 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       if (cancelled > 0) {
         logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
       }
+    }
+
+    if (getPendingEditTarget(from)) {
+      await resolveEditTargetChoice(from, text);
+      return;
     }
 
     let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
@@ -953,6 +969,114 @@ const CANCEL_COMMAND =
 // verdade quero outra coisa" em vez de "esquece".
 const EXPLICIT_EDIT_VERB = /\b(edita|editar|corrij[ao]|corrigir|altera|alterar|troca|trocar|muda|mudar|renomei[ae]|renomear)\b/i;
 
+// Mensagem que e SO um verbo de edicao ("editar", "alterar", "ajustar", "trocar",
+// "mudar"...), opcionalmente com "quero"/"preciso" na frente e "algo"/"uma coisa"
+// atras. Nao pega frase com mais conteudo (essas vao pra IA normalmente).
+const BARE_EDIT_COMMAND =
+  /^\s*((quero|preciso|queria|gostaria\s+de|vou|posso)\s+)?(edit(ar|a)|alter(ar|a)|ajust(ar|a)|troc(ar|a)|mud(ar|a|e)|corrig(ir|e)|modific(ar|a)|atualiz(ar|a))(\s+(algo|alguma\s+coisa|uma\s+coisa|isso|tudo|um\s+registro|um\s+item|um\s+dado))?\s*[.!?]*\s*$/i;
+
+const EDIT_TARGET_MENU =
+  'O que você quer editar?\n\n1. Gasto\n2. Categoria\n3. Forma de pagamento\n4. Evento na agenda\n5. Lembrete\n6. Conta fixa\n\nResponde com o número ou o nome (ou "cancelar").';
+
+type EditTarget = "expense" | "category" | "payment_method" | "event" | "reminder" | "bill_alert" | "recurring";
+
+function parseEditTarget(answer: string): EditTarget | null {
+  const t = answer
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toLowerCase();
+  if (/^[1-6]\D*$/.test(t)) {
+    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert"] as const)[Number(t.replace(/\D/g, "")) - 1];
+  }
+  if (/gasto\s+fixo|despesa\s+fixa|recorrente/.test(t)) return "recurring";
+  if (/conta|alerta|boleto|fatura/.test(t)) return "bill_alert";
+  if (/categori/.test(t)) return "category";
+  if (/pagamento|cartao|pix|dinheiro|credito|debito/.test(t)) return "payment_method";
+  if (/evento|agenda|compromisso|consulta|reuniao/.test(t)) return "event";
+  if (/lembrete|aviso/.test(t)) return "reminder";
+  if (/gasto|compra|despesa/.test(t)) return "expense";
+  return null;
+}
+
+// resposta ao "o que voce quer editar?": mostra o que existe daquele tipo e
+// ensina a frase pra editar -- a edicao em si segue pelos fluxos normais.
+async function resolveEditTargetChoice(from: string, answerText: string) {
+  const target = parseEditTarget(answerText);
+  if (!target) {
+    await sendText(from, `Não entendi o que você quer editar. ${EDIT_TARGET_MENU}`);
+    return;
+  }
+  clearPendingEditTarget(from);
+  logActivity(from, "help", `escolheu editar: ${target}`);
+
+  if (target === "expense") {
+    const items = getRecentExpensesList(from, 8);
+    if (!items.length) {
+      await sendText(from, "Você ainda não tem nenhum gasto registrado pra editar.");
+      return;
+    }
+    setLastShownExpenses(from, items.map((i) => i.id), "últimos gastos");
+    const lines = items.map(
+      (item, idx) => `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${item.category ?? "sem categoria"}) — ${formatDateOnly(item.date)}`
+    );
+    await sendText(
+      from,
+      `Esses são seus últimos gastos:\n\n${lines.join("\n")}\n\nDiz o número e o que mudar, ex: "muda o valor do 2 pra 45", "muda o nome do 1 pra Feira", "a forma de pagamento do 3 foi pix" ou "muda a categoria do 4 pra lazer".`
+    );
+    return;
+  }
+  if (target === "category") {
+    const categories = listCategories(from);
+    const lines = categories.length ? categories.map((c) => `• ${c.name}`).join("\n") : "(nenhuma ainda)";
+    await sendText(
+      from,
+      `Suas categorias:\n\n${lines}\n\nEx: "renomeia a categoria Mercado pra Supermercado". Pra trocar a categoria de um gasto: "muda a categoria do último gasto pra lazer".`
+    );
+    return;
+  }
+  if (target === "payment_method") {
+    const methods = listPaymentMethods(from);
+    const lines = methods.length ? methods.map((m) => `• ${m.name}`).join("\n") : "(nenhuma ainda)";
+    await sendText(
+      from,
+      `Suas formas de pagamento:\n\n${lines}\n\nEx: "renomeia o cartão nubank pra cartão roxo". Pra trocar a forma de pagamento de um gasto: "muda a forma de pagamento do último gasto pra pix".`
+    );
+    return;
+  }
+  if (target === "event") {
+    const events = listUpcomingEvents(from, 90).slice(0, 8);
+    const lines = events.length ? events.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n") : "(nenhum evento futuro)";
+    await sendText(
+      from,
+      `Seus próximos eventos:\n\n${lines}\n\nEx: "muda a consulta pra sexta às 16h", "muda o nome da consulta pra Dentista" ou "me avisa 2 horas antes da consulta".`
+    );
+    return;
+  }
+  if (target === "reminder") {
+    const reminders = getRemindersWithinDays(from, 365).slice(0, 8);
+    const lines = reminders.length ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n") : "(nenhum lembrete pendente)";
+    await sendText(from, `Seus lembretes:\n\n${lines}\n\nEx: "muda o lembrete do remédio pra amanhã às 21h" ou "o lembrete agora é Pagar o boleto".`);
+    return;
+  }
+  if (target === "bill_alert") {
+    const bills = listBillAlerts(from);
+    const lines = bills.length
+      ? bills.map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`).join("\n")
+      : "(nenhuma conta fixa cadastrada)";
+    await sendText(
+      from,
+      `Suas contas fixas (alertas):\n\n${lines}\n\nEx: "muda o alerta da água pro dia 8" ou "renomeia o alerta da luz pra Energia". Pra gastos fixos lançados sozinhos: "muda o valor do gasto fixo da academia pra 99".`
+    );
+    return;
+  }
+  const recurring = listRecurringExpenses(from);
+  const lines = recurring.length
+    ? recurring.map((r) => `• ${r.description} — R$${r.amount.toFixed(2)}, todo dia ${r.day_of_month}`).join("\n")
+    : "(nenhum gasto fixo)";
+  await sendText(from, `Seus gastos fixos:\n\n${lines}\n\nEx: "muda o valor do gasto fixo da academia pra 99,90" ou "o aluguel agora vence dia 8".`);
+}
+
 function looksLikeExplicitDifferentRequest(message: string): boolean {
   const wordCount = message.trim().split(/\s+/).filter(Boolean).length;
   return wordCount >= 5 && EXPLICIT_EDIT_VERB.test(message);
@@ -994,6 +1118,7 @@ function cancelAllPendings(from: string): number {
     [getPendingRemoveBudget(from), () => clearPendingRemoveBudget(from)],
     [getPendingRemoveRecurring(from), () => clearPendingRemoveRecurring(from)],
     [getPendingEditRecurring(from), () => clearPendingEditRecurring(from)],
+    [getPendingEditTarget(from) || null, () => clearPendingEditTarget(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
   ];

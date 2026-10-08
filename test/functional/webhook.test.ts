@@ -3072,3 +3072,72 @@ test("numero BLOQUEADO pelo admin: ignorado em silencio mesmo estando autorizado
   assert.equal(findRecentExpense(BK), null);
   assert.ok(!getRecentBlockedAttempts(100).some((b) => b.from_number === BK));
 });
+
+// Pedido do usuario: mandar so "editar" (ou alterar/ajustar/trocar...) nao pode
+// cair no "nao entendi" generico -- o bot pergunta o que editar.
+test("palavra solta de edicao ('editar', 'alterar'...) pergunta o que editar, sem chamar a IA, e a resposta mostra a lista certa", async (t) => {
+  const ET1 = "551100090970";
+  seed(ET1);
+  const cat = getOrCreateCategory(ET1, "Mercado");
+  insertExpense({ fromNumber: ET1, amount: 25, description: "pao e leite", categoryId: cat.id, paymentMethodId: null, date: today() });
+  createEvent({ fromNumber: ET1, title: "Consulta da Ana", start: nearFuture() });
+
+  const { sent } = withMocks(t); // sem queueReply: se chamasse a IA, o teste mostraria no log/assert
+  await handleIncomingMessage(evolutionMessage(ET1, "editar"));
+  assert.match(sent[0].text, /O que você quer editar/);
+  for (const opt of ["Gasto", "Categoria", "Forma de pagamento", "Evento na agenda", "Lembrete", "Conta fixa"]) assert.match(sent[0].text, new RegExp(opt));
+
+  await handleIncomingMessage(evolutionMessage(ET1, "1")); // por numero
+  assert.match(sent[1].text, /pao e leite/);
+  assert.match(sent[1].text, /muda o valor do 2 pra 45/);
+
+  await handleIncomingMessage(evolutionMessage(ET1, "Alterar")); // outra palavra
+  assert.match(sent[2].text, /O que você quer editar/);
+  await handleIncomingMessage(evolutionMessage(ET1, "o evento da agenda")); // por nome
+  assert.match(sent[3].text, /Consulta da Ana/);
+
+  for (const [word, pattern] of [
+    ["ajustar", /O que você quer editar/],
+    ["quero trocar algo", /O que você quer editar/],
+    ["Mudar!", /O que você quer editar/],
+  ] as const) {
+    await handleIncomingMessage(evolutionMessage(ET1, word));
+    assert.match(sent[sent.length - 1].text, pattern);
+    await handleIncomingMessage(evolutionMessage(ET1, "cancelar"));
+  }
+});
+
+test("palavra solta de edicao: resposta que nao e nenhuma opcao pergunta de novo, e cada opcao responde com a lista do seu tipo", async (t) => {
+  const ET2 = "551100090971";
+  seed(ET2);
+  getOrCreatePaymentMethod(ET2, "Nubank");
+  const { sent } = withMocks(t);
+
+  await handleIncomingMessage(evolutionMessage(ET2, "editar"));
+  await handleIncomingMessage(evolutionMessage(ET2, "sei la")); // nao e opcao
+  assert.match(sent[1].text, /Não entendi o que você quer editar/);
+
+  await handleIncomingMessage(evolutionMessage(ET2, "forma de pagamento"));
+  assert.match(sent[2].text, /Nubank/);
+
+  const cases: [string, RegExp][] = [
+    ["2", /Suas categorias/],
+    ["5", /Seus lembretes/],
+    ["6", /Suas contas fixas/],
+    ["gasto fixo", /Seus gastos fixos/],
+  ];
+  for (const [answer, expected] of cases) {
+    await handleIncomingMessage(evolutionMessage(ET2, "editar"));
+    await handleIncomingMessage(evolutionMessage(ET2, answer));
+    assert.match(sent[sent.length - 1].text, expected);
+  }
+});
+
+test("frase de edicao completa NAO e tratada como palavra solta (segue pra IA normal)", async (t) => {
+  const ET3 = "551100090972";
+  seed(ET3);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "help" }]);
+  await handleIncomingMessage(evolutionMessage(ET3, "editar compras"));
+  assert.doesNotMatch(sent[0].text, /O que você quer editar/);
+});
