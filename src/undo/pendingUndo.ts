@@ -43,6 +43,19 @@ export type UndoAction =
   | { kind: "recreate_reminder"; params: { toNumber: string; message: string; dueAt: string }; description: string }
   | { kind: "delete_income"; incomeId: number; description: string }
   | {
+      // editar uma entrada -- desfazer devolve os valores de antes
+      kind: "restore_income";
+      incomeId: number;
+      previous: { amount: number; description: string; date: string };
+      description: string;
+    }
+  | {
+      // apagar uma entrada -- desfazer recria com os mesmos dados (o id novo e aceitavel)
+      kind: "recreate_income";
+      params: { fromNumber: string; amount: number; description: string; date: string };
+      description: string;
+    }
+  | {
       kind: "bulk_restore_category";
       changes: { expenseId: number; previousCategoryId: number | null }[];
       description: string;

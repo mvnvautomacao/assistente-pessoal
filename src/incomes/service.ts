@@ -55,6 +55,30 @@ export function findRecentIncome(fromNumber: string, query?: string): IncomeReco
   return last ?? null;
 }
 
+// TODAS as entradas que batem com o texto entre as 20 mais recentes (mesma janela e
+// normalizacao de findRecentIncome), mais recente primeiro -- pra o bot poder
+// perguntar qual quando "salario" bate com mais de uma. "limit" corta quantas voltam.
+export function findIncomeCandidates(fromNumber: string, query: string, limit = 20): IncomeRecord[] {
+  const target = normalize(query);
+  if (!target) return [];
+  const window = db.prepare(`SELECT * FROM incomes WHERE from_number = ? ORDER BY id DESC LIMIT 20`).all(fromNumber) as unknown as IncomeRecord[];
+  return window.filter((i) => normalize(i.description).includes(target)).slice(0, limit);
+}
+
+// as N entradas mais recentes por data (desempate pelo id) -- lista do menu "editar"
+export function getRecentIncomesList(fromNumber: string, n: number): IncomeRecord[] {
+  return db
+    .prepare(`SELECT * FROM incomes WHERE from_number = ? ORDER BY date DESC, id DESC LIMIT ?`)
+    .all(fromNumber, n) as unknown as IncomeRecord[];
+}
+
+// start inclusivo, end exclusivo, ambos "YYYY-MM-DD"; da mais recente pra mais antiga
+export function listIncomesBetween(fromNumber: string, start: string, end: string): IncomeRecord[] {
+  return db
+    .prepare(`SELECT * FROM incomes WHERE from_number = ? AND date >= ? AND date < ? ORDER BY date DESC, id DESC`)
+    .all(fromNumber, start, end) as unknown as IncomeRecord[];
+}
+
 export interface IncomeSummary {
   total: number;
   count: number;

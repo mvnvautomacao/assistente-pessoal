@@ -8,6 +8,7 @@ Bot de WhatsApp que:
 - Manda relatório de gastos automático (semanal/mensal) e sob demanda
 - Edita gastos já registrados pelo WhatsApp: vários campos de uma vez ("muda o 2 pra 45 e pix") e até 5 gastos numa mensagem, sempre com prévia "antes → depois", confirmação única (1 confirmar, 2 corrigir, 3 cancelar), validação de valor/data e desfazer em um passo
 - Menu guiado de edição: dizer só "editar" (ou "edita o mercado") mostra os itens numerados e depois as opções de campo (gasto, evento, lembrete e gasto fixo); dá pra escolher vários campos ("1 e 5") e responder uma pergunta curta por campo, caindo na mesma prévia 1/2/3
+- Entradas (receitas) pelo WhatsApp: "minhas entradas" lista numerada com o total; "muda o valor do 2 pra 850" (ou "muda o salário pra 3500") edita com prévia 1/2/3, "apaga o 2" pede confirmação (1 apagar / 3 cancelar), "editar" → "Entrada" abre o menu guiado, e "desfaz isso" volta a edição ou a exclusão
 - Painel visual dos gastos em `/dashboard`
 
 ## Como funciona (visão geral)

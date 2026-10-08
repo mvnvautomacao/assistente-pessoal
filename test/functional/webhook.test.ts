@@ -36,6 +36,7 @@ import { config } from "../../src/config";
 import { setBudget, getBudget } from "../../src/expenses/budgets";
 import { setPaymentMethodLimit } from "../../src/expenses/balance";
 import { insertIncome } from "../../src/incomes/service";
+import * as incomesService from "../../src/incomes/service";
 import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents, listEventReminderMinutes, addEventExtraReminder, deleteEvent } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
@@ -4230,4 +4231,315 @@ test("lista de itens: '1 e 5' pede um item por vez e mantem a lista", async (t) 
   await handleIncomingMessage(evolutionMessage(ML, "1")); // a lista continua valendo
   assert.match(sent[3].text, /O que você quer mudar\?/);
   await handleIncomingMessage(evolutionMessage(ML, "cancelar"));
+});
+
+// ---------------------------------------------------------------------------
+// Card 5: listar, editar e apagar entradas (receitas) pelo WhatsApp
+// ---------------------------------------------------------------------------
+
+const incomeAmounts = (n: string) => incomesService.getAllIncomes(n).map((i) => i.amount);
+
+test("card 5: 'recebi 3500 de salario' continua registrando (nao vira edicao) e 'quanto recebi' segue so com o total", async (t) => {
+  const I0 = "551100091500";
+  seed(I0);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "income", amount: 3500, description: "salario", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(I0, "recebi 3500 de salario"));
+  assert.match(sent[0].text, /💵 Entrada registrada: R\$3500\.00 — salario/);
+  queueReply([{ type: "income_report", period: "month" }]);
+  await handleIncomingMessage(evolutionMessage(I0, "quanto recebi esse mes"));
+  assert.match(sent[1].text, /Total: R\$3500\.00 em 1 entrada\(s\)/);
+  assert.doesNotMatch(sent[1].text, /1\. /);
+  queueReply([{ type: "list_incomes", period: "month" }]);
+  await handleIncomingMessage(evolutionMessage(I0, "minhas entradas"));
+  assert.match(sent[2].text, /^💵 Entradas — esse mês/);
+  assert.match(sent[2].text, /1\. salario — R\$ 3\.500,00 · \d{2}\/\d{2}/);
+  assert.match(sent[2].text, /💰 Total: R\$ 3\.500,00/);
+});
+
+test("card 5: lista numerada, edita o valor do 2, saldo reflete, desfaz volta", async (t) => {
+  const I1 = "551100091501";
+  seed(I1);
+  incomesService.insertIncome({ fromNumber: I1, amount: 3000, description: "Salário", date: today() });
+  const freela = incomesService.insertIncome({ fromNumber: I1, amount: 800, description: "Freela logo", date: today() });
+  incomesService.insertIncome({ fromNumber: I1, amount: 50, description: "Reembolso", date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I1, "minhas entradas"));
+  assert.match(sent[0].text, /1\. Reembolso — R\$ 50,00 · \d{2}\/\d{2}\n2\. Freela logo — R\$ 800,00 · \d{2}\/\d{2}\n3\. Salário — R\$ 3\.000,00/);
+  assert.match(sent[0].text, /💰 Total: R\$ 3\.850,00/);
+  assert.match(sent[0].text, /Pra editar ou apagar, é só dizer, ex: "muda o valor do 2 pra 850" ou "apaga o 2"\./);
+
+  queueReply([{ type: "edit_income", list_ref: 2, changes: [{ field: "amount", value: "850" }] }]);
+  await handleIncomingMessage(evolutionMessage(I1, "muda o valor do 2 pra 850"));
+  assert.match(sent[1].text, /^✏️ Freela logo — R\$ 800,00 · \d{2}\/\d{2}\nValor: R\$ 800,00 → R\$ 850,00\n\n1 ✅ Confirmar\n2 ✏️ Corrigir\n3 ❌ Cancelar$/);
+  assert.equal(incomesService.getIncomeById(I1, freela.id)?.amount, 800); // nada gravado ate o "1"
+
+  await handleIncomingMessage(evolutionMessage(I1, "1"));
+  assert.equal(sent[2].text, '✏️ Entrada "Freela logo" atualizada: valor R$ 850,00.');
+  assert.equal(incomesService.getIncomeById(I1, freela.id)?.amount, 850);
+  const { getIncomeSummaryBetween } = incomesService;
+  assert.equal(getIncomeSummaryBetween(today(), addDaysToDateString(today(), 1), I1).total, 3900);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(I1, "desfaz isso"));
+  assert.match(sent[3].text, /desfiz a última alteração na entrada "Freela logo"/);
+  assert.equal(incomesService.getIncomeById(I1, freela.id)?.amount, 800);
+});
+
+test("card 5: apagar -- 1 apaga, 3 cancela, 2 pergunta de novo e mantem; desfaz recria", async (t) => {
+  const I2 = "551100091502";
+  seed(I2);
+  incomesService.insertIncome({ fromNumber: I2, amount: 3000, description: "Salário apagar", date: today() });
+  incomesService.insertIncome({ fromNumber: I2, amount: 800, description: "Freela apagar", date: today() });
+
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I2, "minhas entradas"));
+  queueReply([{ type: "delete_income", list_ref: 2 }]);
+  await handleIncomingMessage(evolutionMessage(I2, "apaga o 2"));
+  assert.match(sent[1].text, /^🗑️ Vou apagar a entrada: Salário apagar — R\$ 3\.000,00 · \d{2}\/\d{2}\n\n1 ✅ Apagar\n3 ❌ Cancelar$/);
+
+  await handleIncomingMessage(evolutionMessage(I2, "2"));
+  assert.equal(sent[2].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  await handleIncomingMessage(evolutionMessage(I2, "talvez"));
+  assert.equal(sent[3].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  await handleIncomingMessage(evolutionMessage(I2, "3"));
+  assert.equal(sent[4].text, "Beleza, não mexi em nada.");
+  assert.equal(incomeAmounts(I2).length, 2);
+
+  queueReply([{ type: "delete_income", query: "salario apagar" }]);
+  await handleIncomingMessage(evolutionMessage(I2, "apaga a entrada do salario"));
+  await handleIncomingMessage(evolutionMessage(I2, "1"));
+  assert.equal(sent[sent.length - 1].text, '🗑️ Entrada "Salário apagar" apagada.');
+  assert.deepEqual(incomeAmounts(I2), [800]);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(I2, "desfaz isso"));
+  assert.match(sent[sent.length - 1].text, /a entrada "Salário apagar" voltou/);
+  assert.deepEqual(incomeAmounts(I2).sort((a, b) => a - b), [800, 3000]);
+});
+
+test("card 5: por texto -- uma entrada vai direto pra previa; duas viram lista numerada", async (t) => {
+  const I3 = "551100091503";
+  seed(I3);
+  incomesService.insertIncome({ fromNumber: I3, amount: 3000, description: "Salário", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_income", query: "salario", changes: [{ field: "amount", value: "3500" }] }]);
+  await handleIncomingMessage(evolutionMessage(I3, "muda o salario pra 3500"));
+  assert.doesNotMatch(sent[0].text, /Achei/);
+  assert.match(sent[0].text, /Valor: R\$ 3\.000,00 → R\$ 3\.500,00/);
+  await handleIncomingMessage(evolutionMessage(I3, "3"));
+
+  const extra = incomesService.insertIncome({ fromNumber: I3, amount: 400, description: "Salário extra", date: today() });
+  queueReply([{ type: "edit_income", query: "salario", changes: [{ field: "amount", value: "3500" }] }]);
+  await handleIncomingMessage(evolutionMessage(I3, "muda o salario pra 3500"));
+  assert.match(sent[sent.length - 1].text, /^Achei 2 entradas com "salario":\n1\. Salário extra — R\$ 400,00 · \d{2}\/\d{2}\n2\. Salário — R\$ 3\.000,00/);
+  assert.match(sent[sent.length - 1].text, /Qual deles você quer editar\?/);
+  await handleIncomingMessage(evolutionMessage(I3, "1"));
+  assert.match(sent[sent.length - 1].text, /^✏️ Salário extra — R\$ 400,00[\s\S]*Valor: R\$ 400,00 → R\$ 3\.500,00/);
+  await handleIncomingMessage(evolutionMessage(I3, "1"));
+  assert.equal(incomesService.getIncomeById(I3, extra.id)?.amount, 3500);
+});
+
+test("card 5: lista expirada nao reaproveita o numero -- oferece as 8 ultimas entradas e continua", async (t) => {
+  const I4 = "551100091504";
+  seed(I4);
+  incomesService.insertIncome({ fromNumber: I4, amount: 100, description: "Primeira entrada", date: today() });
+  incomesService.insertIncome({ fromNumber: I4, amount: 200, description: "Segunda entrada", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_income", list_ref: 2, changes: [{ field: "amount", value: "250" }] }]);
+  await handleIncomingMessage(evolutionMessage(I4, "edita o 2 pra 250"));
+  assert.match(sent[0].text, /^Essa lista já expirou, então não vou adivinhar pelo número\. Suas últimas entradas:\n1\. Segunda entrada/);
+  await handleIncomingMessage(evolutionMessage(I4, "2"));
+  assert.match(sent[1].text, /Valor: R\$ 100,00 → R\$ 250,00/);
+  await handleIncomingMessage(evolutionMessage(I4, "3"));
+});
+
+test("card 5: gasto e entrada -- a ultima lista mostrada e a que vale para o numero", async (t) => {
+  const I5 = "551100091505";
+  seed(I5);
+  const cat = getOrCreateCategory(I5, "Alimentação");
+  incomesService.insertIncome({ fromNumber: I5, amount: 100, description: "Entrada cruzada", date: today() });
+  insertExpense({ fromNumber: I5, amount: 10, description: "Gasto cruzado", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I5, "minhas entradas"));
+  queueReply([{ type: "list_expenses", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(I5, "gastos de hoje"));
+  // a lista de entradas foi invalidada pela de gastos
+  queueReply([{ type: "delete_income", list_ref: 1 }]);
+  await handleIncomingMessage(evolutionMessage(I5, "apaga o 1"));
+  assert.match(sent[sent.length - 1].text, /Essa lista já expirou[\s\S]*Suas últimas entradas:/);
+  await handleIncomingMessage(evolutionMessage(I5, "cancelar"));
+});
+
+test("card 5: 'editar' -> Entrada (8) -> numero -> '1 e 3' -> valor e data -> previa -> aplica", async (t) => {
+  const I6 = "551100091506";
+  seed(I6);
+  incomesService.insertIncome({ fromNumber: I6, amount: 500, description: "Outra entrada guiada", date: today() });
+  const alvo = incomesService.insertIncome({ fromNumber: I6, amount: 3000, description: "Salário guiado", date: today() });
+  const { sent } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(I6, "editar"));
+  assert.match(sent[0].text, /8\. Entrada \(dinheiro que entrou\)/);
+  await handleIncomingMessage(evolutionMessage(I6, "8"));
+  assert.match(sent[1].text, /^Suas últimas entradas:\n1\. Salário guiado — R\$ 3\.000,00/);
+  await handleIncomingMessage(evolutionMessage(I6, "1"));
+  assert.match(sent[2].text, /^✏️ Salário guiado — R\$ 3\.000,00 · \d{2}\/\d{2}\nO que você quer mudar\?\n1 Valor\n2 Descrição\n3 Data\n\nPode escolher mais de um: "1 e 3"\. Ou \*cancelar\*\.$/);
+  await handleIncomingMessage(evolutionMessage(I6, "1 e 3"));
+  assert.match(sent[3].text, /^\(1 de 2\) Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(I6, "3500"));
+  assert.match(sent[4].text, /^\(2 de 2\) Qual é a data certa\?/);
+  await handleIncomingMessage(evolutionMessage(I6, "ontem"));
+  const yesterday = addDaysToDateString(today(), -1);
+  assert.match(sent[5].text, new RegExp(`Valor: R\\$ 3\\.000,00 → R\\$ 3\\.500,00\\nData: \\d{2}/\\d{2} → ${yesterday.slice(8, 10)}/${yesterday.slice(5, 7)}`));
+  await handleIncomingMessage(evolutionMessage(I6, "1"));
+  const after = incomesService.getIncomeById(I6, alvo.id)!;
+  assert.equal(after.amount, 3500);
+  assert.equal(after.date, yesterday);
+});
+
+test("card 5: 'edita a entrada do freela' sem dizer o que mudar abre o menu guiado; opcao 'Entrada' vazia avisa", async (t) => {
+  const I7 = "551100091507";
+  const I7b = "551100091508";
+  seed(I7, I7b);
+  incomesService.insertIncome({ fromNumber: I7, amount: 800, description: "Freela menu", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_income", query: "freela" }]);
+  await handleIncomingMessage(evolutionMessage(I7, "edita a entrada do freela"));
+  assert.match(sent[0].text, /^✏️ Freela menu — R\$ 800,00 · \d{2}\/\d{2}\nO que você quer mudar\?\n1 Valor\n2 Descrição\n3 Data/);
+  await handleIncomingMessage(evolutionMessage(I7, "origem"));
+  assert.match(sent[1].text, /^Qual é a nova descrição\?/);
+  await handleIncomingMessage(evolutionMessage(I7, "x".repeat(101)));
+  assert.match(sent[2].text, /muito longo \(máximo 100 caracteres\)[\s\S]*Qual é a nova descrição\?/);
+  await handleIncomingMessage(evolutionMessage(I7, "Freela logo novo"));
+  assert.match(sent[3].text, /Descrição: Freela menu → Freela logo novo/);
+  await handleIncomingMessage(evolutionMessage(I7, "3"));
+
+  await handleIncomingMessage(evolutionMessage(I7b, "editar"));
+  await handleIncomingMessage(evolutionMessage(I7b, "entrada"));
+  assert.equal(sent[sent.length - 1].text, "Você ainda não tem nenhuma entrada registrada pra editar.");
+});
+
+test("card 5: valor e data invalidos sao recusados antes da previa, sem pendencia", async (t) => {
+  const I8 = "551100091509";
+  seed(I8);
+  const e = incomesService.insertIncome({ fromNumber: I8, amount: 100, description: "Entrada valida", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const ask = async (value: string, field: "amount" | "date", text: string) => {
+    queueReply([{ type: "edit_income", query: "entrada valida", changes: [{ field, value }] }]);
+    await handleIncomingMessage(evolutionMessage(I8, text));
+    return sent[sent.length - 1].text;
+  };
+  assert.match(await ask("2000000", "amount", "muda pra 2000000"), /muito alto \(limite R\$ 1\.000\.000,00\)/);
+  assert.match(await ask("abc", "amount", "muda pra abc"), /Não entendi o valor "abc"/);
+  assert.match(await ask("0", "amount", "muda pra 0"), /maior que R\$ 0,00/);
+  assert.match(await ask("31/02", "date", "foi dia 31/02"), /Essa data não parece certa \(31\/02\//);
+  queueReply([]);
+  await handleIncomingMessage(evolutionMessage(I8, "sim"));
+  assert.equal(incomesService.getIncomeById(I8, e.id)?.amount, 100);
+});
+
+test("card 5 RN09: entrada alterada ou apagada antes do '1' nao e aplicada (edicao e exclusao)", async (t) => {
+  const I9 = "551100091510";
+  seed(I9);
+  const a = incomesService.insertIncome({ fromNumber: I9, amount: 3000, description: "Salário conf", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_income", query: "salario conf", changes: [{ field: "amount", value: "3500" }] }]);
+  await handleIncomingMessage(evolutionMessage(I9, "muda o salario conf pra 3500"));
+  incomesService.updateIncome(I9, a.id, { amount: 3200, description: "Salário conf", date: today() }); // alterada "no painel"
+  await handleIncomingMessage(evolutionMessage(I9, "1"));
+  assert.equal(sent[1].text, 'A entrada "Salário conf" mudou enquanto a gente conversava (agora está R$ 3.200,00). Me pede de novo.');
+  assert.equal(incomesService.getIncomeById(I9, a.id)?.amount, 3200);
+
+  queueReply([{ type: "delete_income", query: "salario conf" }]);
+  await handleIncomingMessage(evolutionMessage(I9, "apaga o salario conf"));
+  incomesService.updateIncome(I9, a.id, { amount: 3300, description: "Salário conf", date: today() });
+  await handleIncomingMessage(evolutionMessage(I9, "1"));
+  assert.match(sent[sent.length - 1].text, /mudou enquanto a gente conversava \(agora está R\$ 3\.300,00\)/);
+  assert.ok(incomesService.getIncomeById(I9, a.id));
+
+  queueReply([{ type: "delete_income", query: "salario conf" }]);
+  await handleIncomingMessage(evolutionMessage(I9, "apaga o salario conf"));
+  incomesService.deleteIncome(I9, a.id);
+  await handleIncomingMessage(evolutionMessage(I9, "1"));
+  assert.equal(sent[sent.length - 1].text, "Essa entrada não existe mais.");
+});
+
+test("card 5 RN10: 'muda o 1 pra 100 e apaga o 2' -- so a primeira gera pendencia", async (t) => {
+  const I10 = "551100091511";
+  seed(I10);
+  incomesService.insertIncome({ fromNumber: I10, amount: 50, description: "Entrada A rn10", date: today() });
+  incomesService.insertIncome({ fromNumber: I10, amount: 60, description: "Entrada B rn10", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I10, "minhas entradas"));
+  queueReply([
+    { type: "edit_income", list_ref: 1, changes: [{ field: "amount", value: "100" }] },
+    { type: "delete_income", list_ref: 2 },
+  ]);
+  await handleIncomingMessage(evolutionMessage(I10, "muda o 1 pra 100 e apaga o 2"));
+  assert.match(sent[1].text, /Valor: R\$ 60,00 → R\$ 100,00/);
+  assert.equal(sent[2].text, 'Deixei a alteração de "entrada 2" pra depois: confirma a de "Entrada B rn10" primeiro e me pede de novo.');
+  await handleIncomingMessage(evolutionMessage(I10, "1"));
+  assert.deepEqual(incomeAmounts(I10).sort((a, b) => a - b), [50, 100]);
+});
+
+test("card 5: lista com periodo vazio e com mais de 20 entradas", async (t) => {
+  const I11 = "551100091512";
+  const I12 = "551100091513";
+  seed(I11, I12);
+  for (let i = 1; i <= 22; i++) incomesService.insertIncome({ fromNumber: I12, amount: i, description: `Entrada lista ${i}`, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I11, "minhas entradas"));
+  assert.match(sent[0].text, /Nenhuma entrada registrada nesse período\./);
+  queueReply([{ type: "list_incomes" }]);
+  await handleIncomingMessage(evolutionMessage(I12, "minhas entradas"));
+  const text = sent[1].text;
+  assert.match(text, /20\. Entrada lista 3 —/);
+  assert.doesNotMatch(text, /21\. /);
+  assert.match(text, /Mostrando as 20 mais recentes\. Veja todas no painel: https?:\/\//);
+  assert.match(text, /💰 Total: R\$ 253,00/); // soma 1..22 (total do periodo inteiro)
+});
+
+test("card 5: entradas de outro numero nunca aparecem nem sao alteradas", async (t) => {
+  const IA = "551100091514";
+  const IB = "551100091515";
+  seed(IA, IB);
+  const bs = incomesService.insertIncome({ fromNumber: IB, amount: 999, description: "Entrada alheia", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "delete_income", query: "alheia" }]);
+  await handleIncomingMessage(evolutionMessage(IA, "apaga a entrada alheia"));
+  assert.match(sent[0].text, /Não achei nenhuma entrada parecida com "alheia"\./);
+  assert.ok(incomesService.getIncomeById(IB, bs.id));
+});
+
+test("card 5: opcao 2 (corrigir) na edicao de entrada -- escolhe qual campo; texto livre corrige valor unico", async (t) => {
+  const I20 = "551100091520";
+  seed(I20);
+  const e = incomesService.insertIncome({ fromNumber: I20, amount: 1000, description: "Entrada corrige", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_income", query: "entrada corrige", changes: [{ field: "amount", value: "1200" }, { field: "description", value: "Entrada corrigida" }] }]);
+  await handleIncomingMessage(evolutionMessage(I20, "entrada corrige 1200 e renomeia"));
+  await handleIncomingMessage(evolutionMessage(I20, "2"));
+  assert.equal(sent[1].text, "Qual você quer corrigir?\n1 Valor\n2 Descrição\n\nOu responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(I20, "9"));
+  assert.match(sent[2].text, /^Não entendi 🤔/);
+  await handleIncomingMessage(evolutionMessage(I20, "1"));
+  assert.match(sent[3].text, /Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(I20, "2000000"));
+  assert.match(sent[4].text, /muito alto[\s\S]*Qual é o valor certo\?/);
+  await handleIncomingMessage(evolutionMessage(I20, "1500"));
+  assert.match(sent[5].text, /Valor: R\$ 1\.000,00 → R\$ 1\.500,00\nDescrição: Entrada corrige → Entrada corrigida/);
+
+  // com uma mudanca so, um valor solto vira a nova previa (sem passar pelo "2")
+  queueReply([{ type: "edit_income", query: "entrada corrige", changes: [{ field: "amount", value: "1300" }] }]);
+  await handleIncomingMessage(evolutionMessage(I20, "muda a entrada corrige pra 1300"));
+  assert.match(sent[sent.length - 1].text, /Valor: R\$ 1\.000,00 → R\$ 1\.300,00/);
+  await handleIncomingMessage(evolutionMessage(I20, "1400"));
+  assert.match(sent[sent.length - 1].text, /Valor: R\$ 1\.000,00 → R\$ 1\.400,00/);
+  await handleIncomingMessage(evolutionMessage(I20, "1"));
+  assert.equal(incomesService.getIncomeById(I20, e.id)?.amount, 1400);
 });

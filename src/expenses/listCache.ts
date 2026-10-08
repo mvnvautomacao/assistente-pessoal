@@ -2,6 +2,8 @@
 // de "list_expenses" pra cada numero, pra "edita o 2" saber a quem se refere.
 // Nao precisa sobreviver a um restart nem durar muito — se o numero mandar qualquer
 // outra coisa no meio, o router invalida (ver handleInterpretation).
+import { clearLastShownIncomes } from "../incomes/listCache";
+
 const TTL_MS = 10 * 60 * 1000;
 
 interface CachedList {
@@ -13,6 +15,7 @@ interface CachedList {
 const cache = new Map<string, CachedList>();
 
 export function setLastShownExpenses(fromNumber: string, ids: number[], label?: string) {
+  clearLastShownIncomes(fromNumber); // uma lista invalida a outra
   cache.set(fromNumber, { ids, label, createdAt: Date.now() });
 }
 

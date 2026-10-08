@@ -73,8 +73,10 @@ export function correctionQuestion(kind: CorrectionKind, noun = "nome"): string 
       return "Qual é o dia do mês certo? (1 a 31) Ou responde *cancelar*.";
     case "lead":
       return "Quanto tempo antes devo avisar? (ex: 30 minutos, 2 horas, 1 dia) Ou responde *cancelar*.";
-    default:
-      return `Qual é ${noun === "categoria" || noun === "forma de pagamento" ? "a" : "o"} nov${noun === "categoria" || noun === "forma de pagamento" ? "a" : "o"} ${noun}? Ou responde *cancelar*.`;
+    default: {
+      const feminine = noun === "categoria" || noun === "forma de pagamento" || noun === "descrição";
+      return `Qual é ${feminine ? "a" : "o"} nov${feminine ? "a" : "o"} ${noun}? Ou responde *cancelar*.`;
+    }
   }
 }
 

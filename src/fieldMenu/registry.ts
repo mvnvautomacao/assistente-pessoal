@@ -3,7 +3,7 @@
 // apelidos aceitos na selecao -- acrescentar um campo no futuro (ex: "Local")
 // e so uma linha aqui.
 
-export type MenuKind = "expense" | "event" | "reminder" | "recurring";
+export type MenuKind = "expense" | "event" | "reminder" | "recurring" | "income";
 
 // como o valor de cada campo e perguntado e validado
 export type FieldQuestion = "amount" | "date" | "datetime" | "lead" | "day" | "text" | "category" | "payment_method";
@@ -23,6 +23,11 @@ export const FIELD_REGISTRY: Record<MenuKind, FieldDef[]> = {
     { key: "category", label: "Categoria", question: "category", noun: "categoria", aliases: ["categoria"] },
     { key: "date", label: "Data", question: "date", noun: "data", aliases: ["data", "dia"] },
     { key: "payment_method", label: "Pagamento", question: "payment_method", noun: "forma de pagamento", aliases: ["pagamento", "forma de pagamento"] },
+  ],
+  income: [
+    { key: "amount", label: "Valor", question: "amount", noun: "valor", aliases: ["valor", "preco"] },
+    { key: "description", label: "Descrição", question: "text", noun: "descrição", aliases: ["descricao", "nome", "origem"] },
+    { key: "date", label: "Data", question: "date", noun: "data", aliases: ["data", "dia"] },
   ],
   event: [
     { key: "datetime", label: "Dia e hora", question: "datetime", noun: "data e hora", aliases: ["dia e hora", "dia", "hora", "horario", "data", "quando"] },

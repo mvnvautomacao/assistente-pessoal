@@ -143,7 +143,44 @@ import {
 import { createBillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
 import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
-import { insertIncome, deleteIncome, getIncomeSummaryBetween } from "./incomes/service";
+import {
+  insertIncome,
+  deleteIncome,
+  updateIncome,
+  getIncomeById,
+  findRecentIncome,
+  findIncomeCandidates,
+  getRecentIncomesList,
+  listIncomesBetween,
+  getIncomeSummaryBetween,
+  IncomeRecord,
+} from "./incomes/service";
+import { setLastShownIncomes, getLastShownIncomes, clearLastShownIncomes } from "./incomes/listCache";
+import {
+  setPendingEditIncome,
+  getPendingEditIncome,
+  clearPendingEditIncome,
+  PendingEditIncome,
+  IncomeEditField,
+  IncomeParams,
+  IncomeRawChange,
+  normalizeIncomeChanges,
+} from "./incomes/pendingEditIncome";
+import { setPendingDeleteIncome, getPendingDeleteIncome, clearPendingDeleteIncome, PendingDeleteIncome } from "./incomes/pendingDeleteIncome";
+import { buildIncomeEditItem, incomeHeader } from "./incomes/editItem";
+import {
+  INCOME_DELETE_NOT_UNDERSTOOD,
+  INCOME_GONE_TEXT,
+  MAX_INCOME_LIST,
+  formatIncomeDeletePrompt,
+  formatIncomeEditPreview,
+  formatIncomeEditSuccess,
+  formatIncomeList,
+  incomeChangedText,
+  incomeCorrectionOptions,
+  incomeDeletedText,
+  incomeLine,
+} from "./confirmation/incomePreview";
 import { getRangeBalance } from "./expenses/balance";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
@@ -343,7 +380,9 @@ Exemplo: "recebi 3000 reais de salário"
 
 Pra saber quanto entrou: "quanto recebi esse mês"
 
-Pra ver o que sobrou (entradas menos gastos): "qual meu saldo esse mês"`;
+Pra ver o que sobrou (entradas menos gastos): "qual meu saldo esse mês"
+
+Pra ver as entradas numeradas: "minhas entradas". Aí é só corrigir ou apagar pelo número: "muda o valor do 2 pra 850" ou "apaga o 2". Também dá pra dizer só "editar" e escolher "Entrada". Antes de mudar ou apagar eu sempre confirmo, e se foi sem querer: "desfaz isso".`;
     case "recurring_expense":
       return `🔁 Como cadastrar um gasto fixo (que se repete todo mês):
 
@@ -745,6 +784,18 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    const pendingEditIncome = getPendingEditIncome(from);
+    if (pendingEditIncome) {
+      await resolveEditIncomeConfirmation(from, pendingEditIncome, text);
+      return;
+    }
+
+    const pendingDeleteIncome = getPendingDeleteIncome(from);
+    if (pendingDeleteIncome) {
+      await resolveDeleteIncomeConfirmation(from, pendingDeleteIncome, text);
+      return;
+    }
+
     const pendingEditEvent = getPendingEditEvent(from);
     if (pendingEditEvent) {
       await resolveEditEventConfirmation(from, pendingEditEvent, text);
@@ -879,10 +930,19 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   await processInterpretations(from, interpretations);
 }
 
-const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>(["edit_event", "edit_reminder", "edit_recurring_expense", "edit_expense", "correct_category"]);
+const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>([
+  "edit_event",
+  "edit_reminder",
+  "edit_recurring_expense",
+  "edit_expense",
+  "correct_category",
+  "edit_income",
+  "delete_income",
+]);
 
 function editRequestLabel(interpretation: Interpretation): string {
   if (interpretation.type === "edit_expense" && interpretation.list_ref) return `gasto ${interpretation.list_ref}`;
+  if ((interpretation.type === "edit_income" || interpretation.type === "delete_income") && interpretation.list_ref) return `entrada ${interpretation.list_ref}`;
   return (interpretation as { query?: string }).query || "esse item";
 }
 
@@ -1090,9 +1150,9 @@ const BARE_EDIT_COMMAND =
   /^\s*((quero|preciso|queria|gostaria\s+de|vou|posso)\s+)?(edit(ar|a)|alter(ar|a)|ajust(ar|a)|troc(ar|a)|mud(ar|a|e)|corrig(ir|e)|modific(ar|a)|atualiz(ar|a))(\s+(algo|alguma\s+coisa|uma\s+coisa|isso|tudo|um\s+registro|um\s+item|um\s+dado))?\s*[.!?]*\s*$/i;
 
 const EDIT_TARGET_MENU =
-  'O que você quer editar?\n\n1. Gasto\n2. Categoria\n3. Forma de pagamento\n4. Evento na agenda\n5. Lembrete\n6. Alerta de conta (vencimento)\n7. Gasto fixo (lançado todo mês)\n\nResponde com o número ou o nome (ou "cancelar").';
+  'O que você quer editar?\n\n1. Gasto\n2. Categoria\n3. Forma de pagamento\n4. Evento na agenda\n5. Lembrete\n6. Alerta de conta (vencimento)\n7. Gasto fixo (lançado todo mês)\n8. Entrada (dinheiro que entrou)\n\nResponde com o número ou o nome (ou "cancelar").';
 
-type EditTarget = "expense" | "category" | "payment_method" | "event" | "reminder" | "bill_alert" | "recurring";
+type EditTarget = "expense" | "category" | "payment_method" | "event" | "reminder" | "bill_alert" | "recurring" | "income";
 
 function parseEditTarget(answer: string): EditTarget | null {
   const t = answer
@@ -1100,10 +1160,11 @@ function parseEditTarget(answer: string): EditTarget | null {
     .replace(/[̀-ͯ]/g, "")
     .trim()
     .toLowerCase();
-  if (/^[1-7]\D*$/.test(t)) {
-    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert", "recurring"] as const)[Number(t.replace(/\D/g, "")) - 1];
+  if (/^[1-8]\D*$/.test(t)) {
+    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert", "recurring", "income"] as const)[Number(t.replace(/\D/g, "")) - 1];
   }
   if (/gasto\s+fixo|despesa\s+fixa|recorrente/.test(t)) return "recurring";
+  if (/entrada|entrou|receita|recebi|recebimento|salario/.test(t)) return "income";
   if (/conta|alerta|boleto|fatura/.test(t)) return "bill_alert";
   if (/categori/.test(t)) return "category";
   if (/pagamento|cartao|pix|dinheiro|credito|debito/.test(t)) return "payment_method";
@@ -1125,7 +1186,7 @@ async function resolveEditTargetChoice(from: string, answerText: string) {
   clearPendingEditTarget(from);
   logActivity(from, "help", `escolheu editar: ${target}`);
 
-  if (target === "expense" || target === "event" || target === "reminder" || target === "recurring") {
+  if (target === "expense" || target === "event" || target === "reminder" || target === "recurring" || target === "income") {
     await offerBrowseList(from, target);
     return;
   }
@@ -1190,6 +1251,8 @@ function cancelAllPendings(from: string): number {
     [getPendingDeleteCategory(from), () => clearPendingDeleteCategory(from)],
     [getPendingDeleteExpense(from), () => clearPendingDeleteExpense(from)],
     [getPendingEditExpense(from), () => clearPendingEditExpense(from)],
+    [getPendingEditIncome(from), () => clearPendingEditIncome(from)],
+    [getPendingDeleteIncome(from), () => clearPendingDeleteIncome(from)],
     [getPendingEditEvent(from), () => clearPendingEditEvent(from)],
     [getPendingEditReminder(from), () => clearPendingEditReminder(from)],
     [getPendingReminderDeletion(from), () => clearPendingReminderDeletion(from)],
@@ -2597,6 +2660,7 @@ function targetActionVerb(action: Interpretation): string {
       return "cancelar";
     case "delete_reminder":
     case "delete_expense":
+    case "delete_income":
       return "apagar";
     case "add_event_reminder":
       return "adicionar o aviso";
@@ -2613,12 +2677,17 @@ const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
   event: "Você não tem nenhum evento futuro pra editar.",
   reminder: "Você não tem nenhum lembrete pendente pra editar.",
   recurring: "Você não tem nenhum gasto fixo pra editar.",
+  income: "Você ainda não tem nenhuma entrada registrada pra editar.",
 };
 
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
   if (kind === "event") return query ? `Não encontrei nenhum evento futuro parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.event;
   if (kind === "reminder") return query ? `Não encontrei nenhum lembrete parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.reminder;
   if (kind === "recurring") return query ? `Não achei nenhum gasto fixo parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.recurring;
+  if (kind === "income") {
+    if (query) return `Não achei nenhuma entrada parecida com "${query}".`;
+    return action.type === "delete_income" ? "Você ainda não tem nenhuma entrada registrada pra apagar." : NOTHING_TO_EDIT_TEXT.income;
+  }
   const similar = query ? ` parecido com "${query}"` : "";
   if (action.type === "delete_expense") return `Não achei nenhum gasto${query ? similar : " registrado"} pra apagar.`;
   if (action.type === "correct_category") return `Não achei nenhum gasto recente${similar} pra corrigir.`;
@@ -2641,6 +2710,8 @@ function searchTargets(from: string, kind: TargetKind, query: string): TargetSea
     entries = findPendingRemindersByText(from, query).map((r) => ({ id: r.id, line: reminderLine(r) }));
   } else if (kind === "recurring") {
     entries = findActiveRecurringCandidates(from, query).map((r) => ({ id: r.id, line: recurringLine(r) }));
+  } else if (kind === "income") {
+    entries = findIncomeCandidates(from, query).map((i) => ({ id: i.id, line: incomeLine(i) }));
   } else {
     entries = findExpenseCandidates(from, query).map((e) => ({
       id: e.id,
@@ -2657,6 +2728,7 @@ function browseTargets(from: string, kind: TargetKind): TargetSearch {
   if (kind === "event") entries = listUpcomingEvents(from, 90).map((e) => ({ id: e.id, line: eventLine(e) }));
   else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
+  else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: incomeLine(i) }));
   else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
   const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
   return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
@@ -2667,6 +2739,7 @@ function emptyEditAction(kind: TargetKind): Interpretation {
   if (kind === "event") return { type: "edit_event", query: "" };
   if (kind === "reminder") return { type: "edit_reminder", query: "" };
   if (kind === "recurring") return { type: "edit_recurring_expense", query: "" };
+  if (kind === "income") return { type: "edit_income" };
   return { type: "edit_expense" };
 }
 
@@ -2686,6 +2759,7 @@ function targetExists(from: string, kind: TargetKind, id: number): boolean {
   if (kind === "event") return Boolean(getEventById(from, id));
   if (kind === "reminder") return Boolean(getReminderById(from, id));
   if (kind === "recurring") return Boolean(getRecurringExpenseById(from, id)?.active);
+  if (kind === "income") return Boolean(getIncomeById(from, id));
   return Boolean(getExpenseById(from, id));
 }
 
@@ -2723,8 +2797,8 @@ async function chooseTarget(
   }
 
   // gasto sem texto de busca ("muda o ultimo gasto..."): usa o mais recente, sem lista (RN08)
-  if (!query && kind === "expense") {
-    const last = findRecentExpense(from);
+  if (!query && (kind === "expense" || kind === "income")) {
+    const last = kind === "income" ? findRecentIncome(from) : findRecentExpense(from);
     if (!last) {
       logActivity(from, action.type, "nenhum gasto encontrado para \"mais recente\"");
       await sendText(from, targetNotFoundText(action, kind));
@@ -2832,6 +2906,10 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
   if (menu) return { label: menu.label, awaitingCorrection: menu.stage === "ask_value", kind: "text" };
   const expense = getPendingEditExpense(from);
   if (expense) return { label: expenseEditLabel(expense.items), awaitingCorrection: expense.awaitingCorrection, kind: expenseEditKind(expense) };
+  const income = getPendingEditIncome(from);
+  if (income) return { label: income.description, awaitingCorrection: income.awaitingCorrection, kind: incomeEditKind(income) };
+  const incomeDeletion = getPendingDeleteIncome(from);
+  if (incomeDeletion) return { label: incomeDeletion.snapshot.description, awaitingCorrection: false, kind: "text" };
   const event = getPendingEditEvent(from);
   if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventCorrectionKind(event) };
   const reminder = getPendingEditReminder(from);
@@ -2847,6 +2925,8 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
 function clearEditConfirmations(from: string) {
   clearPendingFieldMenu(from);
   clearPendingEditExpense(from);
+  clearPendingEditIncome(from);
+  clearPendingDeleteIncome(from);
   clearPendingEditEvent(from);
   clearPendingEditReminder(from);
   clearPendingEditRecurring(from);
@@ -2902,6 +2982,7 @@ function acceptsFreeText(kind: CorrectionKind): boolean {
 // ---------------------------------------------------------------------------
 
 const MENU_ACTIVITY: Record<MenuKind, string> = {
+  income: "edit_income",
   expense: "edit_expense",
   event: "edit_event",
   reminder: "edit_reminder",
@@ -2913,6 +2994,10 @@ function fieldMenuHeader(from: string, kind: MenuKind, itemId: number): { header
   if (kind === "expense") {
     const expense = getExpenseById(from, itemId);
     return expense ? { header: headerFor(from, expenseParamsOf(expense)), label: expense.description } : null;
+  }
+  if (kind === "income") {
+    const income = getIncomeById(from, itemId);
+    return income ? { header: incomeHeader(incomeParamsOf(income)), label: income.description } : null;
   }
   if (kind === "event") {
     const event = getEventById(from, itemId);
@@ -2956,7 +3041,13 @@ async function dispatchFieldMenuEdit(from: string, pending: PendingFieldMenu) {
   const c = pending.collected;
   const dateTime = c.datetime as DateTimeAnswer | undefined;
   let action: Interpretation;
-  if (pending.kind === "expense") {
+  if (pending.kind === "income") {
+    const changes = pending.queue.map((key) => {
+      const value = c[key];
+      return { field: key as IncomeEditField, value: key === "amount" ? String(value).replace(".", ",") : String(value) };
+    });
+    action = { type: "edit_income", changes };
+  } else if (pending.kind === "expense") {
     const changes = pending.queue.map((key) => {
       const value = c[key];
       // valor em formato brasileiro ("45,9"), igual ao que o usuario digitaria
@@ -3056,6 +3147,260 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
   }
   clearPendingFieldMenu(from);
   await dispatchFieldMenuEdit(from, { ...pending, collected });
+}
+
+// ---- entradas (receitas) -----------------------------------------------------
+// Espelha o fluxo dos gastos: lista numerada, edicao com previa 1/2/3 (um item,
+// ate 3 campos), exclusao com "1 apagar / 3 cancelar" e desfazer dos dois.
+
+const INCOME_FIELD_NOUN: Record<IncomeEditField, string> = { amount: "valor", description: "descrição", date: "data" };
+
+function incomeParamsOf(income: IncomeRecord): IncomeParams {
+  return { amount: income.amount, description: income.description, date: income.date };
+}
+
+function incomeChangedSince(current: IncomeRecord, previous: IncomeParams): boolean {
+  return current.amount !== previous.amount || current.description !== previous.description || current.date !== previous.date;
+}
+
+// RN03(d): "edita o 2" com a lista de entradas expirada -- nao reaproveita o numero
+// contra outra lista; oferece as 8 ultimas entradas e continua a acao escolhida
+async function offerRecentIncomesForExpiredList(from: string, action: Interpretation) {
+  const items = getRecentIncomesList(from, MAX_TARGET_CANDIDATES);
+  if (!items.length) {
+    await sendText(from, NOTHING_TO_EDIT_TEXT.income);
+    return;
+  }
+  const withoutListRef = { ...action, list_ref: undefined } as Interpretation;
+  await sendTargetList(from, "income", withoutListRef, { ids: items.map((i) => i.id), lines: items.map(incomeLine), total: items.length }, { type: "expired" });
+}
+
+// acha a entrada de um pedido de edicao/exclusao: numero da lista, texto (Card 2) ou "a ultima"
+async function resolveIncomeTarget(
+  from: string,
+  interpretation: Extract<Interpretation, { type: "edit_income" | "delete_income" }>,
+  resolvedTargetId?: number
+): Promise<IncomeRecord | null> {
+  if (resolvedTargetId !== undefined || !interpretation.list_ref) {
+    const incomeId = await chooseTarget(from, "income", interpretation, interpretation.query, resolvedTargetId);
+    return incomeId === null ? null : getIncomeById(from, incomeId);
+  }
+  const ids = getLastShownIncomes(from);
+  if (ids === null) {
+    await offerRecentIncomesForExpiredList(from, interpretation);
+    return null;
+  }
+  const id = ids[interpretation.list_ref - 1];
+  const income = id ? getIncomeById(from, id) : null;
+  if (!income) {
+    logActivity(from, interpretation.type, `referencia "${interpretation.list_ref}" sem lista valida`);
+    await sendText(from, `Não sei a que entrada o número "${interpretation.list_ref}" se refere. Me pede a lista de novo, ex: "minhas entradas".`);
+    return null;
+  }
+  return income;
+}
+
+// monta a previa (valida tudo) e so entao guarda a pendencia e pergunta 1/2/3
+async function startIncomeEdit(from: string, income: IncomeRecord, rawChanges: IncomeRawChange[]) {
+  const previous = incomeParamsOf(income);
+  const built = await buildIncomeEditItem(previous, rawChanges);
+  if (!built.ok) {
+    logActivity(from, "edit_income", built.error);
+    await sendText(from, built.error);
+    return;
+  }
+  if (built.views.length === 0) {
+    logActivity(from, "edit_income", "pedido sem nenhuma mudanca real");
+    await sendText(from, NO_CHANGE_TEXT);
+    return;
+  }
+  const headerText = incomeHeader(previous);
+  clearEditConfirmations(from);
+  setPendingEditIncome(from, {
+    incomeId: income.id,
+    description: income.description,
+    headerText,
+    previous,
+    proposed: built.proposed,
+    rawChanges: built.rawChanges,
+    views: built.views,
+    awaitingCorrection: false,
+    correctionStage: "pick",
+    correctionTarget: null,
+  });
+  logActivity(from, "edit_income", `pediu confirmacao: #${income.id} ${income.description}: ${built.views.map((v) => `${v.label} ${v.from} -> ${v.to}`).join(", ")}`);
+  await sendText(from, formatIncomeEditPreview(headerText, built.views));
+}
+
+// refaz a previa com um novo valor pra um campo. Devolve false (e ja respondeu o motivo) se nao serviu.
+async function applyIncomeCorrection(from: string, pending: PendingEditIncome, field: IncomeEditField, rawValue: string): Promise<boolean> {
+  const noun = INCOME_FIELD_NOUN[field];
+  const kind = expenseFieldKind(field);
+  const value = rawValue.trim();
+  if (!value) {
+    await sendText(from, correctionRetry("Não recebi nada.", kind, noun));
+    return false;
+  }
+  // o campo corrigido mantem a posicao que tinha na previa
+  const rawChanges = pending.rawChanges.some((c) => c.field === field)
+    ? pending.rawChanges.map((c) => (c.field === field ? { field, value } : c))
+    : [...pending.rawChanges, { field, value }];
+  const built = await buildIncomeEditItem(pending.previous, rawChanges);
+  if (!built.ok) {
+    await sendText(from, correctionRetry(built.error, kind, noun));
+    return false;
+  }
+  if (built.views.length === 0) {
+    clearPendingEditIncome(from);
+    logActivity(from, "edit_income", "correcao deixou tudo como estava");
+    await sendText(from, NO_CHANGE_TEXT);
+    return true;
+  }
+  setPendingEditIncome(from, {
+    ...pending,
+    proposed: built.proposed,
+    rawChanges: built.rawChanges,
+    views: built.views,
+    awaitingCorrection: false,
+    correctionStage: "pick",
+    correctionTarget: null,
+  });
+  logActivity(from, "edit_income", `correcao: #${pending.incomeId} ${noun} -> ${value}`);
+  await sendText(from, formatIncomeEditPreview(pending.headerText, built.views));
+  return true;
+}
+
+function incomeEditKind(pending: Pick<PendingEditIncome, "views" | "correctionTarget">): CorrectionKind {
+  if (pending.correctionTarget) return expenseFieldKind(pending.correctionTarget);
+  if (pending.views.length === 1) return expenseFieldKind(pending.views[0].field);
+  return "text";
+}
+
+async function confirmIncomeEdit(from: string, pending: PendingEditIncome) {
+  clearPendingEditIncome(from);
+  const current = getIncomeById(from, pending.incomeId);
+  if (!current) {
+    logActivity(from, "edit_income", `#${pending.incomeId} nao existe mais`);
+    await sendText(from, INCOME_GONE_TEXT);
+    return;
+  }
+  if (incomeChangedSince(current, pending.previous)) {
+    logActivity(from, "edit_income", `#${pending.incomeId} mudou durante a confirmacao`);
+    await sendText(from, incomeChangedText(pending.description, current.amount));
+    return;
+  }
+  updateIncome(from, pending.incomeId, pending.proposed);
+  setPendingUndo(from, { kind: "restore_income", incomeId: pending.incomeId, previous: pending.previous, description: pending.description });
+  logActivity(from, "edit_income", `confirmado: #${pending.incomeId} ${pending.description}`);
+  await sendText(from, formatIncomeEditSuccess(pending.description, pending.views));
+}
+
+async function resolveEditIncomeConfirmation(from: string, pending: PendingEditIncome, answerText: string) {
+  if (pending.awaitingCorrection) {
+    // so a palavra "cancelar" cancela durante a correcao; o resto e a resposta
+    if (isCancelWord(answerText)) {
+      clearPendingEditIncome(from);
+      logActivity(from, "edit_income", `correcao de ${pending.description} cancelada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+      return;
+    }
+    if (pending.correctionStage === "pick") {
+      const options = incomeCorrectionOptions(pending.views);
+      const trimmed = answerText.trim();
+      const picked = /^\d+$/.test(trimmed) ? options[Number(trimmed) - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionPicker(options)}`);
+        return;
+      }
+      const field = picked.field as IncomeEditField;
+      setPendingEditIncome(from, { ...pending, correctionStage: "value", correctionTarget: field });
+      await sendText(from, correctionQuestion(expenseFieldKind(field), INCOME_FIELD_NOUN[field]));
+      return;
+    }
+    await applyIncomeCorrection(from, pending, pending.correctionTarget!, answerText);
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+  if (reply === "confirm") {
+    await confirmIncomeEdit(from, pending);
+    return;
+  }
+  if (reply === "cancel") {
+    clearPendingEditIncome(from);
+    logActivity(from, "edit_income", `edicao de ${pending.description} nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+  if (reply === "correct") {
+    const options = incomeCorrectionOptions(pending.views);
+    if (options.length === 1) {
+      const field = options[0].field as IncomeEditField;
+      setPendingEditIncome(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: field });
+      await sendText(from, correctionQuestion(expenseFieldKind(field), INCOME_FIELD_NOUN[field]));
+    } else {
+      setPendingEditIncome(from, { ...pending, awaitingCorrection: true, correctionStage: "pick", correctionTarget: null });
+      await sendText(from, formatCorrectionPicker(options));
+    }
+    return;
+  }
+
+  // texto livre: so com 1 mudanca de valor ou data (o resto nunca vira novo valor sozinho)
+  const kind = incomeEditKind(pending);
+  if (acceptsFreeText(kind)) {
+    const field = pending.views[0].field;
+    let value: string | null = null;
+    if (kind === "amount") {
+      const parsedAmount = parseBrazilianAmountDetailed(answerText);
+      if (parsedAmount.ok || parsedAmount.reason === "not_positive") value = answerText;
+    } else {
+      const parsed = parseExpenseDate(answerText, spDateString());
+      if (parsed.ok || parsed.reason !== "unrecognized") value = answerText;
+      else {
+        const extracted = await extractDateTimeFromAnswer(answerText);
+        value = extracted?.newDate ?? null;
+      }
+    }
+    if (value !== null) {
+      const applied = await applyIncomeCorrection(from, pending, field, value);
+      if (!applied) setPendingEditIncome(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: field });
+      return;
+    }
+  }
+  logActivity(from, "edit_income", `resposta nao entendida na confirmacao de ${pending.description}`);
+  await sendText(from, NOT_UNDERSTOOD_TEXT);
+}
+
+// exclusao: "1 apagar / 3 cancelar"; qualquer outra coisa (inclusive "2") pergunta de novo
+async function resolveDeleteIncomeConfirmation(from: string, pending: PendingDeleteIncome, answerText: string) {
+  const reply = classifyConfirmationReply(answerText);
+  const description = pending.snapshot.description;
+  if (reply === "cancel") {
+    clearPendingDeleteIncome(from);
+    logActivity(from, "delete_income", `exclusao de "${description}" nao confirmada`);
+    await sendText(from, "Beleza, não mexi em nada.");
+    return;
+  }
+  if (reply !== "confirm") {
+    logActivity(from, "delete_income", `resposta nao entendida na confirmacao de "${description}"`);
+    await sendText(from, INCOME_DELETE_NOT_UNDERSTOOD);
+    return;
+  }
+  clearPendingDeleteIncome(from);
+  const current = getIncomeById(from, pending.incomeId);
+  if (!current) {
+    await sendText(from, INCOME_GONE_TEXT);
+    return;
+  }
+  if (incomeChangedSince(current, pending.snapshot)) {
+    logActivity(from, "delete_income", `#${pending.incomeId} mudou durante a confirmacao`);
+    await sendText(from, incomeChangedText(description, current.amount));
+    return;
+  }
+  deleteIncome(from, pending.incomeId);
+  setPendingUndo(from, { kind: "recreate_income", params: { fromNumber: from, ...pending.snapshot }, description });
+  logActivity(from, "delete_income", `apagada: #${pending.incomeId} ${description}`);
+  await sendText(from, incomeDeletedText(description));
 }
 
 // ---- gasto(s) ------------------------------------------------------------
@@ -3913,6 +4258,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
   // pedido no meio invalida essa referencia por numero
   if (interpretation.type !== "list_expenses" && interpretation.type !== "edit_expense" && interpretation.type !== "total_last_list" && interpretation.type !== "delete_expense") {
     clearLastShownExpenses(from);
+  }
+
+  // idem pra lista de entradas: so list_incomes/edit_income/delete_income a mantem
+  if (interpretation.type !== "list_incomes" && interpretation.type !== "edit_income" && interpretation.type !== "delete_income") {
+    clearLastShownIncomes(from);
   }
 
   switch (interpretation.type) {
@@ -4951,6 +5301,60 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       await sendText(from, `💵 Entrada registrada: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
       break;
     }
+    case "list_incomes": {
+      const range = interpretation.days
+        ? lastNDaysRange(interpretation.days)
+        : interpretation.period === "week"
+          ? currentWeekRange()
+          : currentMonthRange();
+      const all = listIncomesBetween(from, range.start, range.end);
+      if (!all.length) {
+        logActivity(from, "list_incomes", `nenhuma entrada em ${range.label}`);
+        await sendText(from, `💵 Entradas — ${range.label}\n\nNenhuma entrada registrada nesse período.`);
+        break;
+      }
+      const shown = all.slice(0, MAX_INCOME_LIST);
+      const summary = getIncomeSummaryBetween(range.start, range.end, from);
+      setLastShownIncomes(from, shown.map((i) => i.id), range.label);
+      logActivity(from, "list_incomes", `${all.length} entrada(s) em ${range.label}`);
+      await sendText(
+        from,
+        formatIncomeList({ label: range.label, items: shown, total: summary.total, totalCount: all.length, dashboardUrl: config.dashboardUrl })
+      );
+      break;
+    }
+    case "edit_income": {
+      const rawChanges = normalizeIncomeChanges(interpretation);
+      const problem = earlyEditError(rawChanges);
+      if (problem) {
+        await sendText(from, problem);
+        break;
+      }
+      // sem dizer o que mudar nem qual entrada ("editar entrada"): lista as entradas pra escolher
+      if (rawChanges.length === 0 && !interpretation.list_ref && !interpretation.query && resolvedTargetId === undefined) {
+        await offerBrowseList(from, "income");
+        break;
+      }
+      const income = await resolveIncomeTarget(from, interpretation, resolvedTargetId);
+      if (!income) break;
+      // sem mudanca explicita abre o menu de campos
+      if (rawChanges.length === 0) {
+        await openFieldMenu(from, "income", income.id);
+        break;
+      }
+      await startIncomeEdit(from, income, rawChanges);
+      break;
+    }
+    case "delete_income": {
+      const income = await resolveIncomeTarget(from, interpretation, resolvedTargetId);
+      if (!income) break;
+      const snapshot = incomeParamsOf(income);
+      clearEditConfirmations(from);
+      setPendingDeleteIncome(from, { incomeId: income.id, snapshot });
+      logActivity(from, "delete_income", `pediu confirmacao: #${income.id} ${income.description}`);
+      await sendText(from, formatIncomeDeletePrompt(incomeHeader(snapshot)));
+      break;
+    }
     case "income_report": {
       const range = interpretation.days
         ? lastNDaysRange(interpretation.days)
@@ -5086,6 +5490,19 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           deleteIncome(from, undo.incomeId);
           logActivity(from, "undo", `entrada removida: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, desfiz: entrada de ${undo.description} removida.`);
+          break;
+        case "restore_income":
+          if (!updateIncome(from, undo.incomeId, undo.previous)) {
+            await sendText(from, INCOME_GONE_TEXT);
+            break;
+          }
+          logActivity(from, "undo", `entrada revertida: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz a última alteração na entrada "${undo.description}".`);
+          break;
+        case "recreate_income":
+          insertIncome(undo.params);
+          logActivity(from, "undo", `entrada recriada: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, a entrada "${undo.description}" voltou.`);
           break;
         case "bulk_restore_category":
           for (const change of undo.changes) updateExpenseCategory(from, change.expenseId, change.previousCategoryId);
