@@ -1,9 +1,10 @@
-// Cache curto e em memoria: o usuario pediu uma acao citando um item pelo nome e
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): o usuario pediu uma acao citando um item pelo nome e
 // houve mais de um candidato -- o bot mandou a lista numerada e espera o numero.
 // Guarda a interpretacao ORIGINAL (pra continuar exatamente de onde parou, sem o
 // usuario reescrever o pedido) e os ids dos candidatos mostrados.
 import type { Interpretation } from "../ai/interpret";
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import { clearPending, getPending, setPending } from "../pending/store";
 
 export type TargetKind = "event" | "reminder" | "expense" | "recurring" | "income" | "reminder_sent";
 
@@ -14,23 +15,18 @@ export interface PendingTargetChoice {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingTargetChoice>();
+const KIND = "target_choice";
+const VERSION = 1;
 
-// no maximo uma escolha de alvo por numero: criar outra substitui a anterior
 export function setPendingTargetChoice(fromNumber: string, data: Omit<PendingTargetChoice, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: "lista de opções", ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingTargetChoice(fromNumber: string): PendingTargetChoice | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > EDIT_PENDING_TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingTargetChoice, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingTargetChoice(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

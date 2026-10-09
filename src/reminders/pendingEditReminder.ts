@@ -1,7 +1,8 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer mudar o lembrete X pra data/hora Y?" antes de aplicar de verdade. Mesma
 // ideia dos outros caches de conversa (pendingDeletion.ts etc).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import { clearPending, getPending, setPending } from "../pending/store";
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditReminder {
@@ -22,22 +23,18 @@ export interface PendingEditReminder {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingEditReminder>();
+const KIND = "edit_reminder";
+const VERSION = 1;
 
 export function setPendingEditReminder(fromNumber: string, data: Omit<PendingEditReminder, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.message, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingEditReminder(fromNumber: string): PendingEditReminder | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingEditReminder, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingEditReminder(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

@@ -1,9 +1,10 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer mudar o evento X?" antes de aplicar de verdade. Mesma ideia dos outros
 // caches de conversa (pendingDeletion.ts etc). O que muda de fato (Quando,
 // Termino, Nome, Local, Aviso) e calculado de previous x proposed (ver editPlan.ts).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import type { EndSpec, EventChangeKey, EventSnapshot } from "./editPlan";
+import { clearPending, getPending, setPending } from "../pending/store";
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditEvent {
@@ -24,22 +25,18 @@ export interface PendingEditEvent {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingEditEvent>();
+const KIND = "edit_event";
+const VERSION = 1;
 
 export function setPendingEditEvent(fromNumber: string, data: Omit<PendingEditEvent, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.title, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingEditEvent(fromNumber: string): PendingEditEvent | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingEditEvent, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingEditEvent(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

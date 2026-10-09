@@ -1,7 +1,8 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer mudar X do gasto fixo Y?" antes de editar de verdade. Mesma ideia dos
 // outros caches de conversa (pendingEditExpense.ts etc).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import { clearPending, getPending, setPending } from "../pending/store";
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface RecurringExpenseParams {
@@ -25,22 +26,18 @@ export interface PendingEditRecurring {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingEditRecurring>();
+const KIND = "edit_recurring";
+const VERSION = 1;
 
 export function setPendingEditRecurring(fromNumber: string, data: Omit<PendingEditRecurring, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.previous.description, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingEditRecurring(fromNumber: string): PendingEditRecurring | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingEditRecurring, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingEditRecurring(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

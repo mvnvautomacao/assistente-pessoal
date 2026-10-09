@@ -397,6 +397,23 @@ if (!paymentMethodColumns.some((c) => c.name === "credit_limit")) {
   db.exec(`ALTER TABLE payment_methods ADD COLUMN credit_limit REAL`);
 }
 
+// Estado de conversa que precisa sobreviver a reinicio (confirmacoes de edicao, escolha
+// de item, menu guiado, desfazer) -- ver src/pending/store.ts. Uma linha por (numero, tipo).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pending_state (
+    from_number      TEXT    NOT NULL,
+    kind             TEXT    NOT NULL,
+    payload          TEXT    NOT NULL,
+    version          INTEGER NOT NULL DEFAULT 1,
+    label            TEXT,
+    created_at       INTEGER NOT NULL,
+    expires_at       INTEGER NOT NULL,
+    expired_notified INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (from_number, kind)
+  );
+  CREATE INDEX IF NOT EXISTS idx_pending_state_expires ON pending_state(expires_at);
+`);
+
 // client_billing existia antes da coluna plan ser adicionada.
 const clientBillingColumns = db.prepare(`PRAGMA table_info(client_billing)`).all() as { name: string }[];
 if (clientBillingColumns.length && !clientBillingColumns.some((c) => c.name === "plan")) {

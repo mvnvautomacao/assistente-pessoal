@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { clearAllPending } from "../pending/store";
 import { isNumberBlocked } from "./blocklist";
 
 export interface AllowedNumber {
@@ -22,6 +23,7 @@ export function allowNumber(fromNumber: string, note?: string) {
 
 export function revokeNumber(fromNumber: string): boolean {
   const result = db.prepare(`DELETE FROM allowed_numbers WHERE from_number = ?`).run(fromNumber);
+  clearAllPending(fromNumber); // acesso revogado: nada de conversa pendente sobra
   return result.changes > 0;
 }
 

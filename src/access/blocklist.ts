@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { clearAllPending } from "../pending/store";
 
 export interface BlockedNumber {
   from_number: string;
@@ -20,6 +21,7 @@ export function blockNumber(fromNumber: string, note?: string) {
      ON CONFLICT(from_number) DO UPDATE SET note = excluded.note`
   ).run(fromNumber, note ?? null);
   db.prepare(`DELETE FROM allowed_numbers WHERE from_number = ?`).run(fromNumber);
+  clearAllPending(fromNumber); // nada de conversa pendente (confirmacoes, desfazer) sobra pra um numero bloqueado
 }
 
 // Desbloquear NAO autoriza de volta: o numero volta pro estado "nao

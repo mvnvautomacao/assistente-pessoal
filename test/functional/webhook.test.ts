@@ -41,6 +41,8 @@ import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents, listEventReminderMinutes, addEventExtraReminder, deleteEvent } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
 import * as eventsService from "../../src/events/service";
+import { db } from "../../src/db";
+import { setPending } from "../../src/pending/store";
 import * as remindersService from "../../src/reminders/service";
 import { listRecurringExpenses, createRecurringExpense, getRecurringExpenseById } from "../../src/expenses/recurring";
 import { listBillAlerts, getBillAlertById, createBillAlert } from "../../src/bills/service";
@@ -2469,7 +2471,7 @@ test("event: mensagem so com data (sem hora) ainda cria o evento corretamente", 
   queueReply([{ type: "event", title: "consulta sem hora", start: d }]);
   await handleIncomingMessage(evolutionMessage(EV2, "adicionar consulta sem hora dia 20"));
   assert.match(sent[0].text, /📅/);
-  assert.doesNotMatch(sent[0].text, /erro/i);
+  assert.doesNotMatch(sent[0].text, /erro:|deu erro|Erro ao/i);
 
   const matches = findUpcomingEvents(EV2, "consulta sem hora");
   assert.equal(matches.length, 1);
@@ -3716,7 +3718,7 @@ test("card 3: varios campos de um gasto numa so confirmacao; categoria nova so n
   assert.equal(findCategoryByName(M1, "Lazer multi"), null);
 
   await handleIncomingMessage(evolutionMessage(M1, "1"));
-  assert.equal(sent[1].text, '✏️ "Mercado multi" atualizado: valor R$ 45,00; categoria Lazer multi; pagamento Pix.');
+  assert.equal(sent[1].text, '✏️ "Mercado multi" atualizado: valor R$ 45,00; categoria Lazer multi; pagamento Pix.\nErrou? Responde *desfazer*.');
   const after = getExpenseById(M1, exp.id)!;
   assert.equal(after.amount, 45);
   assert.equal(after.payment_method_id, pix.id);
@@ -3767,7 +3769,7 @@ test("card 3: dois gastos na mesma mensagem = UMA confirmacao e UM desfazer", as
   );
 
   await handleIncomingMessage(evolutionMessage(M3, "1"));
-  assert.equal(sent[1].text, "✏️ 2 gastos atualizados.");
+  assert.equal(sent[1].text, "✏️ 2 gastos atualizados.\nErrou? Responde *desfazer*.");
   assert.equal(getExpenseById(M3, e1.id)?.payment_method_id, pix.id);
   assert.equal(getExpenseById(M3, e2.id)?.payment_method_id, dinheiro.id);
 
@@ -4279,7 +4281,7 @@ test("card 5: lista numerada, edita o valor do 2, saldo reflete, desfaz volta", 
   assert.equal(incomesService.getIncomeById(I1, freela.id)?.amount, 800); // nada gravado ate o "1"
 
   await handleIncomingMessage(evolutionMessage(I1, "1"));
-  assert.equal(sent[2].text, '✏️ Entrada "Freela logo" atualizada: valor R$ 850,00.');
+  assert.equal(sent[2].text, '✏️ Entrada "Freela logo" atualizada: valor R$ 850,00.\nErrou? Responde *desfazer*.');
   assert.equal(incomesService.getIncomeById(I1, freela.id)?.amount, 850);
   const { getIncomeSummaryBetween } = incomesService;
   assert.equal(getIncomeSummaryBetween(today(), addDaysToDateString(today(), 1), I1).total, 3900);
@@ -4314,7 +4316,7 @@ test("card 5: apagar -- 1 apaga, 3 cancela, 2 pergunta de novo e mantem; desfaz 
   queueReply([{ type: "delete_income", query: "salario apagar" }]);
   await handleIncomingMessage(evolutionMessage(I2, "apaga a entrada do salario"));
   await handleIncomingMessage(evolutionMessage(I2, "1"));
-  assert.equal(sent[sent.length - 1].text, '🗑️ Entrada "Salário apagar" apagada.');
+  assert.equal(sent[sent.length - 1].text, '🗑️ Entrada "Salário apagar" apagada.\nErrou? Responde *desfazer*.');
   assert.deepEqual(incomeAmounts(I2), [800]);
 
   queueReply([{ type: "undo" }]);
@@ -4822,4 +4824,251 @@ test("card 6: adiar sem lembrete que tenha tocado; 'ainda nao tocou'; editar lem
   await handleIncomingMessage(evolutionMessage(S4, "muda o lembrete conta tocada pra 9h"));
   assert.match(sent[2].text, /^O lembrete "Conta tocada" já tocou \(.* às \d{2}:\d{2}\)\. Pra tocar de novo, diga "adia o remédio pra amanhã 9h"\.$/);
   assert.equal(remindersService.getReminderById(S4, tocado)?.sent, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Card 7: pendencias e desfazer persistidos em SQLite, aviso de expiracao e dica de desfazer
+// ---------------------------------------------------------------------------
+
+const pendingKinds = (n: string) =>
+  (db.prepare(`SELECT kind FROM pending_state WHERE from_number = ? ORDER BY kind`).all(n) as { kind: string }[]).map((r) => r.kind);
+
+const aiCalls = () => (aiInterpret.interpretText as unknown as { mock: { callCount(): number } }).mock.callCount();
+
+test("card 7: cada fluxo grava seu estado no SQLite (sobrevive a reinicio) e limpa ao terminar", async (t) => {
+  const P = "551100091701";
+  seed(P);
+  const cat = getOrCreateCategory(P, "Alimentação");
+  insertExpense({ fromNumber: P, amount: 10, description: "Item persist", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: P, amount: 11, description: "Aula persist 1", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: P, amount: 12, description: "Aula persist 2", categoryId: cat.id, paymentMethodId: null, date: today() });
+  createEvent({ fromNumber: P, title: "Evento persist", start: futureAt(3, 14) });
+  createReminder(P, "Lembrete persist", futureAt(2, 9));
+  createRecurringExpense({ fromNumber: P, description: "Fixo persist", amount: 50, categoryId: cat.id, paymentMethodId: null, dayOfMonth: 5 });
+  incomesService.insertIncome({ fromNumber: P, amount: 100, description: "Entrada persist", date: today() });
+  const { sent, queueReply } = withMocks(t);
+
+  const step = async (action: Interpretation | null, text: string, expectedKinds: string[], finish: string) => {
+    resetRateLimitForTests(); // o teste manda muitas mensagens seguidas do mesmo numero
+    if (action) queueReply([action]);
+    await handleIncomingMessage(evolutionMessage(P, text));
+    assert.deepEqual(pendingKinds(P), expectedKinds, text);
+    await handleIncomingMessage(evolutionMessage(P, finish));
+  };
+
+  await step({ type: "edit_expense", query: "item persist", changes: [{ field: "amount", value: "20" }] }, "muda o item persist", ["edit_expense"], "3");
+  assert.deepEqual(pendingKinds(P), []);
+  await step({ type: "edit_event", query: "evento persist", new_title: "Evento persist novo" }, "muda o evento", ["edit_event"], "3");
+  await step({ type: "edit_reminder", query: "lembrete persist", new_message: "Lembrete persist novo" }, "muda o lembrete", ["edit_reminder"], "3");
+  await step({ type: "edit_recurring_expense", query: "fixo persist", new_amount: 60 }, "muda o fixo", ["edit_recurring"], "3");
+  await step({ type: "edit_income", query: "entrada persist", changes: [{ field: "amount", value: "200" }] }, "muda a entrada", ["edit_income"], "3");
+  await step({ type: "delete_income", query: "entrada persist" }, "apaga a entrada", ["delete_income"], "3");
+  await step({ type: "edit_expense", query: "item persist" }, "edita o item persist", ["field_menu"], "cancelar");
+  await step({ type: "edit_expense", query: "aula persist", changes: [{ field: "amount", value: "30" }] }, "muda a aula", ["target_choice"], "cancelar");
+  await step(null, "editar", ["edit_target"], "cancelar");
+  assert.deepEqual(pendingKinds(P), []);
+
+  // confirmar grava o desfazer (e some a confirmacao); "desfaz" apaga o desfazer
+  resetRateLimitForTests();
+  queueReply([{ type: "edit_income", query: "entrada persist", changes: [{ field: "amount", value: "200" }] }]);
+  await handleIncomingMessage(evolutionMessage(P, "muda a entrada"));
+  await handleIncomingMessage(evolutionMessage(P, "1"));
+  assert.deepEqual(pendingKinds(P), ["undo"]);
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(P, "desfaz isso"));
+  assert.deepEqual(pendingKinds(P), []);
+  assert.ok(sent.length > 0);
+});
+
+test("card 7: pendencias de numeros diferentes nao se enxergam", async (t) => {
+  const PA = "551100091702";
+  const PB = "551100091703";
+  seed(PA, PB);
+  const cat = getOrCreateCategory(PA, "Alimentação");
+  insertExpense({ fromNumber: PA, amount: 10, description: "Item isolado", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "item isolado", changes: [{ field: "amount", value: "20" }] }]);
+  await handleIncomingMessage(evolutionMessage(PA, "muda o item isolado"));
+  assert.deepEqual(pendingKinds(PA), ["edit_expense"]);
+  assert.deepEqual(pendingKinds(PB), []);
+  queueReply([]);
+  await handleIncomingMessage(evolutionMessage(PB, "1")); // o "1" do B nao confirma a previa do A
+  assert.equal(findRecentExpense(PA, "item isolado")?.amount, 10);
+  assert.ok(sent.every((m) => m.to !== PB || !/atualizado/.test(m.text)));
+  await handleIncomingMessage(evolutionMessage(PA, "3"));
+});
+
+test("card 7: confirmacao vencida -- 'sim'/'1' recebe aviso de expiracao, nada muda e a IA nao e chamada; so avisa uma vez", async (t) => {
+  const X1 = "551100091704";
+  seed(X1);
+  const cat = getOrCreateCategory(X1, "Alimentação");
+  const exp = insertExpense({ fromNumber: X1, amount: 10, description: "Padaria exp", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const realNow = Date.now();
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow + offset);
+
+  queueReply([{ type: "edit_expense", query: "padaria exp", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X1, "muda a padaria exp pra 40"));
+  const callsBefore = aiCalls();
+
+  offset = 11 * 60 * 1000; // passou do prazo
+  await handleIncomingMessage(evolutionMessage(X1, "1"));
+  assert.equal(
+    sent[sent.length - 1].text,
+    '⌛ A confirmação de "Padaria exp — R$ 10,00" expirou (passaram mais de 10 minutos) e eu não mexi em nada. Se ainda quiser, é só pedir de novo.'
+  );
+  assert.equal(aiCalls(), callsBefore); // a IA nao foi chamada
+  assert.equal(getExpenseById(X1, exp.id)?.amount, 10);
+
+  // um segundo "1" nao gera outro aviso
+  const count = sent.length;
+  await handleIncomingMessage(evolutionMessage(X1, "1"));
+  assert.ok(!sent.slice(count).some((m) => /expirou/.test(m.text)));
+});
+
+test("card 7: lista de escolha vencida e desfazer vencido recebem seus avisos", async (t) => {
+  const X2 = "551100091705";
+  seed(X2);
+  const cat = getOrCreateCategory(X2, "Alimentação");
+  insertExpense({ fromNumber: X2, amount: 10, description: "Aula exp 1", categoryId: cat.id, paymentMethodId: null, date: today() });
+  insertExpense({ fromNumber: X2, amount: 11, description: "Aula exp 2", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const realNow = Date.now();
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow + offset);
+
+  queueReply([{ type: "edit_expense", query: "aula exp", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X2, "muda a aula exp pra 40"));
+  assert.match(sent[sent.length - 1].text, /Achei 2 gastos/);
+  offset = 11 * 60 * 1000;
+  await handleIncomingMessage(evolutionMessage(X2, "2"));
+  assert.equal(sent[sent.length - 1].text, '⌛ A lista de opções expirou (passaram mais de 10 minutos). Me diz de novo o que você quer fazer, ex: "muda o mercado pra 40".');
+
+  // desfazer vencido (ate 60 min depois)
+  const target = "Aula exp 2";
+  offset = 12 * 60 * 1000;
+  queueReply([{ type: "edit_expense", query: "aula exp 2", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X2, "muda a aula exp 2 pra 40"));
+  await handleIncomingMessage(evolutionMessage(X2, "1"));
+  assert.equal(findRecentExpense(X2, "aula exp 2")?.amount, 40);
+  offset = 12 * 60 * 1000 + 11 * 60 * 1000;
+  await handleIncomingMessage(evolutionMessage(X2, "desfaz isso"));
+  assert.equal(sent[sent.length - 1].text, `⌛ O prazo pra desfazer "${target}" já passou (10 minutos). Se precisar corrigir, é só pedir a edição de novo.`);
+  assert.equal(findRecentExpense(X2, "aula exp 2")?.amount, 40); // nada foi desfeito
+});
+
+test("card 7: pedido completo depois do prazo e tratado normal (sem aviso); passou de 60 min = silencio", async (t) => {
+  const X3 = "551100091706";
+  seed(X3);
+  const cat = getOrCreateCategory(X3, "Alimentação");
+  insertExpense({ fromNumber: X3, amount: 10, description: "Item tardio", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const realNow = Date.now();
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow + offset);
+
+  queueReply([{ type: "edit_expense", query: "item tardio", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X3, "muda o item tardio pra 40"));
+  offset = 11 * 60 * 1000;
+  queueReply([{ type: "edit_expense", query: "item tardio", changes: [{ field: "amount", value: "50" }] }]);
+  await handleIncomingMessage(evolutionMessage(X3, "muda o item tardio pra 50 por favor"));
+  assert.match(sent[sent.length - 1].text, /Valor: R\$ 10,00 → R\$ 50,00/); // processou o pedido novo
+  assert.ok(!sent.some((m) => /expirou/.test(m.text)));
+  await handleIncomingMessage(evolutionMessage(X3, "3"));
+
+  // pendencia vencida ha mais de 60 minutos: o "1" cai no fluxo normal, sem aviso
+  const X4 = "551100091707";
+  seed(X4);
+  insertExpense({ fromNumber: X4, amount: 10, description: "Item muito tardio", categoryId: cat.id, paymentMethodId: null, date: today() });
+  offset = 0;
+  queueReply([{ type: "edit_expense", query: "item muito tardio", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X4, "muda o item muito tardio pra 40"));
+  offset = 80 * 60 * 1000;
+  queueReply([]);
+  const before = sent.length;
+  await handleIncomingMessage(evolutionMessage(X4, "1"));
+  assert.ok(!sent.slice(before).some((m) => /expirou/.test(m.text)));
+});
+
+test("card 7: pendencia ATIVA vale mesmo com outra vencida; duas vencidas = um aviso so (a mais recente)", async (t) => {
+  const X5 = "551100091708";
+  seed(X5);
+  const cat = getOrCreateCategory(X5, "Alimentação");
+  const exp = insertExpense({ fromNumber: X5, amount: 10, description: "Item ativo", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const realNow = Date.now();
+
+  // uma confirmacao de evento ja vencida (gravada ha 30 min) + uma previa de gasto ativa
+  setPending(X5, "edit_event", { payload: {}, label: "Evento velho", ttlMs: 10 * 60 * 1000, version: 1, now: realNow - 30 * 60 * 1000 });
+  queueReply([{ type: "edit_expense", query: "item ativo", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(X5, "muda o item ativo pra 40"));
+  await handleIncomingMessage(evolutionMessage(X5, "1"));
+  assert.equal(getExpenseById(X5, exp.id)?.amount, 40);
+  assert.ok(!sent.some((m) => /expirou/.test(m.text)));
+
+  // duas vencidas: UM aviso, o da mais recente
+  const X6 = "551100091709";
+  seed(X6);
+  setPending(X6, "edit_event", { payload: {}, label: "Evento velho", ttlMs: 10 * 60 * 1000, version: 1, now: realNow - 40 * 60 * 1000 });
+  setPending(X6, "edit_income", { payload: {}, label: "Entrada velha", ttlMs: 10 * 60 * 1000, version: 1, now: realNow - 30 * 60 * 1000 });
+  queueReply([]);
+  await handleIncomingMessage(evolutionMessage(X6, "sim"));
+  const notices = sent.filter((m) => m.to === X6 && /expirou/.test(m.text));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /"Entrada velha"/);
+  await handleIncomingMessage(evolutionMessage(X6, "sim"));
+  assert.equal(sent.filter((m) => m.to === X6 && /expirou/.test(m.text)).length, 1);
+});
+
+test("card 7: toda acao que registra desfazer termina com a dica (exatamente uma vez)", async (t) => {
+  const H1 = "551100091710";
+  seed(H1);
+  const cat = getOrCreateCategory(H1, "Alimentação");
+  insertExpense({ fromNumber: H1, amount: 10, description: "Item dica", categoryId: cat.id, paymentMethodId: null, date: today() });
+  createEvent({ fromNumber: H1, title: "Evento dica", start: futureAt(3, 14) });
+  createReminder(H1, "Lembrete dica", futureAt(2, 9));
+  incomesService.insertIncome({ fromNumber: H1, amount: 100, description: "Entrada dica", date: today() });
+  const { sent, queueReply } = withMocks(t);
+  const hint = "Errou? Responde *desfazer*.";
+  const countHint = (text: string) => text.split(hint).length - 1;
+
+  const confirm = async (action: Interpretation, text: string) => {
+    queueReply([action]);
+    await handleIncomingMessage(evolutionMessage(H1, text));
+    await handleIncomingMessage(evolutionMessage(H1, "1"));
+    return sent[sent.length - 1].text;
+  };
+  for (const [action, text] of [
+    [{ type: "edit_expense", query: "item dica", changes: [{ field: "amount", value: "20" }] }, "gasto"],
+    [{ type: "edit_event", query: "evento dica", new_title: "Evento dica 2" }, "evento"],
+    [{ type: "edit_reminder", query: "lembrete dica", new_message: "Lembrete dica 2" }, "lembrete"],
+    [{ type: "edit_income", query: "entrada dica", changes: [{ field: "amount", value: "200" }] }, "entrada"],
+    [{ type: "delete_income", query: "entrada dica" }, "apagar entrada"],
+  ] as [Interpretation, string][]) {
+    const reply = await confirm(action, text);
+    assert.equal(countHint(reply), 1, text);
+    assert.ok(reply.endsWith(`\n${hint}`), text);
+  }
+
+  // criacao de gasto e de evento (ja registravam desfazer)
+  queueReply([{ type: "expense", amount: 5, description: "cafe dica", category: "Alimentação", date: today() }]);
+  await handleIncomingMessage(evolutionMessage(H1, "5 no cafe"));
+  assert.equal(countHint(sent[sent.length - 1].text), 1);
+  // mensagens SEM desfazer nao ganham a dica
+  queueReply([{ type: "income_report", period: "month" }]);
+  await handleIncomingMessage(evolutionMessage(H1, "quanto recebi"));
+  assert.equal(countHint(sent[sent.length - 1].text), 0);
+});
+
+test("card 7: bloquear ou revogar o numero apaga as pendencias dele", async () => {
+  const B1 = "551100091711";
+  setPending(B1, "undo", { payload: {}, label: "x", ttlMs: 60000, version: 1 });
+  setPending(B1, "edit_income", { payload: {}, label: "y", ttlMs: 60000, version: 1 });
+  blockNumber(B1);
+  assert.deepEqual(pendingKinds(B1), []);
+  setPending(B1, "undo", { payload: {}, label: "x", ttlMs: 60000, version: 1 });
+  const { revokeNumber } = await import("../../src/access/allowlist");
+  revokeNumber(B1);
+  assert.deepEqual(pendingKinds(B1), []);
 });

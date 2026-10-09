@@ -1,7 +1,9 @@
-// Cache curto e em memoria: guarda a ultima acao reversivel de cada numero (so
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda a ultima acao reversivel de cada numero (so
 // dados, sem logica de execucao — quem desfaz de verdade e o router.ts, que ja
 // importa as funcoes de delete/update de cada dominio). Mesma ideia dos outros
 // caches de conversa (listCache.ts, pendingListChoice.ts, pendingDeletion.ts).
+import { clearPending, getPending, setPending } from "../pending/store";
+
 const TTL_MS = 10 * 60 * 1000;
 
 export type UndoAction =
@@ -125,22 +127,18 @@ interface PendingUndo {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingUndo>();
+const KIND = "undo";
+const VERSION = 1;
 
 export function setPendingUndo(fromNumber: string, action: UndoAction) {
-  pending.set(fromNumber, { action, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: { action }, label: action.description, ttlMs: TTL_MS, version: VERSION });
 }
 
 export function getPendingUndo(fromNumber: string): UndoAction | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry.action;
+  const stored = getPending<{ action: UndoAction }>(fromNumber, KIND, VERSION);
+  return stored ? stored.payload.action : null;
 }
 
 export function clearPendingUndo(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

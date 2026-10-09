@@ -1,9 +1,10 @@
-// Cache curto e em memoria: o usuario escolheu um item pra editar e o bot esta
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): o usuario escolheu um item pra editar e o bot esta
 // no menu guiado ("O que voce quer mudar?") ou perguntando o valor de cada campo
 // escolhido. No maximo um menu por numero; mesmo TTL das confirmacoes de edicao.
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import type { FieldValue } from "./validate";
 import type { MenuKind } from "./registry";
+import { clearPending, getPending, setPending } from "../pending/store";
 
 export interface PendingFieldMenu {
   kind: MenuKind;
@@ -18,22 +19,18 @@ export interface PendingFieldMenu {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingFieldMenu>();
+const KIND = "field_menu";
+const VERSION = 1;
 
 export function setPendingFieldMenu(fromNumber: string, data: Omit<PendingFieldMenu, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.label, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingFieldMenu(fromNumber: string): PendingFieldMenu | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > EDIT_PENDING_TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingFieldMenu, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingFieldMenu(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

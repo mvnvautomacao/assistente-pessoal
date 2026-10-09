@@ -175,6 +175,15 @@ test/
               WhatsApp (com a IA e o envio de mensagem mockados)
 ```
 
+## Estado de conversa (pendências e desfazer)
+
+As confirmações de edição (gasto, evento, lembrete, gasto fixo, entrada), a exclusão de entrada, o menu guiado de campos, a escolha numerada de item, o "editar" sem alvo e o "desfazer isso" ficam na tabela `pending_state` do SQLite (veja [src/pending/store.ts](src/pending/store.ts)), uma linha por número e tipo. Por isso um deploy ou reinício do servidor **não** perde a conversa: quem estava numa prévia "1 Confirmar / 2 Corrigir / 3 Cancelar" responde normalmente depois. O banco precisa estar no volume persistente (`/app/data`, veja o passo do Coolify acima).
+
+- Prazo de 10 minutos (`EDIT_PENDING_TTL_MS`). Se a pessoa responde só "1", "sim", "2", "3", "cancelar" ou "desfaz" **depois** do prazo (até 60 minutos), o bot explica que expirou em vez de interpretar a mensagem como outro pedido (veja [src/pending/expiredNotice.ts](src/pending/expiredNotice.ts)). Um pedido completo ("muda o mercado pra 40") é processado normalmente.
+- Uma rotina limpa as linhas vencidas há mais de 60 minutos (na inicialização e a cada 10 minutos).
+- Toda mensagem de sucesso de uma ação que registra desfazer termina com "Errou? Responde *desfazer*." (um só ponto no código: [src/undo/replyWithUndo.ts](src/undo/replyWithUndo.ts)). Só o último desfazer de cada número fica disponível.
+- Os demais pendentes mais antigos (exclusão de evento/lembrete/gasto/categoria, completar gasto, forma de pagamento...) e as listas numeradas de gastos/entradas continuam em memória; o store é genérico para migrá-los depois.
+
 ## Testes
 
 ```bash

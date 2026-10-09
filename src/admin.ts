@@ -219,6 +219,8 @@ const TYPE_LABEL: Record<string, string> = {
   recurring_expense: "🔁 Gasto fixo lançado",
   income: "💵 Entrada",
   income_report: "💵 Resumo de entradas",
+  pending_expired: "⌛ Confirmação expirada",
+  snooze_reminder: "⏰ Lembrete adiado",
   list_incomes: "💵 Lista de entradas",
   edit_income: "✏️ Entrada editada",
   delete_income: "🗑️ Entrada apagada",

@@ -1,10 +1,12 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma essas
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma essas
 // alteracoes?" antes de editar gasto(s) de verdade, pra resolver a resposta
 // (1/2/3, sim/nao ou uma correcao) na proxima mensagem. Uma pendencia vale pra
 // UM OU MAIS gastos (lote) e pra uma ou mais mudancas por gasto. Mesma ideia dos
 // outros caches de conversa (pendingDeletion.ts etc).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import type { ExpenseEditField, RawChange } from "./editChanges";
+import { clearPending, getPending, setPending } from "../pending/store";
+import { formatBRL } from "../confirmation/preview";
 
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
@@ -48,22 +50,18 @@ export interface PendingEditExpense {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingEditExpense>();
+const KIND = "edit_expense";
+const VERSION = 1;
 
 export function setPendingEditExpense(fromNumber: string, data: Omit<PendingEditExpense, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.items.length === 1 ? `${data.items[0].description} — ${formatBRL(data.items[0].previous.amount)}` : `${data.items.length} gastos`, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingEditExpense(fromNumber: string): PendingEditExpense | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingEditExpense, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingEditExpense(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

@@ -205,6 +205,8 @@ import {
 import { getRangeBalance } from "./expenses/balance";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
+import { replyWithUndo } from "./undo/replyWithUndo";
+import { consumeExpiredNotice } from "./pending/expiredNotice";
 import {
   addPendingCompletion,
   getNextPendingCompletion,
@@ -879,6 +881,15 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
       return;
     }
+
+    // nenhuma pendencia ativa respondeu: se a mensagem e so uma resposta de pendencia ("1",
+    // "sim", "desfaz"...) e existe uma que VENCEU ha pouco, explica em vez de mandar pra IA
+    const expiredNotice = consumeExpiredNotice(from, text);
+    if (expiredNotice) {
+      logActivity(from, "pending_expired", "resposta depois do prazo -- avisou que expirou");
+      await sendText(from, expiredNotice);
+      return;
+    }
     } catch (err) {
       console.error("Erro ao resolver pendencia:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
@@ -1080,7 +1091,7 @@ async function finalizePendingCategorizationByTimeout(from: string, pending: Pen
       paymentMethod,
       logNote: "categorizado automaticamente, sem resposta a tempo",
     });
-    await sendText(
+    await replyWithUndo(
       from,
       `⏱️ Não recebi a categoria a tempo, então registrei como "${category.name}": ${formatExpenseConfirmation({
         amount: pending.amount,
@@ -1352,7 +1363,7 @@ async function createExpenseAndNotify(
       categoryName: category.name,
       paymentMethod,
     });
-    await sendText(
+    await replyWithUndo(
       from,
       `✅ Gasto registrado: ${formatExpenseConfirmation({
         amount: params.amount,
@@ -1454,7 +1465,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
     description: resolved.map((r) => `R$${r.amount.toFixed(2)} em ${r.category.name}`).join(", "),
   });
 
-  await sendText(
+  await replyWithUndo(
     from,
     `✅ ${resolved.length} gastos registrados:\n${lines.join("\n")}${budgetAlerts.join("")}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45".`
   );
@@ -1483,7 +1494,7 @@ async function createEventAndNotify(
   });
   setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: params.title });
   logActivity(from, "event", `${params.title} — ${start}`);
-  await sendText(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`);
+  await replyWithUndo(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`);
 }
 
 // Cria o lembrete de verdade. Extraido do case "reminder" pra ser reaproveitado
@@ -1493,7 +1504,7 @@ async function createReminderAndNotify(from: string, params: { message: string; 
   const reminderId = createReminder(from, params.message, dueAt);
   setPendingUndo(from, { kind: "delete_reminder", reminderId, description: params.message });
   logActivity(from, "reminder", `${params.message} — ${dueAt}`);
-  await sendText(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}`);
+  await replyWithUndo(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}`);
 }
 
 function missingDateTimeParts(date?: string, time?: string): Array<"date" | "time"> {
@@ -1600,7 +1611,7 @@ async function finalizeInstallmentExpense(
     "installment_expense",
     `${params.description} — R$${total.toFixed(2)} em ${params.installments}x (${category.name}${paymentSuffix})`
   );
-  await sendText(
+  await replyWithUndo(
     from,
     `✅ Compra parcelada registrada: "${params.description}" — R$${total.toFixed(2)} em ${params.installments}x de R$${amounts[0].toFixed(2)}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
   );
@@ -2122,7 +2133,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       paymentMethod,
       logNote: "categorizado manualmente",
     });
-    await sendText(
+    await replyWithUndo(
       from,
       `✅ Categorizado como "${category.name}". ${formatExpenseConfirmation({
         amount: pending.amount,
@@ -2163,7 +2174,7 @@ async function finalizePendingExpensePayment(from: string, pending: PendingExpen
     categoryName: pending.categoryName,
     paymentMethod,
   });
-  await sendText(
+  await replyWithUndo(
     from,
     `✅ Gasto registrado: ${formatExpenseConfirmation({
       amount: pending.amount,
@@ -2238,7 +2249,7 @@ async function finalizePendingExpensePaymentMethodByTimeout(from: string, pendin
       paymentMethod: null,
       logNote: "sem resposta a tempo pra forma de pagamento, registrado sem definir",
     });
-    await sendText(
+    await replyWithUndo(
       from,
       `⏱️ Não recebi a forma de pagamento a tempo, então registrei assim mesmo: ${formatExpenseConfirmation({
         amount: pending.amount,
@@ -2358,7 +2369,7 @@ async function resolveEventDeletionConfirmation(from: string, pending: { eventId
     });
   }
   logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
-  await sendText(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
+  await replyWithUndo(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
 }
 
 // resposta a "confirma que quer apagar o lembrete X?" -- mesma ideia de
@@ -2390,7 +2401,7 @@ async function resolveReminderDeletionConfirmation(from: string, pending: { remi
     });
   }
   logActivity(from, "delete_reminder", `confirmado: removido "${pending.message}"`);
-  await sendText(from, `🗑️ Lembrete "${pending.message}" removido.`);
+  await replyWithUndo(from, `🗑️ Lembrete "${pending.message}" removido.`);
 }
 
 // resposta a "quer que eu crie como evento ou te explico como usar a agenda?"
@@ -2460,7 +2471,7 @@ async function resolveBulkRecategorizeConfirmation(from: string, pending: Pendin
     description: `${pending.summary} -> ${pending.toCategoryName}`,
   });
   logActivity(from, "bulk_recategorize", `confirmado: ${pending.summary} -> "${pending.toCategoryName}"`);
-  await sendText(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
+  await replyWithUndo(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
 }
 
 // resposta a "confirma que quer juntar a categoria X na Y?" -- so apaga a
@@ -2494,7 +2505,7 @@ async function resolveMergeCategoriesConfirmation(from: string, pending: Pending
     description: `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}"`,
   });
   logActivity(from, "merge_categories", `confirmado: "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}"`);
-  await sendText(
+  await replyWithUndo(
     from,
     `✅ Categoria "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}". ${pending.expenseIds.length} gasto(s) movido(s), e "${pending.sourceCategoryName}" não existe mais.`
   );
@@ -2527,9 +2538,9 @@ async function performDeleteExpense(
       description: `${baseName} (${group.length} parcelas)`,
     });
     logActivity(from, "delete_expense", `compra parcelada apagada: ${baseName}, ${group.length} parcela(s), R$${total.toFixed(2)}`);
-    await sendText(
+    await replyWithUndo(
       from,
-      `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total R$${total.toFixed(2)}) foram removidas. Se foi sem querer, é só dizer "desfaz isso".`
+      `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total R$${total.toFixed(2)}) foram removidas.`
     );
     return;
   }
@@ -2552,7 +2563,7 @@ async function performDeleteExpense(
     description: `R$${expense.amount.toFixed(2)} — ${expense.description}`,
   });
   logActivity(from, "delete_expense", `apagado: R$${expense.amount.toFixed(2)} — ${expense.description}`);
-  await sendText(from, `🗑️ Gasto apagado: R$${expense.amount.toFixed(2)} — ${expense.description}. Se foi sem querer, é só dizer "desfaz isso".`);
+  await replyWithUndo(from, `🗑️ Gasto apagado: R$${expense.amount.toFixed(2)} — ${expense.description}.`);
 }
 
 // mostra os ultimos gastos numerados pra o usuario escolher qual apagar
@@ -2657,9 +2668,9 @@ async function resolveDeleteCategoryConfirmation(from: string, pending: PendingD
     description: `categoria "${pending.categoryName}" apagada`,
   });
   logActivity(from, "delete_category", `confirmado: "${pending.categoryName}" apagada (${pending.expenseIds.length} gasto(s) sem categoria)`);
-  await sendText(
+  await replyWithUndo(
     from,
-    `✅ Categoria "${pending.categoryName}" apagada.${pending.expenseIds.length ? ` ${pending.expenseIds.length} gasto(s) dela ficaram sem categoria.` : ""} Se foi sem querer, é só dizer "desfaz isso".`
+    `✅ Categoria "${pending.categoryName}" apagada.${pending.expenseIds.length ? ` ${pending.expenseIds.length} gasto(s) dela ficaram sem categoria.` : ""}`
   );
 }
 
@@ -3349,7 +3360,7 @@ async function confirmIncomeEdit(from: string, pending: PendingEditIncome) {
   updateIncome(from, pending.incomeId, pending.proposed);
   setPendingUndo(from, { kind: "restore_income", incomeId: pending.incomeId, previous: pending.previous, description: pending.description });
   logActivity(from, "edit_income", `confirmado: #${pending.incomeId} ${pending.description}`);
-  await sendText(from, formatIncomeEditSuccess(pending.description, pending.views));
+  await replyWithUndo(from, formatIncomeEditSuccess(pending.description, pending.views));
 }
 
 async function resolveEditIncomeConfirmation(from: string, pending: PendingEditIncome, answerText: string) {
@@ -3457,7 +3468,7 @@ async function resolveDeleteIncomeConfirmation(from: string, pending: PendingDel
   deleteIncome(from, pending.incomeId);
   setPendingUndo(from, { kind: "recreate_income", params: { fromNumber: from, ...pending.snapshot }, description });
   logActivity(from, "delete_income", `apagada: #${pending.incomeId} ${description}`);
-  await sendText(from, incomeDeletedText(description));
+  await replyWithUndo(from, incomeDeletedText(description));
 }
 
 // ---- gasto(s) ------------------------------------------------------------
@@ -3731,7 +3742,7 @@ async function confirmExpenseEdits(from: string, pending: PendingEditExpense) {
     });
   }
   logActivity(from, "edit_expense", `confirmado: ${pending.items.map((i) => `#${i.expenseId} ${i.description}`).join(", ")}`);
-  await sendText(from, formatExpenseEditSuccess(pending.items));
+  await replyWithUndo(from, formatExpenseEditSuccess(pending.items));
 }
 
 async function resolveEditExpenseConfirmation(from: string, pending: PendingEditExpense, answerText: string) {
@@ -3947,7 +3958,7 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       description: pending.title,
     });
     logActivity(from, "edit_event", `confirmado: "${pending.title}": ${pending.changeText}`);
-    await sendText(from, `✏️ "${pending.title}" alterado: ${pending.changeText}`);
+    await replyWithUndo(from, `✏️ "${pending.title}" alterado: ${pending.changeText}`);
     return;
   }
   if (reply === "cancel") {
@@ -4078,7 +4089,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
       description: pending.message,
     });
     logActivity(from, "edit_reminder", `confirmado: "${pending.message}": ${pending.changeText}`);
-    await sendText(from, `✏️ Lembrete "${pending.message}" alterado: ${pending.changeText}`);
+    await replyWithUndo(from, `✏️ Lembrete "${pending.message}" alterado: ${pending.changeText}`);
     return;
   }
   if (reply === "cancel") {
@@ -4140,7 +4151,7 @@ async function resolveRemoveBudgetConfirmation(from: string, pending: PendingRem
     description: pending.categoryName,
   });
   logActivity(from, "remove_budget", `confirmado: orcamento de ${pending.categoryName} removido`);
-  await sendText(from, `✅ Orçamento de "${pending.categoryName}" removido.`);
+  await replyWithUndo(from, `✅ Orçamento de "${pending.categoryName}" removido.`);
 }
 
 // mesma ideia de resolveRemoveBudgetConfirmation, pra gasto fixo
@@ -4175,7 +4186,7 @@ async function resolveRemoveRecurringConfirmation(from: string, pending: Pending
     description: pending.description,
   });
   logActivity(from, "remove_recurring_expense", `confirmado: "${pending.description}" removido`);
-  await sendText(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
+  await replyWithUndo(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
 }
 
 // ---- gasto fixo ------------------------------------------------------------
@@ -4305,7 +4316,7 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
       description: pending.previous.description,
     });
     logActivity(from, "edit_recurring_expense", `confirmado: "${updated.description}": ${pending.changeText}`);
-    await sendText(from, `✏️ Gasto fixo "${updated.description}" alterado: ${pending.changeText}`);
+    await replyWithUndo(from, `✏️ Gasto fixo "${updated.description}" alterado: ${pending.changeText}`);
     return;
   }
   if (reply === "cancel") {
@@ -4360,7 +4371,7 @@ async function resolveRemoveBillAlertConfirmation(from: string, pending: Pending
     description: pending.name,
   });
   logActivity(from, "remove_bill_alert", `confirmado: "${pending.name}" removido`);
-  await sendText(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
+  await replyWithUndo(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
 }
 
 // Resposta a pergunta "ja fez X, ou quer que eu lembre amanha?" (disparada
@@ -4753,7 +4764,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       });
       const usesMinutes = !interpretation.new_date && !interpretation.new_time;
       logActivity(from, "snooze_reminder", `"${reminder.message}" adiado pra ${due.dueAt}`);
-      await sendText(from, formatSnoozeConfirmation(reminder.message, due.dueAt, usesMinutes ? interpretation.minutes : undefined, now));
+      await replyWithUndo(from, formatSnoozeConfirmation(reminder.message, due.dueAt, usesMinutes ? interpretation.minutes : undefined, now));
       break;
     }
     case "report": {
@@ -5493,7 +5504,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         description: `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`,
       });
       logActivity(from, "income", `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
-      await sendText(from, `💵 Entrada registrada: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
+      await replyWithUndo(from, `💵 Entrada registrada: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
       break;
     }
     case "list_incomes": {
