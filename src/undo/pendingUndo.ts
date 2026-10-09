@@ -76,6 +76,15 @@ export type UndoAction =
       description: string;
     }
   | { kind: "restore_reminder_time"; reminderId: number; previousDueAt: string; description: string }
+  | {
+      // adiar um lembrete que ja tocou -- desfazer devolve o horario E o estado "ja tocou"
+      // (previousSent = 1), pra ele nao tocar de novo
+      kind: "restore_reminder_snooze";
+      reminderId: number;
+      previousDueAt: string;
+      previousSent: 0 | 1;
+      description: string;
+    }
   | { kind: "restore_budget"; categoryId: number; monthlyLimit: number; description: string }
   | {
       // desativar um gasto fixo nao apaga o registro (so muda active=0), mas

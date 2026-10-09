@@ -169,8 +169,8 @@ test("pendencias de edicao expiram todas com o mesmo TTL de 10 minutos", () => {
     correctionTarget: null,
   });
   const prevEvent = { title: "e", start: "2030-01-01T10:00:00-03:00", end: "2030-01-01T11:00:00-03:00", location: null, reminderMinutes: 60 };
-  setPendingEditEvent(N, { eventId: 1, title: "e", previous: prevEvent, proposedTitle: "e", proposedStart: prevEvent.start, proposedEnd: prevEvent.end, proposedReminderMinutes: 60, isDateTimeChange: false, changeText: "", awaitingCorrection: false, headerText: "" });
-  setPendingEditReminder(N, { reminderId: 1, message: "m", previousDueAt: "2030-01-01T10:00:00-03:00", proposedMessage: "m", proposedDueAt: "2030-01-01T10:00:00-03:00", isDateTimeChange: false, changeText: "", awaitingCorrection: false, headerText: "" });
+  setPendingEditEvent(N, { eventId: 1, title: "e", previous: prevEvent, proposed: prevEvent, endSpec: null, changeText: "", awaitingCorrection: false, correctionStage: "pick", correctionTarget: null, headerText: "" });
+  setPendingEditReminder(N, { reminderId: 1, message: "m", previousDueAt: "2030-01-01T10:00:00-03:00", proposedMessage: "m", proposedDueAt: "2030-01-01T10:00:00-03:00", isDateTimeChange: false, changeText: "", awaitingCorrection: false, correctionStage: "pick", correctionTarget: null, headerText: "" });
   const recurring = { description: "r", amount: 1, categoryId: null, paymentMethodId: null, dayOfMonth: 1 };
   setPendingEditRecurring(N, { recurringId: 1, previous: recurring, proposedParams: recurring, changeText: "", awaitingCorrection: false, headerText: "" });
 

@@ -25,6 +25,8 @@ const CORRECTION_KIND: Record<Exclude<FieldQuestion, "category" | "payment_metho
   lead: "lead",
   day: "day",
   text: "text",
+  endtime: "endtime",
+  location: "location",
 };
 
 // pergunta de UM campo; "options" so vale pra categoria e forma de pagamento

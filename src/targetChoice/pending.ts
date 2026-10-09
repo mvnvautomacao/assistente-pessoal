@@ -5,7 +5,7 @@
 import type { Interpretation } from "../ai/interpret";
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 
-export type TargetKind = "event" | "reminder" | "expense" | "recurring" | "income";
+export type TargetKind = "event" | "reminder" | "expense" | "recurring" | "income" | "reminder_sent";
 
 export interface PendingTargetChoice {
   kind: TargetKind;

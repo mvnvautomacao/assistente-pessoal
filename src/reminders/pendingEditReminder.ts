@@ -15,6 +15,9 @@ export interface PendingEditReminder {
   isDateTimeChange: boolean;
   changeText: string;
   awaitingCorrection: boolean;
+  // com mais de uma mudanca (Quando + Texto) a opcao 2 pergunta QUAL corrigir ("pick")
+  correctionStage: "pick" | "value";
+  correctionTarget: "datetime" | "text" | null;
   headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
   createdAt: number;
 }

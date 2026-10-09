@@ -83,14 +83,22 @@ export function updateEvent(
   id: number,
   params: { title: string; start: string; end?: string; location?: string; reminderMinutes: number }
 ) {
+  const current = getEventById(fromNumber, id);
+  if (!current) return;
   const end = params.end ?? new Date(new Date(params.start).getTime() + DEFAULT_DURATION_MS).toISOString();
-  // reagenda o aviso (reminder_sent volta a 0): se o evento mudou de horario, o aviso
-  // anterior nao vale mais. Mesma coisa pros alertas extras (event_extra_reminders).
+  // So reagenda o aviso quando ele deixa de valer: o INICIO ou a ANTECEDENCIA mudou
+  // (reminder_sent volta a 0) -- e os alertas extras so se o INICIO mudou. Editar so
+  // titulo, local ou termino nunca reativa um aviso ja enviado (senao o "Daqui a 1
+  // hora" chegava de novo no minuto seguinte). A comparacao e a escrita ficam juntas
+  // aqui pra valer tambem pro painel e pro desfazer.
+  const startChanged = new Date(params.start).getTime() !== new Date(current.start).getTime();
+  const reminderChanged = params.reminderMinutes !== current.reminder_minutes;
+  const reminderSent = startChanged || reminderChanged ? 0 : current.reminder_sent;
   db.prepare(
-    `UPDATE events SET title = ?, start = ?, end = ?, location = ?, reminder_minutes = ?, reminder_sent = 0
+    `UPDATE events SET title = ?, start = ?, end = ?, location = ?, reminder_minutes = ?, reminder_sent = ?
      WHERE from_number = ? AND id = ?`
-  ).run(params.title, params.start, end, params.location ?? null, params.reminderMinutes, fromNumber, id);
-  db.prepare(`UPDATE event_extra_reminders SET sent = 0 WHERE event_id = ?`).run(id);
+  ).run(params.title, params.start, end, params.location ?? null, params.reminderMinutes, reminderSent, fromNumber, id);
+  if (startChanged) db.prepare(`UPDATE event_extra_reminders SET sent = 0 WHERE event_id = ?`).run(id);
 }
 
 export function deleteEvent(fromNumber: string, id: number) {

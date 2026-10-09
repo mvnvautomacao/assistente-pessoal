@@ -68,13 +68,41 @@ export function getReminderById(toNumber: string, id: number): Reminder | undefi
     .get(toNumber, id) as unknown as Reminder | undefined;
 }
 
+// So volta a "nao enviado" (sent = 0) quando o HORARIO muda: editar so o texto de um
+// lembrete que ja tocou nao o faz tocar de novo (vale pro painel e pro desfazer tambem).
 export function updateReminder(toNumber: string, id: number, params: { message: string; dueAt: string }) {
-  db.prepare(`UPDATE reminders SET message = ?, due_at = ?, sent = 0 WHERE to_number = ? AND id = ?`).run(
+  const current = getReminderById(toNumber, id);
+  if (!current) return;
+  const dueChanged = new Date(params.dueAt).getTime() !== new Date(current.due_at).getTime();
+  db.prepare(`UPDATE reminders SET message = ?, due_at = ?, sent = ? WHERE to_number = ? AND id = ?`).run(
     params.message,
     params.dueAt,
+    dueChanged ? 0 : current.sent,
     toNumber,
     id
   );
+}
+
+// adiar um lembrete (e desfazer o adiar): grava o horario E o estado "enviado" exatos
+export function rescheduleReminder(toNumber: string, id: number, dueAt: string, sent: 0 | 1) {
+  db.prepare(`UPDATE reminders SET due_at = ?, sent = ? WHERE to_number = ? AND id = ?`).run(dueAt, sent, toNumber, id);
+}
+
+// lembretes que JA TOCARAM (sent = 1) e cabem numa janela de tempo. Nao ha coluna com a
+// hora do envio: o agendador roda a cada minuto, entao due_at e uma boa aproximacao.
+// Sem texto: os mais recentes; com texto: so os que batem com ele. Mais recente primeiro.
+export function findRecentSentReminders(toNumber: string, query: string | undefined, withinHours: number, limit = 10): Reminder[] {
+  const text = query?.trim();
+  return db
+    .prepare(
+      `SELECT id, to_number, message, due_at, sent FROM reminders
+       WHERE to_number = ? AND sent = 1
+         AND datetime(due_at) <= datetime('now') AND datetime(due_at) >= datetime('now', '-' || ? || ' hours')
+         AND (? = '' OR message LIKE ?)
+       ORDER BY due_at DESC
+       LIMIT ?`
+    )
+    .all(toNumber, withinHours, text ?? "", `%${text ?? ""}%`, limit) as unknown as Reminder[];
 }
 
 export function deleteReminder(toNumber: string, id: number) {

@@ -44,6 +44,7 @@ import {
   addEventExtraReminder,
   removeEventReminder,
   MAX_REMINDERS_PER_EVENT,
+  EventRow,
 } from "./events/service";
 import {
   createReminder,
@@ -53,8 +54,28 @@ import {
   updateReminder,
   findPendingRemindersByText,
   getReminderById,
+  findRecentSentReminders,
+  rescheduleReminder,
 } from "./reminders/service";
 import { setPendingEditEvent, getPendingEditEvent, clearPendingEditEvent, PendingEditEvent } from "./events/pendingEditEvent";
+import { EventChangeKey, EventSnapshot, computeProposedEnd, eventChangeText, eventChanges, eventHeader } from "./events/editPlan";
+import {
+  DURATION_RANGE_TEXT,
+  END_NOT_UNDERSTOOD_TEXT,
+  EndSpec,
+  MAX_EVENT_MINUTES,
+  MAX_LOCATION_LENGTH,
+  MIN_EVENT_MINUTES,
+  parseLocationAnswer,
+  resolveEndSpec,
+} from "./confirmation/parsers";
+import {
+  SNOOZE_NOT_FOUND_TEXT,
+  computeSnoozeDue,
+  formatAlreadyPlayed,
+  formatNotPlayedYet,
+  formatSnoozeConfirmation,
+} from "./reminders/snooze";
 import {
   setPendingEditReminder,
   getPendingEditReminder,
@@ -120,7 +141,7 @@ import {
   formatFieldRetry,
   isChoiceQuestion,
 } from "./fieldMenu/format";
-import { DateTimeAnswer, validateFieldAnswer } from "./fieldMenu/validate";
+import { DateTimeAnswer, LocationAnswer, validateFieldAnswer } from "./fieldMenu/validate";
 import { setPendingFieldMenu, getPendingFieldMenu, clearPendingFieldMenu, PendingFieldMenu } from "./fieldMenu/pending";
 import { invalidDateMessage, parseExpenseDate } from "./expenses/parseDate";
 import { correctionOptions, formatCorrectionPicker, formatExpenseEditPreview, formatExpenseEditSuccess } from "./confirmation/expensePreview";
@@ -235,6 +256,7 @@ import {
   recurringHeader,
   correctionQuestion,
   correctionRetry,
+  formatCorrectionLabels,
 } from "./confirmation/preview";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
@@ -414,7 +436,7 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15".`;
+Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15".`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -422,7 +444,9 @@ Diga o que você quer lembrar e quando.
 
 Exemplo: "me lembra de tomar remédio às 20h"
 
-Na hora certa eu mando uma mensagem avisando. Pra mudar o horário de um lembrete já criado: "muda o lembrete do remédio pra amanhã às 21h" — eu confirmo antes de aplicar.`;
+Na hora certa eu mando uma mensagem avisando. Pra mudar o horário de um lembrete já criado: "muda o lembrete do remédio pra amanhã às 21h" — eu confirmo antes de aplicar.
+
+Quando um lembrete tocar e você não puder fazer na hora, é só responder "adia 30 min" ou "adia pra amanhã 9h" — adio na hora, e se foi sem querer: "desfaz isso".`;
     case "budget":
       return `🎯 Como definir um limite de gastos (orçamento):
 
@@ -2662,6 +2686,8 @@ function targetActionVerb(action: Interpretation): string {
     case "delete_expense":
     case "delete_income":
       return "apagar";
+    case "snooze_reminder":
+      return "adiar";
     case "add_event_reminder":
       return "adicionar o aviso";
     case "remove_event_reminder":
@@ -2678,12 +2704,14 @@ const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
   reminder: "Você não tem nenhum lembrete pendente pra editar.",
   recurring: "Você não tem nenhum gasto fixo pra editar.",
   income: "Você ainda não tem nenhuma entrada registrada pra editar.",
+  reminder_sent: SNOOZE_NOT_FOUND_TEXT,
 };
 
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
   if (kind === "event") return query ? `Não encontrei nenhum evento futuro parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.event;
   if (kind === "reminder") return query ? `Não encontrei nenhum lembrete parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.reminder;
   if (kind === "recurring") return query ? `Não achei nenhum gasto fixo parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.recurring;
+  if (kind === "reminder_sent") return SNOOZE_NOT_FOUND_TEXT;
   if (kind === "income") {
     if (query) return `Não achei nenhuma entrada parecida com "${query}".`;
     return action.type === "delete_income" ? "Você ainda não tem nenhuma entrada registrada pra apagar." : NOTHING_TO_EDIT_TEXT.income;
@@ -2712,6 +2740,8 @@ function searchTargets(from: string, kind: TargetKind, query: string): TargetSea
     entries = findActiveRecurringCandidates(from, query).map((r) => ({ id: r.id, line: recurringLine(r) }));
   } else if (kind === "income") {
     entries = findIncomeCandidates(from, query).map((i) => ({ id: i.id, line: incomeLine(i) }));
+  } else if (kind === "reminder_sent") {
+    entries = findRecentSentReminders(from, query, 24).map((r) => ({ id: r.id, line: reminderLine(r) }));
   } else {
     entries = findExpenseCandidates(from, query).map((e) => ({
       id: e.id,
@@ -2729,6 +2759,7 @@ function browseTargets(from: string, kind: TargetKind): TargetSearch {
   else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
   else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: incomeLine(i) }));
+  else if (kind === "reminder_sent") entries = findRecentSentReminders(from, undefined, 2).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
   const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
   return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
@@ -2760,6 +2791,7 @@ function targetExists(from: string, kind: TargetKind, id: number): boolean {
   if (kind === "reminder") return Boolean(getReminderById(from, id));
   if (kind === "recurring") return Boolean(getRecurringExpenseById(from, id)?.active);
   if (kind === "income") return Boolean(getIncomeById(from, id));
+  if (kind === "reminder_sent") return Boolean(getReminderById(from, id));
   return Boolean(getExpenseById(from, id));
 }
 
@@ -2911,7 +2943,7 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
   const incomeDeletion = getPendingDeleteIncome(from);
   if (incomeDeletion) return { label: incomeDeletion.snapshot.description, awaitingCorrection: false, kind: "text" };
   const event = getPendingEditEvent(from);
-  if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventCorrectionKind(event) };
+  if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventEditKind(event) };
   const reminder = getPendingEditReminder(from);
   if (reminder) return { label: reminder.message, awaitingCorrection: reminder.awaitingCorrection, kind: reminderCorrectionKind(reminder) };
   const recurring = getPendingEditRecurring(from);
@@ -2938,11 +2970,25 @@ type CorrectionValue =
   | { kind: "datetime"; newDate?: string; newTime?: string }
   | { kind: "day"; day: number }
   | { kind: "lead"; minutes: number }
+  | { kind: "endtime"; spec: EndSpec }
+  | { kind: "location"; location: string | null }
   | { kind: "text"; text: string };
 
 // interpreta o texto como o tipo de valor pedido; devolve o motivo se nao der
-async function interpretCorrection(kind: CorrectionKind, text: string): Promise<{ value: CorrectionValue } | { error: string }> {
+async function interpretCorrection(
+  kind: CorrectionKind,
+  text: string,
+  context: { startIso?: string } = {}
+): Promise<{ value: CorrectionValue } | { error: string }> {
   const trimmed = text.trim();
+  if (kind === "endtime") {
+    const resolved = context.startIso ? resolveEndSpec(trimmed, context.startIso) : ({ ok: false, error: END_NOT_UNDERSTOOD_TEXT } as const);
+    return resolved.ok ? { value: { kind, spec: resolved.spec } } : { error: resolved.error };
+  }
+  if (kind === "location") {
+    const parsed = parseLocationAnswer(trimmed);
+    return parsed.ok ? { value: { kind, location: parsed.location } } : { error: parsed.error };
+  }
   if (kind === "amount") {
     const parsed = parseBrazilianAmountDetailed(trimmed);
     if (parsed.ok) return { value: { kind, amount: parsed.value } };
@@ -2971,7 +3017,7 @@ async function interpretCorrection(kind: CorrectionKind, text: string): Promise<
 // RN04: texto livre so vira nova previa quando o campo pendente e valor ou
 // data/hora (ou dia do mes); campo de texto NUNCA recebe o texto livre
 function acceptsFreeText(kind: CorrectionKind): boolean {
-  return kind === "amount" || kind === "date" || kind === "datetime" || kind === "day";
+  return kind === "amount" || kind === "date" || kind === "datetime" || kind === "day" || kind === "endtime";
 }
 
 // ---------------------------------------------------------------------------
@@ -3001,7 +3047,7 @@ function fieldMenuHeader(from: string, kind: MenuKind, itemId: number): { header
   }
   if (kind === "event") {
     const event = getEventById(from, itemId);
-    return event ? { header: eventLine(event), label: event.title } : null;
+    return event ? { header: eventHeader(event), label: event.title } : null;
   }
   if (kind === "reminder") {
     const reminder = getReminderById(from, itemId);
@@ -3062,6 +3108,10 @@ async function dispatchFieldMenuEdit(from: string, pending: PendingFieldMenu) {
       new_date: dateTime?.newDate,
       new_time: dateTime?.newTime,
       new_reminder_minutes: c.lead as number | undefined,
+      new_end_time: (c.end as EndSpec | undefined)?.endTime,
+      new_duration_minutes: (c.end as EndSpec | undefined)?.durationMinutes,
+      new_location: (c.location as LocationAnswer | undefined)?.location ?? undefined,
+      clear_location: c.location !== undefined && (c.location as LocationAnswer).location === null ? true : undefined,
     };
   } else if (pending.kind === "reminder") {
     action = { type: "edit_reminder", query: "", new_message: c.message as string | undefined, new_date: dateTime?.newDate, new_time: dateTime?.newTime };
@@ -3130,7 +3180,14 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
     const picked = pending.choices[Number(raw) - 1];
     if (picked) raw = picked;
   }
-  const answer = await validateFieldAnswer(def, raw, from);
+  // o termino do evento depende do inicio JA com a mudanca de dia/hora respondida antes (se houve)
+  let startIso: string | undefined;
+  if (pending.kind === "event") {
+    const event = getEventById(from, pending.itemId);
+    const dateTime = pending.collected.datetime as DateTimeAnswer | undefined;
+    if (event) startIso = dateTime ? mergeDateTime(event.start, dateTime.newDate, dateTime.newTime) : event.start;
+  }
+  const answer = await validateFieldAnswer(def, raw, from, { startIso });
   if (!answer.ok) {
     logActivity(from, activity, `menu de campos: resposta invalida em ${def.label}`);
     await sendText(from, formatFieldRetry(answer.error, params));
@@ -3761,57 +3818,81 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
 
 // ---- evento ----------------------------------------------------------------
 
-function leadLabel(minutes: number): string {
-  return minutes === 0 ? "na hora" : `${formatMinutesBefore(minutes)} antes`;
+function eventSnapshotOf(event: EventRow): EventSnapshot {
+  return { title: event.title, start: event.start, end: event.end, location: event.location, reminderMinutes: event.reminder_minutes };
 }
 
-function eventCorrectionKind(pending: Pick<PendingEditEvent, "isDateTimeChange" | "proposedTitle" | "previous">): CorrectionKind {
-  if (pending.isDateTimeChange) return "datetime";
-  if (pending.proposedTitle !== pending.previous.title) return "text";
-  return "lead";
+const EVENT_CHANGE_KIND: Record<EventChangeKey, CorrectionKind> = {
+  datetime: "datetime",
+  end: "endtime",
+  title: "text",
+  location: "location",
+  lead: "lead",
+};
+
+const EVENT_CHANGE_NOUN: Record<EventChangeKey, string> = {
+  datetime: "data e hora",
+  end: "término",
+  title: "nome",
+  location: "local",
+  lead: "aviso",
+};
+
+function currentEventChanges(pending: Pick<PendingEditEvent, "previous" | "proposed" | "endSpec">) {
+  return eventChanges(pending.previous, pending.proposed, pending.endSpec);
+}
+
+// tipo de valor que a proxima resposta espera: o campo escolhido na correcao ou, sem
+// escolha, o da unica mudanca (com varias mudancas nenhuma resposta solta vira valor)
+function eventEditKind(pending: Pick<PendingEditEvent, "previous" | "proposed" | "endSpec" | "correctionTarget">): CorrectionKind {
+  if (pending.correctionTarget) return EVENT_CHANGE_KIND[pending.correctionTarget];
+  const changes = currentEventChanges(pending);
+  return changes.length === 1 ? EVENT_CHANGE_KIND[changes[0].key] : "text";
 }
 
 function buildEventPreview(pending: Omit<PendingEditEvent, "createdAt">): string {
-  const changes: PreviewChange[] = [];
-  if (pending.isDateTimeChange) changes.push({ label: "Quando", from: formatWhen(pending.previous.start), to: formatWhen(pending.proposedStart) });
-  if (pending.proposedTitle !== pending.previous.title) changes.push({ label: "Nome", from: pending.previous.title, to: pending.proposedTitle });
-  if (pending.proposedReminderMinutes !== pending.previous.reminderMinutes) {
-    changes.push({ label: "Aviso", from: leadLabel(pending.previous.reminderMinutes), to: leadLabel(pending.proposedReminderMinutes) });
-  }
-  return formatEditPreview(pending.headerText, changes);
+  return formatEditPreview(pending.headerText, currentEventChanges(pending));
 }
 
-function buildEventChangeText(pending: Pick<PendingEditEvent, "isDateTimeChange" | "previous" | "proposedStart" | "proposedTitle" | "proposedReminderMinutes">): string {
-  const parts: string[] = [];
-  if (pending.isDateTimeChange) parts.push(`de ${formatDateTime(pending.previous.start)} pra ${formatDateTime(pending.proposedStart)}`);
-  if (pending.proposedTitle !== pending.previous.title) parts.push(`título "${pending.previous.title}" → "${pending.proposedTitle}"`);
-  if (pending.proposedReminderMinutes !== pending.previous.reminderMinutes) parts.push(`aviso ${formatMinutesBefore(pending.proposedReminderMinutes)} antes`);
-  return parts.join("; ");
+// refaz a previa com um novo valor pro campo e recalcula o termino (RN02). Devolve false
+// (e ja respondeu o motivo) quando o valor nao serve.
+async function applyEventCorrection(from: string, pending: PendingEditEvent, key: EventChangeKey, value: CorrectionValue): Promise<boolean> {
+  const proposed = { ...pending.proposed };
+  let endSpec = pending.endSpec;
+  if (value.kind === "datetime") {
+    // mescla com o valor JA PROPOSTO (nao o original do evento) -- se a correcao so
+    // mencionar o dia, mantem a hora que ja tinha sido proposta antes
+    proposed.start = mergeDateTime(pending.proposed.start, value.newDate, value.newTime);
+  } else if (value.kind === "endtime") {
+    endSpec = value.spec;
+  } else if (value.kind === "text") {
+    proposed.title = value.text;
+  } else if (value.kind === "location") {
+    proposed.location = value.location;
+  } else if (value.kind === "lead") {
+    proposed.reminderMinutes = value.minutes;
+  }
+  const end = computeProposedEnd(pending.previous, proposed.start, endSpec);
+  if (!end.ok) {
+    await sendText(from, correctionRetry(end.error, EVENT_CHANGE_KIND[key], EVENT_CHANGE_NOUN[key]));
+    return false;
+  }
+  proposed.end = end.end;
+  const changes = eventChanges(pending.previous, proposed, endSpec);
+  if (changes.length === 0) {
+    clearPendingEditEvent(from);
+    logActivity(from, "edit_event", `correcao deixou "${pending.title}" como estava`);
+    await sendText(from, NO_CHANGE_TEXT);
+    return true;
+  }
+  const next = { ...pending, proposed, endSpec, changeText: eventChangeText(changes), awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
+  setPendingEditEvent(from, next);
+  logActivity(from, "edit_event", `correcao: "${pending.title}": ${next.changeText}`);
+  await sendText(from, buildEventPreview(next));
+  return true;
 }
 
 async function resolveEditEventConfirmation(from: string, pending: PendingEditEvent, answerText: string) {
-  const kind = eventCorrectionKind(pending);
-  const noun = kind === "text" ? "nome" : "aviso";
-
-  const applyCorrection = async (value: CorrectionValue) => {
-    const next = { ...pending, awaitingCorrection: false };
-    if (value.kind === "datetime") {
-      // mescla com o valor JA PROPOSTO (nao o original do evento) -- se a correcao so
-      // mencionar o dia, mantem a hora que ja tinha sido proposta antes
-      next.proposedStart = mergeDateTime(pending.proposedStart, value.newDate, value.newTime);
-      const durationMs = new Date(pending.previous.end).getTime() - new Date(pending.previous.start).getTime();
-      next.proposedEnd = new Date(new Date(next.proposedStart).getTime() + durationMs).toISOString();
-    } else if (value.kind === "text") {
-      next.proposedTitle = value.text;
-    } else if (value.kind === "lead") {
-      next.proposedReminderMinutes = value.minutes;
-    }
-    next.changeText = buildEventChangeText(next);
-    setPendingEditEvent(from, next);
-    logActivity(from, "edit_event", `correcao: "${pending.title}": ${next.changeText}`);
-    await sendText(from, buildEventPreview(next));
-  };
-
   if (pending.awaitingCorrection) {
     // RN06: durante a correcao so a palavra "cancelar" cancela; o resto e o novo valor
     if (isCancelWord(answerText)) {
@@ -3820,12 +3901,27 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       await sendText(from, "Beleza, não mexi em nada.");
       return;
     }
-    const interpreted = await interpretCorrection(kind, answerText);
-    if ("error" in interpreted) {
-      await sendText(from, correctionRetry(interpreted.error, kind, noun));
+    if (pending.correctionStage === "pick") {
+      const changes = currentEventChanges(pending);
+      const trimmed = answerText.trim();
+      const picked = /^\d+$/.test(trimmed) ? changes[Number(trimmed) - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(changes.map((c) => c.label))}`);
+        return;
+      }
+      setPendingEditEvent(from, { ...pending, correctionStage: "value", correctionTarget: picked.key });
+      logActivity(from, "edit_event", `corrigindo ${picked.label} de "${pending.title}"`);
+      await sendText(from, correctionQuestion(EVENT_CHANGE_KIND[picked.key], EVENT_CHANGE_NOUN[picked.key]));
       return;
     }
-    await applyCorrection(interpreted.value);
+    const key = pending.correctionTarget!;
+    const kind = EVENT_CHANGE_KIND[key];
+    const interpreted = await interpretCorrection(kind, answerText, { startIso: pending.proposed.start });
+    if ("error" in interpreted) {
+      await sendText(from, correctionRetry(interpreted.error, kind, EVENT_CHANGE_NOUN[key]));
+      return;
+    }
+    await applyEventCorrection(from, pending, key, interpreted.value);
     return;
   }
 
@@ -3838,11 +3934,11 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       return;
     }
     updateEvent(from, pending.eventId, {
-      title: pending.proposedTitle,
-      start: pending.proposedStart,
-      end: pending.proposedEnd,
-      location: pending.previous.location ?? undefined,
-      reminderMinutes: pending.proposedReminderMinutes,
+      title: pending.proposed.title,
+      start: pending.proposed.start,
+      end: pending.proposed.end,
+      location: pending.proposed.location ?? undefined,
+      reminderMinutes: pending.proposed.reminderMinutes,
     });
     setPendingUndo(from, {
       kind: "restore_event_time",
@@ -3861,16 +3957,26 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
     return;
   }
   if (reply === "correct") {
-    setPendingEditEvent(from, { ...pending, awaitingCorrection: true });
-    logActivity(from, "edit_event", `pediu pra corrigir "${pending.title}"`);
-    await sendText(from, correctionQuestion(kind, noun));
+    const changes = currentEventChanges(pending);
+    if (changes.length === 1) {
+      const key = changes[0].key;
+      setPendingEditEvent(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: key });
+      logActivity(from, "edit_event", `pediu pra corrigir ${changes[0].label} de "${pending.title}"`);
+      await sendText(from, correctionQuestion(EVENT_CHANGE_KIND[key], EVENT_CHANGE_NOUN[key]));
+    } else {
+      setPendingEditEvent(from, { ...pending, awaitingCorrection: true, correctionStage: "pick", correctionTarget: null });
+      logActivity(from, "edit_event", `pediu pra corrigir "${pending.title}" (escolhendo qual)`);
+      await sendText(from, formatCorrectionLabels(changes.map((c) => c.label)));
+    }
     return;
   }
 
+  const kind = eventEditKind(pending);
   if (acceptsFreeText(kind)) {
-    const interpreted = await interpretCorrection(kind, answerText);
+    const key = currentEventChanges(pending)[0].key;
+    const interpreted = await interpretCorrection(kind, answerText, { startIso: pending.proposed.start });
     if (!("error" in interpreted)) {
-      await applyCorrection(interpreted.value);
+      await applyEventCorrection(from, pending, key, interpreted.value);
       return;
     }
   }
@@ -3880,8 +3986,23 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
 
 // ---- lembrete --------------------------------------------------------------
 
-function reminderCorrectionKind(pending: Pick<PendingEditReminder, "isDateTimeChange">): CorrectionKind {
-  return pending.isDateTimeChange ? "datetime" : "text";
+type ReminderChangeKey = "datetime" | "text";
+
+const REMINDER_KEY_KIND: Record<ReminderChangeKey, CorrectionKind> = { datetime: "datetime", text: "text" };
+const REMINDER_KEY_LABEL: Record<ReminderChangeKey, string> = { datetime: "Quando", text: "Texto" };
+
+// as mudancas do lembrete, na ordem da previa (Quando, Texto)
+function reminderChangeKeys(pending: Pick<PendingEditReminder, "isDateTimeChange" | "message" | "proposedMessage">): ReminderChangeKey[] {
+  const keys: ReminderChangeKey[] = [];
+  if (pending.isDateTimeChange) keys.push("datetime");
+  if (pending.proposedMessage !== pending.message) keys.push("text");
+  return keys;
+}
+
+function reminderCorrectionKind(pending: Pick<PendingEditReminder, "isDateTimeChange" | "message" | "proposedMessage" | "correctionTarget">): CorrectionKind {
+  if (pending.correctionTarget) return REMINDER_KEY_KIND[pending.correctionTarget];
+  const keys = reminderChangeKeys(pending);
+  return keys.length === 1 ? REMINDER_KEY_KIND[keys[0]] : "text";
 }
 
 function buildReminderPreview(pending: Omit<PendingEditReminder, "createdAt">): string {
@@ -3899,11 +4020,10 @@ function buildReminderChangeText(pending: Pick<PendingEditReminder, "isDateTimeC
 }
 
 async function resolveEditReminderConfirmation(from: string, pending: PendingEditReminder, answerText: string) {
-  const kind = reminderCorrectionKind(pending);
   const noun = "texto";
 
   const applyCorrection = async (value: CorrectionValue) => {
-    const next = { ...pending, awaitingCorrection: false };
+    const next = { ...pending, awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
     if (value.kind === "datetime") next.proposedDueAt = mergeDateTime(pending.proposedDueAt, value.newDate, value.newTime);
     else if (value.kind === "text") next.proposedMessage = value.text;
     next.changeText = buildReminderChangeText(next);
@@ -3920,6 +4040,19 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
       await sendText(from, "Beleza, não mexi em nada.");
       return;
     }
+    if (pending.correctionStage === "pick") {
+      const keys = reminderChangeKeys(pending);
+      const trimmed = answerText.trim();
+      const picked = /^\d+$/.test(trimmed) ? keys[Number(trimmed) - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(keys.map((k) => REMINDER_KEY_LABEL[k]))}`);
+        return;
+      }
+      setPendingEditReminder(from, { ...pending, correctionStage: "value", correctionTarget: picked });
+      await sendText(from, correctionQuestion(REMINDER_KEY_KIND[picked], picked === "text" ? noun : "data e hora"));
+      return;
+    }
+    const kind = reminderCorrectionKind(pending);
     const interpreted = await interpretCorrection(kind, answerText);
     if ("error" in interpreted) {
       await sendText(from, correctionRetry(interpreted.error, kind, noun));
@@ -3955,12 +4088,20 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
     return;
   }
   if (reply === "correct") {
-    setPendingEditReminder(from, { ...pending, awaitingCorrection: true });
-    logActivity(from, "edit_reminder", `pediu pra corrigir "${pending.message}"`);
-    await sendText(from, correctionQuestion(kind, noun));
+    const keys = reminderChangeKeys(pending);
+    if (keys.length === 1) {
+      setPendingEditReminder(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: keys[0] });
+      logActivity(from, "edit_reminder", `pediu pra corrigir "${pending.message}"`);
+      await sendText(from, correctionQuestion(REMINDER_KEY_KIND[keys[0]], keys[0] === "text" ? noun : "data e hora"));
+    } else {
+      setPendingEditReminder(from, { ...pending, awaitingCorrection: true, correctionStage: "pick", correctionTarget: null });
+      logActivity(from, "edit_reminder", `pediu pra corrigir "${pending.message}" (escolhendo qual)`);
+      await sendText(from, formatCorrectionLabels(keys.map((k) => REMINDER_KEY_LABEL[k])));
+    }
     return;
   }
 
+  const kind = reminderCorrectionKind(pending);
   if (acceptsFreeText(kind)) {
     const interpreted = await interpretCorrection(kind, answerText);
     if (!("error" in interpreted)) {
@@ -4363,6 +4504,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     }
     case "edit_event": {
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
+      const newLocation = interpretation.new_location?.trim();
+      const endTime = interpretation.new_end_time?.trim();
+      const duration = interpretation.new_duration_minutes;
+      const hasEndChange = Boolean(endTime) || duration !== undefined;
+      const hasLocationChange = Boolean(newLocation) || interpretation.clear_location === true;
       if (
         interpretation.new_reminder_minutes !== undefined &&
         (interpretation.new_reminder_minutes < 0 || interpretation.new_reminder_minutes > 43200)
@@ -4370,61 +4516,66 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         await sendText(from, "A antecedência do aviso precisa ser entre 0 (na hora) e 30 dias antes.");
         break;
       }
+      if (endTime && !/^\d{1,2}:\d{2}$/.test(endTime)) {
+        await sendText(from, END_NOT_UNDERSTOOD_TEXT);
+        break;
+      }
+      if (!endTime && duration !== undefined && (duration < MIN_EVENT_MINUTES || duration > MAX_EVENT_MINUTES)) {
+        await sendText(from, DURATION_RANGE_TEXT);
+        break;
+      }
+      if (newLocation && newLocation.length > MAX_LOCATION_LENGTH) {
+        await sendText(from, `Esse texto está muito longo (máximo ${MAX_LOCATION_LENGTH} caracteres).`);
+        break;
+      }
 
       const eventId = await chooseTarget(from, "event", interpretation, interpretation.query, resolvedTargetId);
       if (eventId === null) break;
       // RN01: sem mudanca explicita abre o menu de campos
-      if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined) {
+      if (!hasDateTimeChange && !interpretation.new_title && interpretation.new_reminder_minutes === undefined && !hasEndChange && !hasLocationChange) {
         await openFieldMenu(from, "event", eventId);
         break;
       }
       const event = getEventById(from, eventId)!;
-      // preenche so o que foi pedido -- "muda so o dia" mantem o horario
-      // original, "muda so o horario" mantem a data original (ver mergeDateTime).
-      // Se a edicao nem envolve data/hora (so titulo/antecedencia), NAO chama
-      // mergeDateTime -- ele reconstroi a string via Date, o que reformataria
-      // (e poderia arredondar) um horario que o usuario nem pediu pra mudar.
-      const newStart = hasDateTimeChange ? mergeDateTime(event.start, interpretation.new_date, interpretation.new_time) : event.start;
-      const newEnd = hasDateTimeChange
-        ? new Date(new Date(newStart).getTime() + (new Date(event.end).getTime() - new Date(event.start).getTime())).toISOString()
-        : event.end;
-      const proposedTitle = interpretation.new_title ?? event.title;
-      const proposedReminderMinutes = interpretation.new_reminder_minutes ?? event.reminder_minutes;
+      const previous = eventSnapshotOf(event);
+      const proposed: EventSnapshot = { ...previous };
+      // preenche so o que foi pedido -- "muda so o dia" mantem o horario original,
+      // "muda so o horario" mantem a data original (ver mergeDateTime). Se nem envolve
+      // data/hora, NAO chama mergeDateTime -- ele reconstroi a string via Date, o que
+      // reformataria um horario que o usuario nem pediu pra mudar.
+      if (hasDateTimeChange) proposed.start = mergeDateTime(event.start, interpretation.new_date, interpretation.new_time);
+      if (interpretation.new_title) proposed.title = interpretation.new_title;
+      if (interpretation.new_reminder_minutes !== undefined) proposed.reminderMinutes = interpretation.new_reminder_minutes;
+      if (interpretation.clear_location) proposed.location = null;
+      else if (newLocation) proposed.location = newLocation;
+      // horario final vence a duracao (RN01); sem nenhum dos dois a duracao original acompanha o inicio
+      const endSpec: EndSpec | null = endTime ? { endTime: endTime.padStart(5, "0") } : duration !== undefined ? { durationMinutes: duration } : null;
+      const end = computeProposedEnd(previous, proposed.start, endSpec);
+      if (!end.ok) {
+        logActivity(from, "edit_event", end.error);
+        await sendText(from, end.error);
+        break;
+      }
+      proposed.end = end.end;
 
-      // so conta o que realmente muda (mesmo valor que ja esta la nao e mudanca)
-      const startChanged = hasDateTimeChange && new Date(newStart).getTime() !== new Date(event.start).getTime();
-      const titleChanged = proposedTitle !== event.title;
-      const leadChanged = proposedReminderMinutes !== event.reminder_minutes;
-      if (!startChanged && !titleChanged && !leadChanged) {
+      const changes = eventChanges(previous, proposed, endSpec);
+      if (changes.length === 0) {
         logActivity(from, "edit_event", `pedido sem nenhuma mudanca real em "${event.title}"`);
         await sendText(from, NO_CHANGE_TEXT);
         break;
       }
-
-      const changeParts: string[] = [];
-      if (startChanged) changeParts.push(`de ${formatDateTime(event.start)} pra ${formatDateTime(newStart)}`);
-      if (titleChanged) changeParts.push(`título "${event.title}" → "${proposedTitle}"`);
-      if (leadChanged) changeParts.push(`aviso ${formatMinutesBefore(proposedReminderMinutes)} antes`);
-      const changeText = changeParts.join("; ");
-
+      const changeText = eventChangeText(changes);
       const pendingEvent = {
         eventId: event.id,
         title: event.title,
-        previous: {
-          title: event.title,
-          start: event.start,
-          end: event.end,
-          location: event.location,
-          reminderMinutes: event.reminder_minutes,
-        },
-        proposedTitle,
-        proposedStart: newStart,
-        proposedEnd: newEnd,
-        proposedReminderMinutes,
-        isDateTimeChange: startChanged,
+        previous,
+        proposed,
+        endSpec,
         changeText,
         awaitingCorrection: false,
-        headerText: event.title,
+        correctionStage: "pick" as const,
+        correctionTarget: null,
+        headerText: eventHeader(event),
       };
       clearEditConfirmations(from);
       setPendingEditEvent(from, pendingEvent);
@@ -4517,6 +4668,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     case "edit_reminder": {
       const hasDateTimeChange = Boolean(interpretation.new_date || interpretation.new_time);
 
+      // RN17: o lembrete ja tocou (nao ha nenhum pendente com esse texto) -- edita nao adianta, adiar sim
+      if (interpretation.query && resolvedTargetId === undefined && findPendingRemindersByText(from, interpretation.query).length === 0) {
+        const played = findRecentSentReminders(from, interpretation.query, 24, 1)[0];
+        if (played) {
+          logActivity(from, "edit_reminder", `"${played.message}" ja tocou -- sugeriu adiar`);
+          await sendText(from, formatAlreadyPlayed(played.message, played.due_at));
+          break;
+        }
+      }
       const reminderId = await chooseTarget(from, "reminder", interpretation, interpretation.query, resolvedTargetId);
       if (reminderId === null) break;
       // RN01: sem mudanca explicita abre o menu de campos
@@ -4553,12 +4713,47 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         isDateTimeChange: dueChanged,
         changeText,
         awaitingCorrection: false,
+        correctionStage: "pick" as const,
+        correctionTarget: null,
         headerText: reminder.message,
       };
       clearEditConfirmations(from);
       setPendingEditReminder(from, pendingReminder);
       logActivity(from, "edit_reminder", `pediu confirmacao: "${reminder.message}" ${changeText}`);
       await sendText(from, buildReminderPreview(pendingReminder));
+      break;
+    }
+    case "snooze_reminder": {
+      const query = interpretation.query?.trim() || undefined;
+      // com texto: se nenhum lembrete que tocou bate, explica o porque (ainda pendente / nao achei)
+      if (resolvedTargetId === undefined && query && findRecentSentReminders(from, query, 24, 1).length === 0) {
+        const notPlayed = findPendingRemindersByText(from, query)[0];
+        logActivity(from, "snooze_reminder", notPlayed ? `"${notPlayed.message}" ainda nao tocou` : `nenhum lembrete que tocou bate com "${query}"`);
+        await sendText(from, notPlayed ? formatNotPlayedYet(notPlayed.message, notPlayed.due_at, query) : SNOOZE_NOT_FOUND_TEXT);
+        break;
+      }
+      const reminderId = await chooseTarget(from, "reminder_sent", interpretation, query, resolvedTargetId);
+      if (reminderId === null) break;
+      const reminder = getReminderById(from, reminderId)!;
+      const now = new Date();
+      const due = computeSnoozeDue(reminder.due_at, { minutes: interpretation.minutes, newDate: interpretation.new_date, newTime: interpretation.new_time }, now);
+      if (!due.ok) {
+        logActivity(from, "snooze_reminder", due.error);
+        await sendText(from, due.error);
+        break;
+      }
+      // adiar e direto (pedido explicito, baixo risco, com desfazer): novo horario e volta a "nao enviado"
+      rescheduleReminder(from, reminder.id, due.dueAt, 0);
+      setPendingUndo(from, {
+        kind: "restore_reminder_snooze",
+        reminderId: reminder.id,
+        previousDueAt: reminder.due_at,
+        previousSent: reminder.sent ? 1 : 0,
+        description: reminder.message,
+      });
+      const usesMinutes = !interpretation.new_date && !interpretation.new_time;
+      logActivity(from, "snooze_reminder", `"${reminder.message}" adiado pra ${due.dueAt}`);
+      await sendText(from, formatSnoozeConfirmation(reminder.message, due.dueAt, usesMinutes ? interpretation.minutes : undefined, now));
       break;
     }
     case "report": {
@@ -5533,6 +5728,11 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           updateReminder(from, undo.reminderId, { message: undo.description, dueAt: undo.previousDueAt });
           logActivity(from, "undo", `edicao de lembrete desfeita: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o lembrete "${undo.description}" voltou como estava antes.`);
+          break;
+        case "restore_reminder_snooze":
+          rescheduleReminder(from, undo.reminderId, undo.previousDueAt, undo.previousSent);
+          logActivity(from, "undo", `adiamento desfeito: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, desfiz o adiamento do lembrete "${undo.description}".`);
           break;
         case "restore_budget":
           setBudget(from, undo.categoryId, undo.monthlyLimit);

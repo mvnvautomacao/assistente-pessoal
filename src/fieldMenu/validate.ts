@@ -3,7 +3,7 @@
 // sao funcoes puras; data e "dia e hora" podem chamar a IA (so quando o texto
 // livre nao e um formato comum).
 import { extractCategoryFromAnswer, extractDateTimeFromAnswer } from "../ai/interpret";
-import { parseBrazilianAmountDetailed, parseDayOfMonthAnswer, parseLeadTimeMinutes } from "../confirmation/parsers";
+import { EndSpec, parseBrazilianAmountDetailed, parseDayOfMonthAnswer, parseLeadTimeMinutes, parseLocationAnswer, resolveEndSpec } from "../confirmation/parsers";
 import { resolveDate } from "../expenses/editItem";
 import { invalidDateMessage } from "../expenses/parseDate";
 import { findCategoryMentionedIn } from "../expenses/service";
@@ -14,7 +14,8 @@ import { FieldDef } from "./registry";
 export const MAX_TEXT_LENGTH = 100;
 
 export type DateTimeAnswer = { newDate?: string; newTime?: string };
-export type FieldValue = string | number | DateTimeAnswer;
+export type LocationAnswer = { location: string | null };
+export type FieldValue = string | number | DateTimeAnswer | EndSpec | LocationAnswer;
 export type FieldAnswer = { ok: true; value: FieldValue } | { ok: false; error: string };
 
 export function validateTextAnswer(text: string): FieldAnswer {
@@ -77,8 +78,25 @@ async function categoryNameFrom(fromNumber: string, text: string): Promise<strin
   return findCategoryMentionedIn(fromNumber, trimmed)?.name ?? (await extractCategoryFromAnswer(trimmed));
 }
 
-export async function validateFieldAnswer(def: FieldDef, text: string, fromNumber: string): Promise<FieldAnswer> {
+// termino do evento: depende do INICIO (a mesma resposta "2h" vale horario ou duracao)
+export function validateEndAnswer(text: string, startIso: string | undefined): FieldAnswer {
+  if (!startIso) return { ok: false, error: "Não consegui ler o início do evento." };
+  const resolved = resolveEndSpec(text, startIso);
+  return resolved.ok ? { ok: true, value: resolved.spec } : { ok: false, error: resolved.error };
+}
+
+export function validateLocationAnswer(text: string): FieldAnswer {
+  const parsed = parseLocationAnswer(text);
+  return parsed.ok ? { ok: true, value: { location: parsed.location } } : { ok: false, error: parsed.error };
+}
+
+// "context.startIso" so e usado pelo termino do evento (inicio ja com a mudanca de dia/hora, se houver)
+export async function validateFieldAnswer(def: FieldDef, text: string, fromNumber: string, context: { startIso?: string } = {}): Promise<FieldAnswer> {
   switch (def.question) {
+    case "endtime":
+      return validateEndAnswer(text, context.startIso);
+    case "location":
+      return validateLocationAnswer(text);
     case "amount":
       return validateAmountAnswer(text);
     case "day":

@@ -6,7 +6,7 @@ import type { TargetKind } from "./pending";
 // no maximo isso de candidatos por lista (RN02)
 export const MAX_TARGET_CANDIDATES = 8;
 
-const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos", income: "entradas" };
+const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos", income: "entradas", reminder_sent: "lembretes" };
 
 // titulo da lista "navegar" (usuario escolheu editar um tipo, sem citar nenhum item)
 const BROWSE_TITLE: Record<TargetKind, string> = {
@@ -15,6 +15,7 @@ const BROWSE_TITLE: Record<TargetKind, string> = {
   reminder: "Seus lembretes:",
   recurring: "Seus gastos fixos:",
   income: "Suas últimas entradas:",
+  reminder_sent: "Esses lembretes tocaram há pouco:",
 };
 
 export function eventLine(event: { title: string; start: string }): string {
@@ -49,7 +50,7 @@ export function formatTargetList(params: { kind: TargetKind; header: TargetListH
   const title =
     header.type === "expired"
       ? `Essa lista já expirou, então não vou adivinhar pelo número. ${kind === "income" ? "Suas últimas entradas" : "Seus últimos gastos"}:`
-      : header.type === "browse"
+      : header.type === "browse" || (kind === "reminder_sent" && header.type !== "refined")
         ? BROWSE_TITLE[kind]
         : header.type === "refined"
         ? `Ainda tenho ${lines.length} opções com "${header.query}":`

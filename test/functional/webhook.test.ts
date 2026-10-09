@@ -40,6 +40,8 @@ import * as incomesService from "../../src/incomes/service";
 import { spDateString, addDaysToDateString } from "../../src/timeSP";
 import { createEvent, getEventById, findUpcomingEvents, listEventReminderMinutes, addEventExtraReminder, deleteEvent } from "../../src/events/service";
 import { listReminders, createReminder, findPendingRemindersByText, getReminderById } from "../../src/reminders/service";
+import * as eventsService from "../../src/events/service";
+import * as remindersService from "../../src/reminders/service";
 import { listRecurringExpenses, createRecurringExpense, getRecurringExpenseById } from "../../src/expenses/recurring";
 import { listBillAlerts, getBillAlertById, createBillAlert } from "../../src/bills/service";
 import { setPendingBillCheckin } from "../../src/bills/pendingCheckin";
@@ -3490,7 +3492,7 @@ test("escolha de alvo: com exatamente 1 candidato nenhuma lista e enviada; pedid
   queueReply([{ type: "edit_event", query: "reuniao unica", new_title: "Reuniao importante" }]);
   await handleIncomingMessage(evolutionMessage(TC4, "renomeia a reuniao unica pra Reuniao importante"));
   assert.doesNotMatch(sent[0].text, /Achei/);
-  assert.match(sent[0].text, /✏️ Reuniao unica\nNome: Reuniao unica → Reuniao importante/);
+  assert.match(sent[0].text, /^✏️ Reuniao unica — .*às 10:00–11:00\nNome: Reuniao unica → Reuniao importante/);
   await handleIncomingMessage(evolutionMessage(TC4, "3")); // cancela essa edicao
 
   // 2 eventos batem com "consulta" e o pedido nao diz o que mudar: lista pra escolher e depois abre o menu de campos
@@ -4064,7 +4066,7 @@ test("card 4 (a)+(b): evento -- lista numerada, menu de 3 campos, dia e hora + a
   assert.match(sent[1].text, /Qual deles você quer editar\?/);
 
   await handleIncomingMessage(evolutionMessage(E1, "1"));
-  assert.match(sent[2].text, /^✏️ Consulta A menu — .*\nO que você quer mudar\?\n1 Dia e hora\n2 Título\n3 Aviso\n/);
+  assert.match(sent[2].text, /^✏️ Consulta A menu — .*\nO que você quer mudar\?\n1 Dia e hora\n2 Título\n3 Aviso\n4 Término\n5 Local\n/);
 
   await handleIncomingMessage(evolutionMessage(E1, "dia e hora e aviso"));
   assert.match(sent[3].text, /^\(1 de 2\) Qual é a data e hora certas\?/);
@@ -4073,7 +4075,7 @@ test("card 4 (a)+(b): evento -- lista numerada, menu de 3 campos, dia e hora + a
   await handleIncomingMessage(evolutionMessage(E1, "40 dias")); // fora de 0 a 30 dias
   assert.match(sent[5].text, /Não entendi a antecedência "40 dias"[\s\S]*\(2 de 2\)/);
   await handleIncomingMessage(evolutionMessage(E1, "2 horas"));
-  assert.match(sent[6].text, /^✏️ Consulta A menu\nQuando: .* → .*16:00\nAviso: 1 hora antes → 2 horas antes\n\n1 ✅ Confirmar/);
+  assert.match(sent[6].text, /^✏️ Consulta A menu — .*\nQuando: .* → .*16:00\nAviso: 1 hora antes → 2 horas antes\n\n1 ✅ Confirmar/);
 
   await handleIncomingMessage(evolutionMessage(E1, "1"));
   const updated = getEventById(E1, a.id)!;
@@ -4542,4 +4544,282 @@ test("card 5: opcao 2 (corrigir) na edicao de entrada -- escolhe qual campo; tex
   assert.match(sent[sent.length - 1].text, /Valor: R\$ 1\.000,00 → R\$ 1\.400,00/);
   await handleIncomingMessage(evolutionMessage(I20, "1"));
   assert.equal(incomesService.getIncomeById(I20, e.id)?.amount, 1400);
+});
+
+// ---------------------------------------------------------------------------
+// Card 6: agenda -- local e termino do evento, correcao com varias mudancas,
+// avisos que nao se repetem e adiar lembrete que ja tocou
+// ---------------------------------------------------------------------------
+
+const agendaIso = (minutesFromNow: number) => new Date(Date.now() + minutesFromNow * 60 * 1000).toISOString();
+
+test("card 6: local do evento -- define, aparece no cabecalho, remove", async (t) => {
+  const A1 = "551100091601";
+  seed(A1);
+  const ev = createEvent({ fromNumber: A1, title: "Consulta loc", start: futureAt(3, 14), end: futureAt(3, 15) });
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "edit_event", query: "consulta loc", new_location: "Clínica Sorriso" }]);
+  await handleIncomingMessage(evolutionMessage(A1, "a consulta loc é na Clínica Sorriso"));
+  assert.match(sent[0].text, /^✏️ Consulta loc — .* às 14:00–15:00\nLocal: sem local → Clínica Sorriso\n\n1 ✅ Confirmar\n2 ✏️ Corrigir\n3 ❌ Cancelar$/);
+  assert.equal(eventsService.getEventById(A1, ev.id)?.location, null); // nada gravado ate o "1"
+  await handleIncomingMessage(evolutionMessage(A1, "1"));
+  assert.equal(eventsService.getEventById(A1, ev.id)?.location, "Clínica Sorriso");
+
+  // o local passa a aparecer no cabecalho das proximas previas
+  queueReply([{ type: "edit_event", query: "consulta loc", clear_location: true }]);
+  await handleIncomingMessage(evolutionMessage(A1, "tira o local da consulta loc"));
+  assert.match(sent[sent.length - 1].text, /^✏️ Consulta loc — .* às 14:00–15:00 · Clínica Sorriso\nLocal: Clínica Sorriso → sem local\n/);
+  await handleIncomingMessage(evolutionMessage(A1, "1"));
+  assert.equal(eventsService.getEventById(A1, ev.id)?.location, null);
+
+  // remover quando ja nao ha local
+  queueReply([{ type: "edit_event", query: "consulta loc", clear_location: true }]);
+  await handleIncomingMessage(evolutionMessage(A1, "tira o local da consulta loc"));
+  assert.equal(sent[sent.length - 1].text, "Já está assim, não mexi em nada.");
+
+  // desfaz a ultima edicao (o local volta)
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(A1, "desfaz isso"));
+  assert.equal(eventsService.getEventById(A1, ev.id)?.location, "Clínica Sorriso");
+});
+
+test("card 6: termino do evento -- horario final, duracao, remarcar mantem a duracao e erros", async (t) => {
+  const A2 = "551100091602";
+  seed(A2);
+  const ev = createEvent({ fromNumber: A2, title: "Reuniao fim", start: futureAt(3, 14), end: futureAt(3, 15) });
+  const { sent, queueReply } = withMocks(t);
+  const ask = async (action: Interpretation, text: string) => {
+    queueReply([action]);
+    await handleIncomingMessage(evolutionMessage(A2, text));
+    return sent[sent.length - 1].text;
+  };
+  const hours = () => {
+    const e = eventsService.getEventById(A2, ev.id)!;
+    return (new Date(e.end).getTime() - new Date(e.start).getTime()) / 3600000;
+  };
+
+  assert.match(await ask({ type: "edit_event", query: "reuniao fim", new_end_time: "16:30" }, "a reuniao vai até as 16h30"), /Término: 15:00 → 16:30/);
+  await handleIncomingMessage(evolutionMessage(A2, "1"));
+  assert.equal(hours(), 2.5);
+
+  assert.match(await ask({ type: "edit_event", query: "reuniao fim", new_duration_minutes: 120 }, "a reuniao dura 2 horas"), /Término: 16:30 → 16:00/);
+  await handleIncomingMessage(evolutionMessage(A2, "1"));
+  assert.equal(hours(), 2);
+
+  // horario final e duracao juntos: vale o horario final
+  assert.match(await ask({ type: "edit_event", query: "reuniao fim", new_end_time: "17:00", new_duration_minutes: 30 }, "x"), /Término: 16:00 → 17:00/);
+  await handleIncomingMessage(evolutionMessage(A2, "3"));
+
+  // remarcar sem pedir termino: a duracao (2h) acompanha, sem linha de Termino
+  const remarcar = await ask({ type: "edit_event", query: "reuniao fim", new_date: addDaysToDateString(spDateString(), 5), new_time: "16:00" }, "muda a reuniao pra daqui 5 dias 16h");
+  assert.match(remarcar, /Quando: .* → .*16:00/);
+  assert.doesNotMatch(remarcar, /Término/);
+  await handleIncomingMessage(evolutionMessage(A2, "1"));
+  assert.equal(hours(), 2);
+  assert.match(eventsService.getEventById(A2, ev.id)!.start, /T16:00/);
+
+  // remarcar E pedir termino: o termino explicito vence
+  assert.match(
+    await ask({ type: "edit_event", query: "reuniao fim", new_date: addDaysToDateString(spDateString(), 6), new_time: "16:00", new_end_time: "18:00" }, "sexta 16h ate 18h"),
+    /Término: 18:00 → 18:00|Término: \d{2}:\d{2} → 18:00|Quando:/
+  );
+  await handleIncomingMessage(evolutionMessage(A2, "1"));
+  assert.equal(hours(), 2);
+  assert.match(eventsService.getEventById(A2, ev.id)!.end, /T18:00|T21:00/); // 18:00 em SP (a string pode estar em -03:00 ou em UTC)
+
+  // erros: nada fica pendente
+  assert.equal(await ask({ type: "edit_event", query: "reuniao fim", new_end_time: "13:00" }, "ate 13h"), "O término precisa ser depois do início (16:00).");
+  assert.equal(await ask({ type: "edit_event", query: "reuniao fim", new_duration_minutes: 4320 }, "dura 3 dias"), "A duração precisa ser entre 5 minutos e 24 horas.");
+  assert.equal(await ask({ type: "edit_event", query: "reuniao fim", new_location: "x".repeat(101) }, "local longo"), "Esse texto está muito longo (máximo 100 caracteres).");
+  queueReply([]);
+  await handleIncomingMessage(evolutionMessage(A2, "1"));
+  assert.equal(hours(), 2);
+});
+
+test("card 6 RN08: opcao 2 com Termino e Local pergunta qual corrigir; correcao so mexe no escolhido", async (t) => {
+  const A3 = "551100091603";
+  seed(A3);
+  const ev = createEvent({ fromNumber: A3, title: "Consulta corrige", start: futureAt(3, 14), end: futureAt(3, 15), location: "Clínica Sorriso" });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "consulta corrige", new_end_time: "16:30", new_location: "Clínica Dente Feliz" }]);
+  await handleIncomingMessage(evolutionMessage(A3, "ate 16h30 na Clinica Dente Feliz"));
+  assert.match(sent[0].text, /Término: 15:00 → 16:30\nLocal: Clínica Sorriso → Clínica Dente Feliz\n/);
+
+  await handleIncomingMessage(evolutionMessage(A3, "2"));
+  assert.equal(sent[1].text, "Qual você quer corrigir?\n1 Término\n2 Local\n\nOu responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(A3, "7"));
+  assert.match(sent[2].text, /^Não entendi 🤔\nQual você quer corrigir\?/);
+  await handleIncomingMessage(evolutionMessage(A3, "1"));
+  assert.equal(sent[3].text, "Que horas termina ou quanto tempo dura? (ex: 17h30 ou 2 horas) Ou responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(A3, "13h")); // antes do inicio
+  assert.match(sent[4].text, /^O término precisa ser depois do início \(14:00\)\.\nQue horas termina/);
+  await handleIncomingMessage(evolutionMessage(A3, "2")); // numero solto
+  assert.match(sent[5].text, /^Não entendi 🤔 Me diz a hora \(ex: 17h\) ou quanto tempo dura \(ex: 2 horas\)\./);
+  await handleIncomingMessage(evolutionMessage(A3, "17h"));
+  assert.match(sent[6].text, /Término: 15:00 → 17:00\nLocal: Clínica Sorriso → Clínica Dente Feliz/);
+
+  // corrige so o local (remover)
+  await handleIncomingMessage(evolutionMessage(A3, "2"));
+  await handleIncomingMessage(evolutionMessage(A3, "2"));
+  assert.equal(sent[sent.length - 1].text, "Qual é o local? (ou responde *remover* pra tirar o local) Ou responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(A3, "remover"));
+  assert.match(sent[sent.length - 1].text, /Término: 15:00 → 17:00\nLocal: Clínica Sorriso → sem local/);
+  await handleIncomingMessage(evolutionMessage(A3, "1"));
+  const e = eventsService.getEventById(A3, ev.id)!;
+  assert.equal(e.location, null);
+  assert.match(e.end, /T17:00|T20:00/);
+});
+
+test("card 6: menu guiado do evento -- 5 campos, termino e local, previa e aplica", async (t) => {
+  const A4 = "551100091604";
+  seed(A4);
+  const ev = createEvent({ fromNumber: A4, title: "Evento menu agenda", start: futureAt(3, 14), end: futureAt(3, 15), location: "Casa" });
+  const { sent } = withMocks(t);
+  await handleIncomingMessage(evolutionMessage(A4, "editar"));
+  await handleIncomingMessage(evolutionMessage(A4, "4"));
+  await handleIncomingMessage(evolutionMessage(A4, "1"));
+  assert.match(sent[2].text, /^✏️ Evento menu agenda — .* às 14:00–15:00 · Casa\nO que você quer mudar\?\n1 Dia e hora\n2 Título\n3 Aviso\n4 Término\n5 Local\n\nPode escolher mais de um: "1 e 5"\. Ou \*cancelar\*\.$/);
+
+  await handleIncomingMessage(evolutionMessage(A4, "termino e local"));
+  assert.match(sent[3].text, /^\(1 de 2\) Que horas termina ou quanto tempo dura\?/);
+  await handleIncomingMessage(evolutionMessage(A4, "1"));
+  assert.match(sent[4].text, /^Não entendi 🤔 Me diz a hora/);
+  await handleIncomingMessage(evolutionMessage(A4, "2h")); // 14:00 + 2h = 16:00 (duracao)
+  assert.match(sent[5].text, /^\(2 de 2\) Qual é o local\?/);
+  await handleIncomingMessage(evolutionMessage(A4, "Clínica X"));
+  assert.match(sent[6].text, /Término: 15:00 → 16:00\nLocal: Casa → Clínica X/);
+  await handleIncomingMessage(evolutionMessage(A4, "1"));
+  const e = eventsService.getEventById(A4, ev.id)!;
+  assert.equal(e.location, "Clínica X");
+  assert.equal((new Date(e.end).getTime() - new Date(e.start).getTime()) / 3600000, 2);
+});
+
+test("card 6 RN10: editar so titulo/local/termino de evento com aviso ja enviado NAO reativa o aviso", async (t) => {
+  const A5 = "551100091605";
+  seed(A5);
+  const ev = createEvent({ fromNumber: A5, title: "Evento aviso", start: futureAt(2, 14), end: futureAt(2, 15) });
+  eventsService.markEventReminderSent(A5, ev.id);
+  const { queueReply } = withMocks(t);
+  queueReply([{ type: "edit_event", query: "evento aviso", new_title: "Evento aviso novo", new_location: "Sala 2", new_end_time: "16:00" }]);
+  await handleIncomingMessage(evolutionMessage(A5, "muda o evento aviso"));
+  await handleIncomingMessage(evolutionMessage(A5, "1"));
+  const after = eventsService.getEventById(A5, ev.id)!;
+  assert.equal(after.title, "Evento aviso novo");
+  assert.equal(after.reminder_sent, 1);
+  assert.ok(!eventsService.getDueEventReminders().some((e) => e.id === ev.id));
+
+  // mudar o horario reativa
+  queueReply([{ type: "edit_event", query: "evento aviso novo", new_time: "15:00" }]);
+  await handleIncomingMessage(evolutionMessage(A5, "muda o evento aviso novo pra 15h"));
+  await handleIncomingMessage(evolutionMessage(A5, "1"));
+  assert.equal(eventsService.getEventById(A5, ev.id)?.reminder_sent, 0);
+});
+
+test("card 6: lembrete com Quando + Texto -- opcao 2 pergunta qual corrigir", async (t) => {
+  const A6 = "551100091606";
+  seed(A6);
+  const id = remindersService.createReminder(A6, "Lembrete duplo", futureAt(2, 9));
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_reminder", query: "lembrete duplo", new_time: "10:00", new_message: "Lembrete duplo novo" }]);
+  await handleIncomingMessage(evolutionMessage(A6, "muda o lembrete duplo"));
+  assert.match(sent[0].text, /Quando: .* → .*10:00\nTexto: Lembrete duplo → Lembrete duplo novo/);
+  await handleIncomingMessage(evolutionMessage(A6, "2"));
+  assert.equal(sent[1].text, "Qual você quer corrigir?\n1 Quando\n2 Texto\n\nOu responde *cancelar*.");
+  await handleIncomingMessage(evolutionMessage(A6, "2"));
+  assert.match(sent[2].text, /^Qual é o novo texto\?/);
+  await handleIncomingMessage(evolutionMessage(A6, "Texto corrigido"));
+  assert.match(sent[3].text, /Quando: .* → .*10:00\nTexto: Lembrete duplo → Texto corrigido/);
+  await handleIncomingMessage(evolutionMessage(A6, "1"));
+  assert.equal(remindersService.getReminderById(A6, id)?.message, "Texto corrigido");
+});
+
+test("card 6: adiar lembrete que acabou de tocar -- minutos, desfazer nao faz tocar de novo", async (t) => {
+  const S1 = "551100091607";
+  seed(S1);
+  const id = remindersService.createReminder(S1, "Remédio snooze", agendaIso(-5));
+  remindersService.markReminderSent(S1, id);
+  const originalDue = remindersService.getReminderById(S1, id)!.due_at;
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "snooze_reminder", minutes: 30 }]);
+  await handleIncomingMessage(evolutionMessage(S1, "adia 30 min"));
+  assert.match(sent[0].text, /^⏰ Adiado! Te lembro de "Remédio snooze" de novo (às|amanhã às) \d{2}:\d{2} \(daqui a 30 min\)\. Errou\? Responde \*desfazer\*\.$/);
+  const snoozed = remindersService.getReminderById(S1, id)!;
+  assert.equal(snoozed.sent, 0);
+  const diffMin = (new Date(snoozed.due_at).getTime() - Date.now()) / 60000;
+  assert.ok(diffMin > 28 && diffMin <= 30, `due em ${diffMin} min`);
+  assert.match(snoozed.due_at, /-03:00$/);
+
+  queueReply([{ type: "undo" }]);
+  await handleIncomingMessage(evolutionMessage(S1, "desfaz isso"));
+  assert.match(sent[1].text, /desfiz o adiamento do lembrete "Remédio snooze"/);
+  const restored = remindersService.getReminderById(S1, id)!;
+  assert.equal(restored.sent, 1);
+  assert.equal(restored.due_at, originalDue);
+  assert.ok(!remindersService.getDueReminders().some((r) => r.id === id)); // nao toca de novo
+});
+
+test("card 6: adiar pra outro dia mantem a hora, horario passado e 0 min sao recusados", async (t) => {
+  const S2 = "551100091608";
+  seed(S2);
+  const id = remindersService.createReminder(S2, "Remédio dia", agendaIso(-10));
+  remindersService.markReminderSent(S2, id);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "snooze_reminder", query: "remédio dia", new_date: addDaysToDateString(spDateString(), 1) }]);
+  await handleIncomingMessage(evolutionMessage(S2, "adia o remédio dia pra amanhã"));
+  assert.match(sent[0].text, /de novo amanhã às \d{2}:\d{2}\. Errou\?/);
+  assert.equal(remindersService.getReminderById(S2, id)?.due_at.slice(0, 10), addDaysToDateString(spDateString(), 1));
+  remindersService.rescheduleReminder(S2, id, agendaIso(-10), 1); // "tocou de novo" ha 10 min
+
+  queueReply([{ type: "snooze_reminder", query: "remédio dia", new_date: addDaysToDateString(spDateString(), -1), new_time: "09:00" }]);
+  await handleIncomingMessage(evolutionMessage(S2, "adia o remédio dia pra ontem 9h"));
+  assert.equal(sent[1].text, "Esse horário já passou. Me diz um horário futuro, ex: daqui a 30 min ou amanhã 9h.");
+  queueReply([{ type: "snooze_reminder", minutes: 0 }]);
+  await handleIncomingMessage(evolutionMessage(S2, "adia 0 min"));
+  assert.equal(sent[2].text, "Esse horário já passou. Me diz um horário futuro, ex: daqui a 30 min ou amanhã 9h.");
+  queueReply([{ type: "snooze_reminder", query: "remédio dia" }]);
+  await handleIncomingMessage(evolutionMessage(S2, "adia o remédio dia"));
+  assert.match(sent[3].text, /^Pra quando você quer adiar\?/);
+});
+
+test("card 6: dois lembretes tocaram -- lista numerada e o numero escolhido e adiado", async (t) => {
+  const S3 = "551100091609";
+  seed(S3);
+  const a = remindersService.createReminder(S3, "Remédio manhã", agendaIso(-30));
+  const b = remindersService.createReminder(S3, "Beber água", agendaIso(-5));
+  remindersService.markReminderSent(S3, a);
+  remindersService.markReminderSent(S3, b);
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "snooze_reminder", minutes: 60 }]);
+  await handleIncomingMessage(evolutionMessage(S3, "adia 1 hora"));
+  assert.match(sent[0].text, /^Esses lembretes tocaram há pouco:\n1\. Beber água — .*\n2\. Remédio manhã — /);
+  assert.match(sent[0].text, /Qual deles você quer adiar\?/);
+  await handleIncomingMessage(evolutionMessage(S3, "2"));
+  assert.match(sent[1].text, /Te lembro de "Remédio manhã" de novo .*\(daqui a 1 hora\)/);
+  assert.equal(remindersService.getReminderById(S3, a)?.sent, 0);
+  assert.equal(remindersService.getReminderById(S3, b)?.sent, 1);
+});
+
+test("card 6: adiar sem lembrete que tenha tocado; 'ainda nao tocou'; editar lembrete que ja tocou", async (t) => {
+  const S4 = "551100091610";
+  seed(S4);
+  const { sent, queueReply } = withMocks(t);
+
+  queueReply([{ type: "snooze_reminder", minutes: 30 }]);
+  await handleIncomingMessage(evolutionMessage(S4, "adia 30 min"));
+  assert.equal(sent[0].text, 'Não achei nenhum lembrete que tenha tocado agora há pouco. Diga o nome dele, ex: "adia o remédio pra amanhã 9h".');
+
+  remindersService.createReminder(S4, "Remédio futuro", futureAt(1, 8));
+  queueReply([{ type: "snooze_reminder", query: "remédio futuro", new_date: addDaysToDateString(spDateString(), 3), new_time: "09:00" }]);
+  await handleIncomingMessage(evolutionMessage(S4, "adia o remédio futuro pra daqui 3 dias 9h"));
+  assert.match(sent[1].text, /^"Remédio futuro" ainda não tocou \(é amanhã às 08:00\)\. Pra mudar o horário, diga "muda o lembrete do remédio futuro pra …"\.$/);
+
+  const tocado = remindersService.createReminder(S4, "Conta tocada", agendaIso(-20));
+  remindersService.markReminderSent(S4, tocado);
+  queueReply([{ type: "edit_reminder", query: "conta tocada", new_time: "09:00" }]);
+  await handleIncomingMessage(evolutionMessage(S4, "muda o lembrete conta tocada pra 9h"));
+  assert.match(sent[2].text, /^O lembrete "Conta tocada" já tocou \(.* às \d{2}:\d{2}\)\. Pra tocar de novo, diga "adia o remédio pra amanhã 9h"\.$/);
+  assert.equal(remindersService.getReminderById(S4, tocado)?.sent, 1);
 });

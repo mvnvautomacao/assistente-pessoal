@@ -57,7 +57,7 @@ export function recurringHeader(params: { description: string; amount: number; d
   return `${params.description} — ${formatBRL(params.amount)} · todo dia ${params.dayOfMonth}`;
 }
 
-export type CorrectionKind = "amount" | "date" | "datetime" | "day" | "lead" | "text";
+export type CorrectionKind = "amount" | "date" | "datetime" | "day" | "lead" | "text" | "endtime" | "location";
 
 // pergunta feita quando o usuario escolhe a opcao 2 (corrigir). "noun" so muda
 // a palavra nas perguntas de texto ("nome", "categoria", "forma de pagamento"...).
@@ -73,6 +73,10 @@ export function correctionQuestion(kind: CorrectionKind, noun = "nome"): string 
       return "Qual é o dia do mês certo? (1 a 31) Ou responde *cancelar*.";
     case "lead":
       return "Quanto tempo antes devo avisar? (ex: 30 minutos, 2 horas, 1 dia) Ou responde *cancelar*.";
+    case "endtime":
+      return "Que horas termina ou quanto tempo dura? (ex: 17h30 ou 2 horas) Ou responde *cancelar*.";
+    case "location":
+      return "Qual é o local? (ou responde *remover* pra tirar o local) Ou responde *cancelar*.";
     default: {
       const feminine = noun === "categoria" || noun === "forma de pagamento" || noun === "descrição";
       return `Qual é ${feminine ? "a" : "o"} nov${feminine ? "a" : "o"} ${noun}? Ou responde *cancelar*.`;
@@ -83,4 +87,10 @@ export function correctionQuestion(kind: CorrectionKind, noun = "nome"): string 
 // repete a pergunta quando o valor da correcao nao serviu, com o motivo
 export function correctionRetry(reason: string, kind: CorrectionKind, noun = "nome"): string {
   return `${reason}\n${correctionQuestion(kind, noun)}`;
+}
+
+// "Qual você quer corrigir?" com as mudancas numeradas (usado quando a previa tem mais de uma)
+export function formatCorrectionLabels(labels: string[]): string {
+  const lines = labels.map((label, idx) => `${idx + 1} ${label}`).join("\n");
+  return `Qual você quer corrigir?\n${lines}\n\nOu responde *cancelar*.`;
 }
