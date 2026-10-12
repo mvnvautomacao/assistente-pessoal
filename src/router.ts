@@ -208,7 +208,7 @@ import { getRangeBalance } from "./expenses/balance";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { replyWithUndo } from "./undo/replyWithUndo";
-import { consumeExpiredNotice } from "./pending/expiredNotice";
+import { consumeExpiredNotice, isUndoText } from "./pending/expiredNotice";
 import {
   addPendingCompletion,
   getNextPendingCompletion,
@@ -234,6 +234,7 @@ import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
 import { parseChoiceNumber } from "./confirmation/numbers";
+import { countWords, isSafeNewRequest, MIN_WORDS_FOR_NEW_REQUEST, replacedPendingText, undoWithPendingText } from "./pending/newRequest";
 import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
@@ -485,7 +486,9 @@ Também dá pra descrever o gasto direto, sem ver a lista antes: "a farmácia fo
 
 Dá pra mudar várias coisas de uma vez: "muda o 2 pra 45 e pix" ou "o 3 foi ontem, no crédito". E também mais de um gasto na mesma mensagem (até 5): "o mercado foi no pix e o uber no dinheiro".
 
-Antes de mudar de verdade, eu mostro "antes → depois" e você responde: *1* confirma, *2* corrige (eu pergunto qual e o valor certo) ou *3* cancela. Se foi sem querer, é só dizer "desfaz isso" — volta tudo de uma vez.`;
+Antes de mudar de verdade, eu mostro "antes → depois" e você responde: *1* confirma, *2* corrige (eu pergunto qual e o valor certo) ou *3* cancela. Se foi sem querer, é só dizer "desfaz isso" — volta tudo de uma vez.
+
+Enquanto uma confirmação está aberta, dá pra mandar outro pedido direto ("gastei 30 no uber", "quanto gastei esse mês"): eu deixo a alteração de lado e atendo o pedido novo. Se eu não entender, responde *3* e me manda o pedido de novo.`;
     case "category":
       return `🏷️ Como funcionam as categorias:
 
@@ -943,6 +946,11 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     return;
   }
 
+  await dispatchInterpretations(from, interpretations);
+}
+
+// atende o que a IA entendeu da mensagem: gastos completos em lote primeiro, depois os demais pedidos
+async function dispatchInterpretations(from: string, interpretations: Interpretation[]) {
   // Uma mensagem pode conter varios pedidos (ex: "marca dentista amanha e reuniao sexta");
   // processa cada acao separadamente, uma falha nao impede as outras. Gastos
   // completos (2+) sao tentados em LOTE primeiro, pra confirmar todos numa
@@ -967,6 +975,43 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   }
 
   await processInterpretations(from, interpretations);
+}
+
+// Card 12 (D-07): o resolvedor de uma confirmacao aberta NAO entendeu a mensagem. Antes de so repetir
+// o "nao entendi", da uma segunda chance: "desfaz isso" cancela a confirmacao (RN07) e um pedido novo
+// claro e seguro (RN03) troca a confirmacao e e atendido (RN05); o resto cai no "nao entendi" com a dica
+// de saida (que ja vem em notUnderstoodText). A IA e chamada no maximo uma vez e so depois que o
+// resolvedor desistiu; nada da confirmacao e descartado antes de o pedido novo ser aprovado.
+async function handleNotUnderstood(from: string, text: string, notUnderstoodText: string) {
+  const label = describeActiveEditConfirmation(from)?.label ?? null;
+
+  if (isUndoText(text)) {
+    cancelAllPendings(from);
+    logActivity(from, "pending_replaced", `"desfaz" com confirmacao aberta (${label ?? "pergunta anterior"}): confirmacao cancelada, nada desfeito`);
+    await sendText(from, undoWithPendingText(label));
+    return;
+  }
+
+  let interpretations: Interpretation[] | null = null;
+  if (countWords(text) >= MIN_WORDS_FOR_NEW_REQUEST) {
+    try {
+      interpretations = await interpretText(from, text);
+    } catch (err) {
+      console.error("Erro ao interpretar mensagem nao entendida pela confirmacao:", err);
+      logActivity(from, "pending_not_understood", "IA falhou ao interpretar -- manteve a confirmacao");
+    }
+  }
+
+  if (interpretations && isSafeNewRequest(interpretations, text)) {
+    cancelAllPendings(from);
+    logActivity(from, "pending_replaced", `"${label ?? "pergunta anterior"}" descartada por pedido novo: ${interpretations.map((i) => i.type).join(", ")}`);
+    await sendText(from, replacedPendingText(label));
+    await dispatchInterpretations(from, interpretations);
+    return;
+  }
+
+  logActivity(from, "pending_not_understood", `resposta nao entendida (${label ?? "pergunta anterior"}); confirmacao mantida`);
+  await sendText(from, notUnderstoodText);
 }
 
 const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>([
@@ -2357,7 +2402,7 @@ async function handleDeleteReply(
   const reply = interpretDeleteReply(answerText, Boolean(spec.offerOther));
   if (reply === "not_understood") {
     logActivity(from, activity, "resposta nao entendida na confirmacao");
-    await sendText(from, deleteNotUnderstood(spec));
+    await handleNotUnderstood(from, answerText, deleteNotUnderstood(spec));
     return;
   }
   if (reply === "confirm") return handlers.confirm();
@@ -3179,7 +3224,7 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
         return;
       }
       logActivity(from, activity, "menu de campos: selecao invalida");
-      await sendText(from, FIELD_SELECTION_RETRY);
+      await handleNotUnderstood(from, answerText, FIELD_SELECTION_RETRY);
       return;
     }
     const first = fields.find((f) => f.key === selection.keys[0])!;
@@ -3449,7 +3494,7 @@ async function resolveEditIncomeConfirmation(from: string, pending: PendingEditI
     }
   }
   logActivity(from, "edit_income", `resposta nao entendida na confirmacao de ${pending.description}`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
 }
 
 // exclusao: "1 apagar / 3 cancelar"; qualquer outra coisa (inclusive "2") pergunta de novo
@@ -3464,7 +3509,7 @@ async function resolveDeleteIncomeConfirmation(from: string, pending: PendingDel
   }
   if (reply !== "confirm") {
     logActivity(from, "delete_income", `resposta nao entendida na confirmacao de "${description}"`);
-    await sendText(from, INCOME_DELETE_NOT_UNDERSTOOD);
+    await handleNotUnderstood(from, answerText, INCOME_DELETE_NOT_UNDERSTOOD);
     return;
   }
   clearPendingDeleteIncome(from);
@@ -3837,7 +3882,7 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
     }
   }
   logActivity(from, "edit_expense", `resposta nao entendida na confirmacao de ${label}`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
 }
 
 // ---- evento ----------------------------------------------------------------
@@ -4011,7 +4056,7 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
     }
   }
   logActivity(from, "edit_event", `resposta nao entendida na confirmacao de "${pending.title}"`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
 }
 
 // ---- lembrete --------------------------------------------------------------
@@ -4140,7 +4185,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
     }
   }
   logActivity(from, "edit_reminder", `resposta nao entendida na confirmacao de "${pending.message}"`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
 }
 
 // resposta a "confirma que quer remover o orcamento de X?" -- so remove de
@@ -4347,7 +4392,7 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
     }
   }
   logActivity(from, "edit_recurring_expense", `resposta nao entendida na confirmacao de "${pending.previous.description}"`);
-  await sendText(from, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
 }
 
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa

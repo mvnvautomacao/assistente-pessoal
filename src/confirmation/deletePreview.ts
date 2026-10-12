@@ -4,6 +4,7 @@
 import { classifyConfirmationReply } from "./classify";
 import { normalizeReply } from "./normalize";
 import { parseChoiceNumber } from "./numbers";
+import { withExitHint } from "../pending/newRequest";
 
 export type DeleteFlow =
   | "event"
@@ -55,10 +56,10 @@ export function formatDeleteConfirmation(spec: DeleteSpec): string {
 }
 
 export function deleteNotUnderstood(spec: Pick<DeleteSpec, "flow" | "offerOther">): string {
-  if (spec.offerOther) return "Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar.";
+  if (spec.offerOther) return withExitHint("Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar.");
   const text = FLOWS[spec.flow];
   const cancel = spec.flow === "event" ? "manter" : "cancelar";
-  return `Não entendi 🤔 Responde *1* pra ${text.verb} ou *3* pra ${cancel}.`;
+  return withExitHint(`Não entendi 🤔 Responde *1* pra ${text.verb} ou *3* pra ${cancel}.`);
 }
 
 export type DeleteReply = "confirm" | "cancel" | "other" | "not_understood";

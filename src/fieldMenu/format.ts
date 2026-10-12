@@ -1,9 +1,10 @@
 // Mensagens do menu guiado de campos: o menu em si, a pergunta de cada campo
 // (com "(i de n)") e o aviso de selecao invalida. Funcoes puras.
 import { CorrectionKind, correctionQuestion } from "../confirmation/preview";
+import { withExitHint } from "../pending/newRequest";
 import { FIELD_REGISTRY, FieldDef, FieldQuestion, MenuKind } from "./registry";
 
-export const FIELD_SELECTION_RETRY = "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.";
+export const FIELD_SELECTION_RETRY = withExitHint("Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.");
 
 // no maximo isso de categorias/formas de pagamento listadas na pergunta de escolha
 export const MAX_CHOICE_OPTIONS = 8;

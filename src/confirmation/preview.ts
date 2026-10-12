@@ -2,6 +2,8 @@
 // numeradas 1/2/3, e as perguntas do estado "aguardando correcao". Tudo funcao
 // pura que devolve texto.
 
+import { withExitHint } from "../pending/newRequest";
+
 export interface PreviewChange {
   label: string;
   from: string;
@@ -10,7 +12,7 @@ export interface PreviewChange {
 
 export const PREVIEW_OPTIONS = "1 ✅ Confirmar\n2 ✏️ Corrigir\n3 ❌ Cancelar";
 
-export const NOT_UNDERSTOOD_TEXT = "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.";
+export const NOT_UNDERSTOOD_TEXT = withExitHint("Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.");
 
 // "R$ 38,00", "R$ 1.500,50"
 export function formatBRL(value: number): string {

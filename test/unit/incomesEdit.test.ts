@@ -200,7 +200,7 @@ test("formatadores de entrada: lista, previa, sucesso, exclusao e avisos", () =>
   );
   assert.deepEqual(incomeCorrectionOptions(views).map((o) => [o.itemIndex, o.field, o.label]), [[0, "amount", "Valor"]]);
   assert.equal(formatIncomeDeletePrompt("Salário — R$ 3.000,00 · 05/09"), "🗑️ Vou apagar a entrada: Salário — R$ 3.000,00 · 05/09\n\n1 ✅ Apagar\n3 ❌ Cancelar");
-  assert.equal(INCOME_DELETE_NOT_UNDERSTOOD, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  assert.equal(INCOME_DELETE_NOT_UNDERSTOOD, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   assert.equal(incomeDeletedText("Salário"), '🗑️ Entrada "Salário" apagada.');
   assert.equal(incomeChangedText("Salário", 3200), 'A entrada "Salário" mudou enquanto a gente conversava (agora está R$ 3.200,00). Me pede de novo.');
 });

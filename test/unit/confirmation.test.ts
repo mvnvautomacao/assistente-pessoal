@@ -154,7 +154,7 @@ test("perguntas da opcao 2 (corrigir) e mensagem de 'nao entendi'", () => {
   assert.match(correctionQuestion("day"), /1 a 31/);
   assert.match(correctionQuestion("lead"), /30 minutos, 2 horas, 1 dia/);
   assert.equal(correctionRetry("Não entendi o valor.", "amount"), "Não entendi o valor.\nQual é o valor certo? (ex: 45 ou 45,90) Ou responde *cancelar*.");
-  assert.equal(NOT_UNDERSTOOD_TEXT, "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.");
+  assert.equal(NOT_UNDERSTOOD_TEXT, "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
 });
 
 // RN09: TTL unico de 10 minutos, o mesmo nas quatro pendencias de edicao

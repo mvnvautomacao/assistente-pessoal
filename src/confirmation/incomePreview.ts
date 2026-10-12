@@ -3,6 +3,7 @@
 import type { IncomeChangeView, IncomeEditField } from "../incomes/pendingEditIncome";
 import { formatBRL, formatShortDate, formatEditPreview } from "./preview";
 import { CorrectionOption } from "./expensePreview";
+import { withExitHint } from "../pending/newRequest";
 
 export interface IncomeListItem {
   description: string;
@@ -43,7 +44,7 @@ export function formatIncomeDeletePrompt(header: string): string {
   return `🗑️ Vou apagar a entrada: ${header}\n\n1 ✅ Apagar\n3 ❌ Cancelar`;
 }
 
-export const INCOME_DELETE_NOT_UNDERSTOOD = "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.";
+export const INCOME_DELETE_NOT_UNDERSTOOD = withExitHint("Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
 
 export function incomeDeletedText(description: string): string {
   return `🗑️ Entrada "${description}" apagada.`;

@@ -3253,7 +3253,7 @@ test("confirmacao de gasto: valor em formato BR ('1.500') na correcao e campo de
   queueReply([{ type: "edit_expense", query: "Gasto formato br", field: "description", value: "Compras" }]);
   await handleIncomingMessage(evolutionMessage(CF4, "muda o nome do gasto formato br pra Compras"));
   await handleIncomingMessage(evolutionMessage(CF4, "talvez"));
-  assert.equal(sent[sent.length - 1].text, "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.");
+  assert.equal(sent[sent.length - 1].text, "Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   assert.equal(findRecentExpense(CF4, "Gasto formato br")?.description, "Gasto formato br");
   assert.equal(findRecentExpense(CF4, "talvez"), null);
 });
@@ -4012,9 +4012,9 @@ test("card 4: selecao invalida repete o menu; resposta invalida repete a pergunt
   await handleIncomingMessage(evolutionMessage(G3, "edita o almoco menu"));
 
   await handleIncomingMessage(evolutionMessage(G3, "1 e 9"));
-  assert.equal(sent[1].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.");
+  assert.equal(sent[1].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   await handleIncomingMessage(evolutionMessage(G3, "xyz"));
-  assert.equal(sent[2].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.");
+  assert.equal(sent[2].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
 
   await handleIncomingMessage(evolutionMessage(G3, "valor, pagamento")); // equivale a "1 e 5"
   assert.match(sent[3].text, /^\(1 de 2\) Qual é o valor certo\?/);
@@ -4306,9 +4306,9 @@ test("card 5: apagar -- 1 apaga, 3 cancela, 2 pergunta de novo e mantem; desfaz 
   assert.match(sent[1].text, /^🗑️ Vou apagar a entrada: Salário apagar — R\$ 3\.000,00 · \d{2}\/\d{2}\n\n1 ✅ Apagar\n3 ❌ Cancelar$/);
 
   await handleIncomingMessage(evolutionMessage(I2, "2"));
-  assert.equal(sent[2].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  assert.equal(sent[2].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   await handleIncomingMessage(evolutionMessage(I2, "talvez"));
-  assert.equal(sent[3].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  assert.equal(sent[3].text, "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   await handleIncomingMessage(evolutionMessage(I2, "3"));
   assert.equal(sent[4].text, "Beleza, não mexi em nada.");
   assert.equal(incomeAmounts(I2).length, 2);

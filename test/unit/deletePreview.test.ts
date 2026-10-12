@@ -53,12 +53,12 @@ test("deleteNotUnderstood: verbo do fluxo e variante com a opcao 2", () => {
     ["bulk", "mudar"],
   ];
   for (const [flow, verb] of verbs) {
-    const expected = flow === "event" ? `Não entendi 🤔 Responde *1* pra ${verb} ou *3* pra manter.` : `Não entendi 🤔 Responde *1* pra ${verb} ou *3* pra cancelar.`;
+    const expected = flow === "event" ? `Não entendi 🤔 Responde *1* pra ${verb} ou *3* pra manter.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.` : `Não entendi 🤔 Responde *1* pra ${verb} ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.`;
     assert.equal(deleteNotUnderstood({ flow }), expected, flow);
   }
   assert.equal(
     deleteNotUnderstood({ flow: "expense", offerOther: true }),
-    "Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar."
+    "Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo."
   );
 });
 

@@ -321,7 +321,7 @@ test("card 9: apagar gasto SEM alvo explicito -- opcao 2 mostra os ultimos; 'nao
 
   // mensagem ambigua inclui a opcao 2
   await app.handle(msg(n, "pode ser amanhã"));
-  assert.equal(app.last(), "Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar.");
+  assert.equal(app.last(), "Não entendi 🤔 Responde *1* pra apagar, *2* pra ver os últimos gastos ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
 
   // "nao e esse" vale como 2 -> lista numerada; o numero escolhido apaga (e a lista sobrevive a reinicio)
   await app.handle(msg(n, "não é esse"));
@@ -344,7 +344,7 @@ test("card 9: apagar gasto COM alvo explicito nao oferece a opcao 2", async (t) 
   assert.doesNotMatch(app.last(), /2 🔎/);
   assert.match(app.last(), /1 🗑️ Apagar\n3 ❌ Cancelar$/);
   await app.handle(msg(n, "2")); // "2" nao existe aqui
-  assert.equal(app.last(), "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.");
+  assert.equal(app.last(), "Não entendi 🤔 Responde *1* pra apagar ou *3* pra cancelar.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   await app.handle(msg(n, "1"));
   assert.equal(searchExpenses(n, "mercado explicito").length, 0);
 });

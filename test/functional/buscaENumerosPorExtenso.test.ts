@@ -85,7 +85,7 @@ test("D-06 evento: 'cancela a consulta medica' e 'CONSULTA MÉDICA' acham 'Consu
   await handleIncomingMessage(evolutionMessage(N, "cancela a CONSULTA MÉDICA"));
   assert.match(last(sent), /🗑️ Cancelar este evento\?/);
   await handleIncomingMessage(evolutionMessage(N, "dois")); // so existem 1 e 3
-  assert.equal(last(sent), "Não entendi 🤔 Responde *1* pra cancelar o evento ou *3* pra manter.");
+  assert.equal(last(sent), "Não entendi 🤔 Responde *1* pra cancelar o evento ou *3* pra manter.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
   await handleIncomingMessage(evolutionMessage(N, "um"));
   assert.match(last(sent), /🗑️ Evento "Consulta médica" removido da agenda\./);
   assert.equal(eventsService.getEventById(N, event.id), undefined);

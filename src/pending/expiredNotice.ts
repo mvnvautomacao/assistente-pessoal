@@ -12,11 +12,16 @@ const TTL_MINUTES = Math.round(EDIT_PENDING_TTL_MS / 60000);
 
 export type ReplyShape = "undo" | "reply";
 
-const UNDO_WORDS = new Set(["desfazer", "desfaz", "desfaz isso", "desfazer isso", "desfaz a ultima", "desfazer a ultima"]);
+export const UNDO_WORDS = new Set(["desfazer", "desfaz", "desfaz isso", "desfazer isso", "desfaz a ultima", "desfazer a ultima"]);
+
+// a mensagem inteira e so uma palavra de desfazer? ("desfaz isso")
+export function isUndoText(text: string): boolean {
+  return UNDO_WORDS.has(normalizeReply(text));
+}
 
 // a mensagem inteira e so uma resposta de pendencia? ("desfazer" / sim, nao, 1, 3 / numero de 1 a 9)
 export function replyShape(text: string): ReplyShape | null {
-  if (UNDO_WORDS.has(normalizeReply(text))) return "undo";
+  if (isUndoText(text)) return "undo";
   const reply = classifyConfirmationReply(text);
   if (reply === "confirm" || reply === "cancel") return "reply";
   const number = parseChoiceNumber(text);

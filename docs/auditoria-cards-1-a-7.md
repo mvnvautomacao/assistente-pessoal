@@ -12,7 +12,7 @@
 1. Os 7 cards estão **funcionalmente entregues**: dos 66 itens do checklist, 60 estão Atendidos com teste que asserta o comportamento (9 deles só porque esta auditoria acrescentou o teste que faltava), 2 Parciais, 3 Não atendidos e 1 Não verificável; todos os que não estão Atendidos se ligam a defeitos listados abaixo.
 2. **Sem perda de dados nem vazamento entre números** nos cenários exercitados. Toda consulta nova filtra por `from_number`/`to_number` (conferido por leitura e por teste).
 3. O defeito mais sério é **D-01 (Alto)**: numa mesma mensagem, um pedido de **apagar** (evento, gasto, lembrete...) junto com um pedido de **editar** deixa duas perguntas abertas com instruções conflitantes; responder "1" à prévia de edição cai na pergunta antiga "sim/não" de exclusão.
-4. Outros 5 defeitos Médios: evento movido para o passado reenvia o aviso (D-02), números por extenso ("um", "dois") não respondem às prévias (D-04, corrigido no Card 11), eventos em andamento não são encontrados (D-05), busca de evento e lembrete diferencia acento (D-06) e prévia aberta bloqueia mensagem nova curta (D-07).
+4. Outros 5 defeitos Médios: evento movido para o passado reenvia o aviso (D-02), números por extenso ("um", "dois") não respondem às prévias (D-04, corrigido no Card 11), eventos em andamento não são encontrados (D-05), busca de evento e lembrete diferencia acento (D-06) e prévia aberta bloqueia mensagem nova curta (D-07, corrigido no Card 12).
 5. Linha de base **537 testes, 0 falhas**; depois da auditoria **568 testes, 561 passam, 0 falham, 7 `todo`** (os `todo` são os defeitos reproduzidos: D-01 tem duas variantes). Cobertura medida com o recurso nativo do Node: **todos os módulos novos ≥ 90 %**; o projeto inteiro foi de 89,31 % para 90,60 %. Não existe script de lint nem de cobertura no `package.json`.
 
 ---
@@ -218,7 +218,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** filtrar em JS com a mesma `normalize` de `incomes/service.ts` (janela de 20-50 itens), como já é feito para gastos.
 - **Evidência:** A:819 (`todo`).
 
-### D-07 · Médio · Prévia aberta bloqueia mensagem nova curta
+### D-07 · Médio · Prévia aberta bloqueia mensagem nova curta — ✅ CORRIGIDO no Card 12
+- **Correção (Card 12):** `handleNotUnderstood` (router) roda só depois que o resolvedor da confirmação desistiu: "desfaz isso" cancela a confirmação sem desfazer a última ação (RN07); um pedido novo claro e seguro (`src/pending/newRequest.ts`, lista fechada de registrar/criar/consultar, mínimo de 2 palavras) troca a confirmação e é atendido por `dispatchInterpretations`; o resto recebe o "não entendi" com a dica `PENDING_EXIT_HINT`. Uma chamada de IA no máximo, só depois da decisão do resolvedor. Cobre as prévias de edição (gasto, entrada, evento, lembrete, gasto fixo), as 10 perguntas de apagar/remover (inclui apagar entrada) e a etapa de escolha de campos do menu. `looksLikeExplicitDifferentRequest` e as etapas de valor/correção/lista de alvo não mudaram.
 - **Onde:** `looksLikeExplicitDifferentRequest` router.ts:1256 exige ≥ 5 palavras **e** verbo de edição; o resolvedor da prévia responde `Não entendi 🤔 Responde *1* pra confirmar, *2* pra corrigir ou *3* pra cancelar.` a qualquer outra coisa.
 - **Reproduzir:** com uma prévia aberta, mandar `"gastei 30 no mercado"` ou `"desfaz isso"` (para desfazer a edição anterior) → só a mensagem de "não entendi", o gasto **não** é registrado (e a interpretação não é consumida). O usuário só sai respondendo 1/2/3/"cancelar" ou esperando 10 min. A mensagem de ajuda não menciona "cancelar" como saída.
 - **Correção sugerida:** incluir a saída na mensagem (`...ou *cancelar* pra mandar outra coisa`) e/ou tratar gasto completo claro (valor + descrição) como pedido novo.
@@ -343,7 +344,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 1. **D-01** (Alto): bloquear `delete_*` e `remove_*` junto de `edit_*` na mesma mensagem. É a única que pode apagar algo que o usuário acha que está só editando.
 2. ~~**D-02** + **D-05** (Médio, ambos de agenda)~~ — feito no Card 10.
 3. ~~**D-06** + **D-04** (Médio)~~ — feito no Card 11.
-4. **D-07** (Médio): saída explícita da prévia (decisão de produto).
+4. ~~**D-07** (Médio)~~ — feito no Card 12.
 5. **D-03** (Baixo, uma linha) junto de **D-13** (script de cobertura/lint e `noUnusedLocals`).
 6. **D-08**, **D-09**, **D-10** (consistência de produto), **D-12** (retenção do log) e **D-11** (refatoração do `router.ts`, fazer por último e com os testes desta auditoria como rede de segurança).
 
