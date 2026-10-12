@@ -365,3 +365,94 @@ test("Card 12: 'nao entendi' das confirmacoes de apagar e da entrada tambem traz
   assert.equal(expensesLike(N, "uber c12o").length, 1);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM events WHERE from_number = ?`).get(N) as { n: number }).n, 1, "o evento nao foi cancelado");
 });
+
+// ---- correcoes da revisao (Card 12) ----------------------------------------------------------------
+
+test("Card 12: no menu de campos a dica de saida e 'cancelar' (o '3' e um campo) e 'cancelar' sai de verdade", async (t) => {
+  const N = "551100094020";
+  seed(N);
+  const app = freshApp(t);
+  const cat = getOrCreateCategory(N, "Alimentação");
+  insertExpense({ fromNumber: N, amount: 38, description: "Gasto menu c12p", categoryId: cat.id, paymentMethodId: null, date: today() });
+  await app.handle(msg(N, "editar"));
+  await app.handle(msg(N, "1"));
+  await app.handle(msg(N, "1"));
+  assert.deepEqual(pendingKinds(N), ["field_menu"]);
+  await app.handle(msg(N, "bla bla"));
+  assert.equal(app.last(), "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *cancelar* e me manda o pedido de novo.");
+  assert.ok(!app.last().includes("*3*"), "nada de 'responde *3*' num menu em que 3 e um campo");
+  await app.handle(msg(N, "cancelar"));
+  assert.equal(app.last(), "Beleza, não mexi em nada.");
+  assert.deepEqual(pendingKinds(N), []);
+});
+
+test("Card 12: resposta curta e ambigua ('mercado 40') nao vira gasto -- registrar exige 3 palavras ou mais", async (t) => {
+  const N = "551100094021";
+  seed(N);
+  const app = freshApp(t);
+  const cat = getOrCreateCategory(N, "Alimentação");
+  insertExpense({ fromNumber: N, amount: 38, description: "Gasto menu c12q", categoryId: cat.id, paymentMethodId: null, date: today() });
+  await app.handle(msg(N, "editar"));
+  await app.handle(msg(N, "1"));
+  await app.handle(msg(N, "1"));
+  app.calls.length = 0;
+  app.queueReply([{ type: "expense", amount: 40, description: "mercado", category: "Mercado", date: today() }]);
+  await app.handle(msg(N, "mercado 40"));
+  assert.equal(expensesLike(N, "mercado").length, 0, "nenhum gasto registrado");
+  assert.deepEqual(pendingKinds(N), ["field_menu"], "o menu continua");
+  assert.match(app.last(), /Não entendi/);
+  // a frase completa continua trocando
+  app.queueReply([{ type: "expense", amount: 40, description: "mercado", category: "Mercado", date: today() }]);
+  await app.handle(msg(N, "gastei 40 no mercado"));
+  assert.equal(expensesLike(N, "mercado").length, 1);
+});
+
+test("Card 12: pergunta de apagar entrada usa 'pergunta sobre', nao 'alteracao' (troca e desfazer)", async (t) => {
+  const N = "551100094022";
+  seed(N);
+  const app = freshApp(t);
+  const { insertIncome } = require("../../src/incomes/service");
+  insertIncome({ fromNumber: N, amount: 500, description: "Salario c12r", date: today() });
+  app.queueReply([{ type: "delete_income", query: "salario c12r" }]);
+  await app.handle(msg(N, "apaga a entrada salario c12r"));
+  assert.match(app.last(), /Vou apagar a entrada/);
+
+  await app.handle(msg(N, "desfaz isso"));
+  assert.equal(app.last(), 'Cancelei a pergunta sobre "Salario c12r" — nada foi mudado. Se quer desfazer a última ação que já fiz, diga "desfaz isso" de novo.');
+
+  app.queueReply([{ type: "delete_income", query: "salario c12r" }]);
+  await app.handle(msg(N, "apaga a entrada salario c12r"));
+  app.queueReply([uberExpense("uber c12r")]);
+  await app.handle(msg(N, "gastei 30 no uber"));
+  assert.ok(app.sent.some((m) => m.text === 'Deixei a pergunta sobre "Salario c12r" de lado e entendi seu novo pedido.'));
+  assert.ok(!app.sent.some((m) => m.text.includes('alteração de "Salario c12r"')));
+});
+
+test("Card 12: no maximo 3 segundas chances (chamadas da IA) por numero na janela; depois, so o 'nao entendi'", async (t) => {
+  const N = "551100094024";
+  seed(N);
+  const app = freshApp(t);
+  await openExpensePreview(app, N, "Mercado c12t");
+  for (let i = 0; i < 5; i++) {
+    app.resetLimit();
+    await app.handle(msg(N, `bla bla ${i}`));
+    assert.equal(app.last(), NOT_UNDERSTOOD_TEXT);
+  }
+  assert.equal(app.calls.length, 3, "so 3 chamadas da IA para 5 mensagens nao entendidas");
+  // a troca bem sucedida zera o contador; o pedido que ja passou da cota nao e avaliado
+  const budgetLog = (db.prepare(`SELECT COUNT(*) AS n FROM activity_log WHERE from_number = ? AND type = 'pending_not_understood'`).get(N) as { n: number }).n;
+  assert.equal(budgetLog, 5, "uma unica linha de log por resposta nao entendida");
+});
+
+test("Card 12: IA falhou => uma unica linha de log, e as respostas nao entendidas nao duplicam o log do fluxo", async (t) => {
+  const N = "551100094025";
+  seed(N);
+  const app = freshApp(t);
+  await openExpensePreview(app, N, "Mercado c12u");
+  t.mock.method(console, "error", () => {});
+  app.failNext();
+  await app.handle(msg(N, "gastei 30 no uber"));
+  const rows = db.prepare(`SELECT type, summary FROM activity_log WHERE from_number = ? AND (type = 'pending_not_understood' OR summary LIKE '%nao entendida%')`).all(N) as { type: string; summary: string }[];
+  assert.equal(rows.length, 1, JSON.stringify(rows));
+  assert.match(rows[0].summary, /IA falhou/);
+});

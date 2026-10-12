@@ -234,7 +234,7 @@ import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
 import { parseChoiceNumber } from "./confirmation/numbers";
-import { countWords, isSafeNewRequest, MIN_WORDS_FOR_NEW_REQUEST, replacedPendingText, undoWithPendingText } from "./pending/newRequest";
+import { countWords, isSafeNewRequest, MIN_WORDS_FOR_NEW_REQUEST, PendingKind, replacedPendingText, takeSecondChance, undoWithPendingText } from "./pending/newRequest";
 import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
@@ -977,40 +977,60 @@ async function dispatchInterpretations(from: string, interpretations: Interpreta
   await processInterpretations(from, interpretations);
 }
 
+// quantas segundas chances (chamadas da IA) cada numero ja usou na janela -- ver takeSecondChance
+const secondChanceCalls = new Map<string, number[]>();
+
+// "label" e o item da confirmacao aberta (quem chama sabe qual e); "kind" diz se era uma alteracao ou
+// uma pergunta (apagar...); "activity" e o tipo de log do fluxo.
+interface NotUnderstoodContext {
+  activity: string;
+  label?: string | null;
+  kind?: PendingKind;
+}
+
 // Card 12 (D-07): o resolvedor de uma confirmacao aberta NAO entendeu a mensagem. Antes de so repetir
 // o "nao entendi", da uma segunda chance: "desfaz isso" cancela a confirmacao (RN07) e um pedido novo
 // claro e seguro (RN03) troca a confirmacao e e atendido (RN05); o resto cai no "nao entendi" com a dica
-// de saida (que ja vem em notUnderstoodText). A IA e chamada no maximo uma vez e so depois que o
-// resolvedor desistiu; nada da confirmacao e descartado antes de o pedido novo ser aprovado.
-async function handleNotUnderstood(from: string, text: string, notUnderstoodText: string) {
-  const label = describeActiveEditConfirmation(from)?.label ?? null;
+// de saida (que ja vem em notUnderstoodText). A IA e chamada no maximo uma vez por mensagem (e no maximo
+// SECOND_CHANCE_MAX_CALLS vezes por janela) e so depois que o resolvedor desistiu; nada da confirmacao e descartado antes de o pedido novo ser aprovado.
+async function handleNotUnderstood(from: string, text: string, notUnderstoodText: string, context: NotUnderstoodContext) {
+  const { activity, label = null, kind = "edit" } = context;
+  const what = label ?? "pergunta anterior";
 
   if (isUndoText(text)) {
     cancelAllPendings(from);
-    logActivity(from, "pending_replaced", `"desfaz" com confirmacao aberta (${label ?? "pergunta anterior"}): confirmacao cancelada, nada desfeito`);
-    await sendText(from, undoWithPendingText(label));
+    logActivity(from, "pending_replaced", `${activity}: "desfaz" com confirmacao aberta (${what}): confirmacao cancelada, nada desfeito`);
+    await sendText(from, undoWithPendingText(label, kind));
     return;
   }
 
   let interpretations: Interpretation[] | null = null;
+  let logged = false;
   if (countWords(text) >= MIN_WORDS_FOR_NEW_REQUEST) {
-    try {
-      interpretations = await interpretText(from, text);
-    } catch (err) {
-      console.error("Erro ao interpretar mensagem nao entendida pela confirmacao:", err);
-      logActivity(from, "pending_not_understood", "IA falhou ao interpretar -- manteve a confirmacao");
+    const chance = takeSecondChance(secondChanceCalls.get(from) ?? [], Date.now());
+    secondChanceCalls.set(from, chance.history);
+    if (chance.allowed) {
+      try {
+        interpretations = await interpretText(from, text);
+      } catch (err) {
+        console.error("Erro ao interpretar mensagem nao entendida pela confirmacao:", err);
+        logActivity(from, "pending_not_understood", `${activity}: IA falhou ao interpretar -- manteve a confirmacao (${what})`);
+        logged = true;
+      }
     }
   }
 
   if (interpretations && isSafeNewRequest(interpretations, text)) {
+    secondChanceCalls.delete(from);
     cancelAllPendings(from);
-    logActivity(from, "pending_replaced", `"${label ?? "pergunta anterior"}" descartada por pedido novo: ${interpretations.map((i) => i.type).join(", ")}`);
-    await sendText(from, replacedPendingText(label));
+    logActivity(from, "pending_replaced", `${activity}: "${what}" descartada por pedido novo: ${interpretations.map((i) => i.type).join(", ")}`);
+    await sendText(from, replacedPendingText(label, kind));
     await dispatchInterpretations(from, interpretations);
     return;
   }
 
-  logActivity(from, "pending_not_understood", `resposta nao entendida (${label ?? "pergunta anterior"}); confirmacao mantida`);
+  // a unica linha de log da resposta nao entendida (os resolvedores nao registram a sua)
+  if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida`);
   await sendText(from, notUnderstoodText);
 }
 
@@ -2401,8 +2421,7 @@ async function handleDeleteReply(
 ) {
   const reply = interpretDeleteReply(answerText, Boolean(spec.offerOther));
   if (reply === "not_understood") {
-    logActivity(from, activity, "resposta nao entendida na confirmacao");
-    await handleNotUnderstood(from, answerText, deleteNotUnderstood(spec));
+    await handleNotUnderstood(from, answerText, deleteNotUnderstood(spec), { activity, kind: "question" });
     return;
   }
   if (reply === "confirm") return handlers.confirm();
@@ -3223,8 +3242,7 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
         await cancel("na escolha de campos");
         return;
       }
-      logActivity(from, activity, "menu de campos: selecao invalida");
-      await handleNotUnderstood(from, answerText, FIELD_SELECTION_RETRY);
+      await handleNotUnderstood(from, answerText, FIELD_SELECTION_RETRY, { activity, label: pending.label });
       return;
     }
     const first = fields.find((f) => f.key === selection.keys[0])!;
@@ -3493,8 +3511,7 @@ async function resolveEditIncomeConfirmation(from: string, pending: PendingEditI
       return;
     }
   }
-  logActivity(from, "edit_income", `resposta nao entendida na confirmacao de ${pending.description}`);
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_income", label: pending.description });
 }
 
 // exclusao: "1 apagar / 3 cancelar"; qualquer outra coisa (inclusive "2") pergunta de novo
@@ -3508,8 +3525,7 @@ async function resolveDeleteIncomeConfirmation(from: string, pending: PendingDel
     return;
   }
   if (reply !== "confirm") {
-    logActivity(from, "delete_income", `resposta nao entendida na confirmacao de "${description}"`);
-    await handleNotUnderstood(from, answerText, INCOME_DELETE_NOT_UNDERSTOOD);
+    await handleNotUnderstood(from, answerText, INCOME_DELETE_NOT_UNDERSTOOD, { activity: "delete_income", label: description, kind: "question" });
     return;
   }
   clearPendingDeleteIncome(from);
@@ -3881,8 +3897,7 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
       return;
     }
   }
-  logActivity(from, "edit_expense", `resposta nao entendida na confirmacao de ${label}`);
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_expense", label });
 }
 
 // ---- evento ----------------------------------------------------------------
@@ -4055,8 +4070,7 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       return;
     }
   }
-  logActivity(from, "edit_event", `resposta nao entendida na confirmacao de "${pending.title}"`);
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_event", label: pending.title });
 }
 
 // ---- lembrete --------------------------------------------------------------
@@ -4184,8 +4198,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
       return;
     }
   }
-  logActivity(from, "edit_reminder", `resposta nao entendida na confirmacao de "${pending.message}"`);
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_reminder", label: pending.message });
 }
 
 // resposta a "confirma que quer remover o orcamento de X?" -- so remove de
@@ -4391,8 +4404,7 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
       return;
     }
   }
-  logActivity(from, "edit_recurring_expense", `resposta nao entendida na confirmacao de "${pending.previous.description}"`);
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT);
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_recurring_expense", label: pending.previous.description });
 }
 
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa

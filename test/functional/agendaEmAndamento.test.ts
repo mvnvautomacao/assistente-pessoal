@@ -227,3 +227,27 @@ test("Card 10 -- agendador: aviso EXTRA dispara na janela, e falha de envio nao 
   assert.ok(eventsService.getDueEventReminders().some((e) => e.id === failing.id));
   assert.ok(eventsService.getDueExtraEventReminders().some((d) => d.eventId === failing.id));
 });
+
+test("Card 10 (revisao) -- aviso ignorado: uma linha por evento mesmo depois de reiniciar o servidor", async () => {
+  const N = "551100092510";
+  seed(N);
+  const stale = eventsService.createEvent({ fromNumber: N, title: "Evento ignorado reinicio", start: minutesFromNow(-20), end: minutesFromNow(40), reminderMinutes: 60 });
+  const countLogged = () =>
+    getRecentActivity(500).filter((a) => a.from_number === N && a.type === "event_reminder_skipped" && a.summary.includes("Evento ignorado reinicio")).length;
+
+  const scheduler = require("../../src/events/reminderScheduler");
+  assert.equal(scheduler.logSkippedEventReminders(), 1);
+  assert.equal(scheduler.logSkippedEventReminders(), 0, "no mesmo processo nao repete");
+  assert.equal(countLogged(), 1);
+
+  // reinicio: o cache em memoria some, o log de atividade continua
+  delete require.cache[require.resolve("../../src/events/reminderScheduler")];
+  const restarted = require("../../src/events/reminderScheduler");
+  assert.equal(restarted.logSkippedEventReminders(), 0, "depois do reinicio nao registra de novo");
+  assert.equal(countLogged(), 1);
+  assert.ok(getRecentActivity(500).find((a) => a.type === "event_reminder_skipped" && a.from_number === N)!.summary.includes(`(#${stale.id})`));
+
+  // o aviso deixa de ser "ignorado" quando o evento e remarcado pro futuro (volta a valer)
+  eventsService.updateEvent(N, stale.id, { title: "Evento ignorado reinicio", start: minutesFromNow(600), reminderMinutes: 60 });
+  assert.equal(restarted.logSkippedEventReminders(), 0);
+});

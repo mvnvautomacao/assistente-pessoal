@@ -64,7 +64,7 @@ test("formatFieldMenu: formato do menu de cada tipo", () => {
   assert.match(formatFieldMenu("Consulta", "event"), /1 Dia e hora\n2 Título\n3 Aviso\n4 Término\n5 Local\n\nPode escolher mais de um: "1 e 5"/);
   assert.match(formatFieldMenu("Remédio", "reminder"), /1 Dia e hora\n2 Texto\n\nPode escolher mais de um: "1 e 2"/);
   assert.match(formatFieldMenu("Academia", "recurring"), /1 Nome\n2 Valor\n3 Categoria\n4 Dia do mês\n5 Pagamento/);
-  assert.equal(FIELD_SELECTION_RETRY, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
+  assert.equal(FIELD_SELECTION_RETRY, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *cancelar* e me manda o pedido de novo.");
 });
 
 test("formatFieldQuestion: progresso '(i de n)' e pergunta de escolha com opcoes numeradas", () => {

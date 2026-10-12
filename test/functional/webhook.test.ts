@@ -4012,9 +4012,9 @@ test("card 4: selecao invalida repete o menu; resposta invalida repete a pergunt
   await handleIncomingMessage(evolutionMessage(G3, "edita o almoco menu"));
 
   await handleIncomingMessage(evolutionMessage(G3, "1 e 9"));
-  assert.equal(sent[1].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
+  assert.equal(sent[1].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *cancelar* e me manda o pedido de novo.");
   await handleIncomingMessage(evolutionMessage(G3, "xyz"));
-  assert.equal(sent[2].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *3* e me manda o pedido de novo.");
+  assert.equal(sent[2].text, "Não entendi 🤔 Responde com os números das opções (ex: 1 e 3) ou *cancelar*.\nSe quer fazer outra coisa, responde *cancelar* e me manda o pedido de novo.");
 
   await handleIncomingMessage(evolutionMessage(G3, "valor, pagamento")); // equivale a "1 e 5"
   assert.match(sent[3].text, /^\(1 de 2\) Qual é o valor certo\?/);
