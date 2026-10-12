@@ -1140,7 +1140,7 @@ test("delete_event: pede confirmacao antes de excluir, so cancela de verdade com
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "delete_event", query: "reuniao a cancelar" }]);
   await handleIncomingMessage(evolutionMessage(A, "cancela a reuniao a cancelar"));
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Cancelar este evento\?[\s\S]*1 🗑️ Cancelar o evento\n3 ↩️ Manter na agenda/);
   assert.ok(getEventById(A, event.id)); // ainda nao foi excluido, so perguntou
 
   await handleIncomingMessage(evolutionMessage(A, "sim"));
@@ -1345,7 +1345,7 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
 
   queueReply([{ type: "remove_recurring_expense", query: "streaming" }]);
   await handleIncomingMessage(evolutionMessage(R5, "cancela o gasto fixo do streaming"));
-  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.match(sent[1].text, /Parar de lançar este gasto fixo\?[\s\S]*1 🛑 Parar de lançar/);
   assert.equal(listRecurringExpenses(R5).length, 1); // ainda nao removido, so perguntou
 
   await handleIncomingMessage(evolutionMessage(R5, "sim"));
@@ -1457,7 +1457,7 @@ test("remove_bill_alert: desativa o alerta encontrado por texto", async (t) => {
 
   queueReply([{ type: "remove_bill_alert", query: "internet" }]);
   await handleIncomingMessage(evolutionMessage(BA5, "cancela o alerta da internet"));
-  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.match(sent[1].text, /Parar o alerta de "Internet fixa"\?/);
   assert.equal(listBillAlerts(BA5).length, 1); // ainda nao removido, so perguntou
 
   await handleIncomingMessage(evolutionMessage(BA5, "sim"));
@@ -1772,7 +1772,7 @@ test("bulk_recategorize (scope=today): pede confirmacao, so aplica com 'sim', e 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "bulk_recategorize", scope: "today", to_category: "Lazer-hoje" }]);
   await handleIncomingMessage(evolutionMessage(BR1, "muda os gastos de hoje pra lazer-hoje"));
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Mudar 2 gastos para "Lazer-hoje"\?/);
   assert.equal(getExpenseById(BR1, hoje1.id)?.category_id, origem.id); // ainda nao mudou, so perguntou
 
   await handleIncomingMessage(evolutionMessage(BR1, "sim"));
@@ -1909,7 +1909,7 @@ test("merge_categories: junta a categoria de origem na de destino, apaga a orige
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "merge_categories", category: "Mercado-merge", to_category: "Supermercado-merge" }]);
   await handleIncomingMessage(evolutionMessage(MC1, "junta a categoria mercado-merge com supermercado-merge"));
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Juntar "Mercado-merge" em "Supermercado-merge"\?/);
   assert.ok(findCategoryByName(MC1, "Mercado-merge")); // ainda existe, so perguntou
 
   await handleIncomingMessage(evolutionMessage(MC1, "sim"));
@@ -2019,7 +2019,7 @@ test("delete_category: pede confirmacao, so apaga com sim, gastos ficam sem cate
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "delete_category", category: "Categoria a apagar" }]);
   await handleIncomingMessage(evolutionMessage(DC1, "exclui a categoria Categoria a apagar"));
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Apagar a categoria "Categoria a apagar"\?[\s\S]*O 1 gasto dela fica sem categoria/);
   assert.ok(findCategoryByName(DC1, "Categoria a apagar")); // ainda existe, so perguntou
 
   await handleIncomingMessage(evolutionMessage(DC1, "sim"));
@@ -2250,7 +2250,7 @@ test("delete_expense: apaga o ultimo gasto com confirmacao, e 'desfaz isso' recr
   queueReply([{ type: "delete_expense" }]);
   await handleIncomingMessage(evolutionMessage(DE1, "excluir a ultima compra registrada"));
   assert.match(sent[0].text, /ultimo gasto apagar/);
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Apagar este gasto\?[\s\S]*1 🗑️ Apagar\n2 🔎 Não é esse, ver os últimos\n3 ❌ Cancelar/);
   assert.equal(searchExpenses(DE1, "ultimo gasto apagar").length, 1); // so perguntou
 
   await handleIncomingMessage(evolutionMessage(DE1, "sim"));
@@ -2295,9 +2295,9 @@ test("delete_expense sem dizer qual: confirma o ultimo e, se for 'nao', lista os
   queueReply([{ type: "delete_expense" }]);
   await handleIncomingMessage(evolutionMessage(DE3, "excluir um gasto"));
   assert.match(sent[0].text, /escolher tres/); // sugere o mais recente
-  assert.match(sent[0].text, /te mostro os últimos/);
+  assert.match(sent[0].text, /2 🔎 Não é esse, ver os últimos/);
 
-  await handleIncomingMessage(evolutionMessage(DE3, "nao"));
+  await handleIncomingMessage(evolutionMessage(DE3, "2"));
   assert.match(sent[1].text, /Qual desses/);
   assert.match(sent[1].text, /1\..*escolher tres/);
   assert.match(sent[1].text, /3\..*escolher um/);
@@ -2316,7 +2316,7 @@ test("delete_expense: numero invalido na escolha pergunta de novo, e 'cancelar' 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "delete_expense" }]);
   await handleIncomingMessage(evolutionMessage(DE4, "apagar um gasto"));
-  await handleIncomingMessage(evolutionMessage(DE4, "nao"));
+  await handleIncomingMessage(evolutionMessage(DE4, "2"));
   await handleIncomingMessage(evolutionMessage(DE4, "9"));
   assert.match(sent[2].text, /Não entendi/);
   await handleIncomingMessage(evolutionMessage(DE4, "cancelar"));
@@ -2351,7 +2351,7 @@ test("delete_expense de compra parcelada apaga todas as parcelas, sem tocar em o
   // "a ultima compra" e uma parcela da SEGUNDA compra (a mais recente inserida)
   queueReply([{ type: "delete_expense", query: "parcela 2/3" }]);
   await handleIncomingMessage(evolutionMessage(IP1, "apaga a geladeira parcela 2/3"));
-  assert.match(sent[sent.length - 1].text, /compra parcelada/);
+  assert.match(sent[sent.length - 1].text, /Apagar TODAS as 3 parcelas\?/);
   assert.match(sent[sent.length - 1].text, /3x/);
   assert.match(sent[sent.length - 1].text, /TODAS/);
 
@@ -2826,7 +2826,7 @@ test("delete_reminder: pede confirmacao antes de apagar, 'nao' mantem, 'sim' apa
 
   queueReply([{ type: "delete_reminder", query: "pagar a internet" }]);
   await handleIncomingMessage(evolutionMessage(DR1, "apaga o lembrete de pagar a internet"));
-  assert.match(sent[1].text, /[Cc]onfirma/);
+  assert.match(sent[1].text, /Apagar este lembrete\?/);
   assert.ok(getReminderById(DR1, reminderId)); // ainda nao apagou, so perguntou
 
   await handleIncomingMessage(evolutionMessage(DR1, "não"));
@@ -2898,7 +2898,7 @@ test("remove_budget: pede confirmacao antes de remover, 'nao' mantem, 'sim' remo
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "remove_budget", category: "Orcamento-confirm" }]);
   await handleIncomingMessage(evolutionMessage(RB1, "tira o orcamento de orcamento-confirm"));
-  assert.match(sent[0].text, /[Cc]onfirma/);
+  assert.match(sent[0].text, /Remover o orçamento de "Orcamento-confirm"\?[\s\S]*R\$ 300,00\/mês/);
   assert.equal(getBudget(RB1, cat.id), 300); // ainda nao removeu, so perguntou
 
   await handleIncomingMessage(evolutionMessage(RB1, "não"));
@@ -3458,7 +3458,7 @@ test("escolha de alvo: 3 eventos com 'consulta' -> cancelar e responder '1' segu
   assert.match(sent[0].text, /Qual deles você quer cancelar\?/);
 
   await handleIncomingMessage(evolutionMessage(TC2, "1"));
-  assert.match(sent[1].text, /Encontrei "Consulta dentista" em .*Confirma que quer cancelar/);
+  assert.match(sent[1].text, /Cancelar este evento\?\nConsulta dentista — /);
   assert.ok(getEventById(TC2, e1.id)); // so perguntou
   await handleIncomingMessage(evolutionMessage(TC2, "sim"));
   assert.equal(getEventById(TC2, e1.id), undefined);
@@ -3526,7 +3526,7 @@ test("escolha de alvo: refino por texto (1 acha -> segue; 2+ -> lista renumerada
   assert.match(sent[2].text, /2\. Remédio pressão baixa/);
 
   await handleIncomingMessage(evolutionMessage(TC5, "alta")); // 1 resultado: segue direto pra confirmacao
-  assert.match(sent[3].text, /Encontrei o lembrete "Remédio pressão alta".*Confirma que quer apagar/);
+  assert.match(sent[3].text, /Apagar este lembrete\?\nRemédio pressão alta — /);
   await handleIncomingMessage(evolutionMessage(TC5, "sim"));
   assert.equal(getReminderById(TC5, a), undefined);
 });
@@ -3642,7 +3642,7 @@ test("escolha de alvo: os outros fluxos do escopo (lembrete apagar, aviso extra,
   await handleIncomingMessage(evolutionMessage(TC10, "apaga o lanche"));
   assert.match(sent[sent.length - 1].text, /Qual deles você quer apagar\?/);
   await handleIncomingMessage(evolutionMessage(TC10, "1"));
-  assert.match(sent[sent.length - 1].text, /Confirma que quer apagar este gasto\? R\$25\.00 — Lanche tarde/);
+  assert.match(sent[sent.length - 1].text, /Apagar este gasto\?\nLanche tarde — R\$ 25,00/);
   await handleIncomingMessage(evolutionMessage(TC10, "sim"));
   assert.equal(expensesService.getExpenseById(TC10, lanche2.id), null);
 

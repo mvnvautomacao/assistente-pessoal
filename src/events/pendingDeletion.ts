@@ -1,8 +1,9 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer cancelar o evento X?" antes de excluir de verdade, pra resolver a
 // resposta ("sim"/"nao") na proxima mensagem. Mesma ideia dos outros caches
 // de conversa (listCache.ts, pendingListChoice.ts).
-const TTL_MS = 5 * 60 * 1000;
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 
 interface PendingDeletion {
   eventId: number;
@@ -10,22 +11,18 @@ interface PendingDeletion {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingDeletion>();
+const KIND = "delete_event";
+const VERSION = 1;
 
 export function setPendingEventDeletion(fromNumber: string, eventId: number, title: string) {
-  pending.set(fromNumber, { eventId, title, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: { eventId, title }, label: title, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingEventDeletion(fromNumber: string): PendingDeletion | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<{ eventId: number; title: string }>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingEventDeletion(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

@@ -1,7 +1,9 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer apagar o gasto X?" antes de apagar de verdade. Guarda uma copia do gasto
 // (pra "desfaz isso" poder recriar). Mesma ideia de pendingDeleteCategory.ts.
-const TTL_MS = 5 * 60 * 1000;
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import { formatBRL } from "../confirmation/preview";
 
 export interface PendingDeleteExpense {
   expenseId: number;
@@ -20,22 +22,18 @@ export interface PendingDeleteExpense {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingDeleteExpense>();
+const KIND = "delete_expense";
+const VERSION = 1;
 
 export function setPendingDeleteExpense(fromNumber: string, data: Omit<PendingDeleteExpense, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.choices ? "lista de gastos para apagar" : `${data.description} — ${formatBRL(data.amount)}`, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingDeleteExpense(fromNumber: string): PendingDeleteExpense | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingDeleteExpense, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingDeleteExpense(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

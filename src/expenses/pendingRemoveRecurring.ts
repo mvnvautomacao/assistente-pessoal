@@ -1,7 +1,8 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer parar de lancar o gasto fixo X?" antes de aplicar de verdade. Mesma
 // ideia dos outros caches de conversa (pendingDeletion.ts etc).
-const TTL_MS = 5 * 60 * 1000;
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 
 export interface PendingRemoveRecurring {
   recurringId: number;
@@ -13,22 +14,18 @@ export interface PendingRemoveRecurring {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingRemoveRecurring>();
+const KIND = "remove_recurring";
+const VERSION = 1;
 
 export function setPendingRemoveRecurring(fromNumber: string, data: Omit<PendingRemoveRecurring, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.description, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingRemoveRecurring(fromNumber: string): PendingRemoveRecurring | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingRemoveRecurring, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingRemoveRecurring(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

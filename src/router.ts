@@ -231,6 +231,7 @@ import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
+import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
 import {
@@ -418,7 +419,7 @@ A partir daí, todo mês eu lanço esse gasto sozinho, no dia certo, sem você p
 
 Pra ver quais você já tem: "quais gastos fixos eu tenho"
 
-Pra parar de lançar um: "cancela o gasto fixo da internet"`;
+Pra parar de lançar um: "cancela o gasto fixo da internet" — eu pergunto antes: *1* para de lançar, *3* cancela.`;
     case "expense":
       return `💰 Como registrar um gasto:
 
@@ -438,7 +439,7 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15".`;
+Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15" — eu mostro o compromisso e pergunto: *1* cancela, *3* mantém (qualquer outra resposta eu não considero, pra não apagar sem querer).`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -2335,73 +2336,83 @@ async function resolveListChoice(from: string, days: number, answerText: string)
 
 // resposta a "confirma que quer cancelar o evento X?" -- so exclui de verdade
 // com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
+// Resposta generica a uma confirmacao de apagar/remover no padrao 1/3 (Card 9): a mensagem
+// INTEIRA precisa ser de confirmar ou cancelar (ver interpretDeleteReply); "pode ser amanha",
+// "sim, mas so o do dia 10" e "nao, e o outro" caem em "Nao entendi" e a pendencia continua.
+async function handleDeleteReply(
+  from: string,
+  spec: Pick<DeleteSpec, "flow" | "offerOther">,
+  answerText: string,
+  activity: string,
+  handlers: { confirm: () => Promise<void>; cancel: () => Promise<void>; other?: () => Promise<void> }
+) {
+  const reply = interpretDeleteReply(answerText, Boolean(spec.offerOther));
+  if (reply === "not_understood") {
+    logActivity(from, activity, "resposta nao entendida na confirmacao");
+    await sendText(from, deleteNotUnderstood(spec));
+    return;
+  }
+  if (reply === "confirm") return handlers.confirm();
+  if (reply === "other" && handlers.other) return handlers.other();
+  return handlers.cancel();
+}
+
+// resposta a "cancelar este evento?" -- so exclui de verdade com um 1/sim inequivoco
 async function resolveEventDeletionConfirmation(from: string, pending: { eventId: number; title: string }, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — quer mesmo cancelar o evento "${pending.title}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingEventDeletion(from);
-  if (no) {
-    logActivity(from, "delete_event", `cancelamento de "${pending.title}" nao confirmado`);
-    await sendText(from, `Beleza, não mexi em nada — "${pending.title}" continua na agenda.`);
-    return;
-  }
-
-  const fullEvent = getEventById(from, pending.eventId);
-  deleteEvent(from, pending.eventId);
-  if (fullEvent) {
-    setPendingUndo(from, {
-      kind: "recreate_event",
-      params: {
-        fromNumber: from,
-        title: fullEvent.title,
-        start: fullEvent.start,
-        end: fullEvent.end,
-        location: fullEvent.location ?? undefined,
-        reminderMinutes: fullEvent.reminder_minutes,
-      },
-      description: fullEvent.title,
-    });
-  }
-  logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
-  await replyWithUndo(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
+  await handleDeleteReply(from, { flow: "event" }, answerText, "delete_event", {
+    cancel: async () => {
+      clearPendingEventDeletion(from);
+      logActivity(from, "delete_event", `cancelamento de "${pending.title}" nao confirmado`);
+      await sendText(from, `Beleza, não mexi em nada — "${pending.title}" continua na agenda.`);
+    },
+    confirm: async () => {
+      clearPendingEventDeletion(from);
+      const fullEvent = getEventById(from, pending.eventId);
+      deleteEvent(from, pending.eventId);
+      if (fullEvent) {
+        setPendingUndo(from, {
+          kind: "recreate_event",
+          params: {
+            fromNumber: from,
+            title: fullEvent.title,
+            start: fullEvent.start,
+            end: fullEvent.end,
+            location: fullEvent.location ?? undefined,
+            reminderMinutes: fullEvent.reminder_minutes,
+          },
+          description: fullEvent.title,
+        });
+      }
+      logActivity(from, "delete_event", `confirmado: removido "${pending.title}"`);
+      await replyWithUndo(from, `🗑️ Evento "${pending.title}" removido da agenda.`);
+    },
+  });
 }
 
 // resposta a "confirma que quer apagar o lembrete X?" -- mesma ideia de
 // resolveEventDeletionConfirmation, pra lembrete.
 async function resolveReminderDeletionConfirmation(from: string, pending: { reminderId: number; message: string }, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — quer mesmo apagar o lembrete "${pending.message}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingReminderDeletion(from);
-  if (no) {
-    logActivity(from, "delete_reminder", `cancelamento de "${pending.message}" nao confirmado`);
-    await sendText(from, `Beleza, não mexi em nada — o lembrete "${pending.message}" continua ativo.`);
-    return;
-  }
-
-  const fullReminder = getReminderById(from, pending.reminderId);
-  deleteReminder(from, pending.reminderId);
-  if (fullReminder) {
-    setPendingUndo(from, {
-      kind: "recreate_reminder",
-      params: { toNumber: from, message: fullReminder.message, dueAt: fullReminder.due_at },
-      description: fullReminder.message,
-    });
-  }
-  logActivity(from, "delete_reminder", `confirmado: removido "${pending.message}"`);
-  await replyWithUndo(from, `🗑️ Lembrete "${pending.message}" removido.`);
+  await handleDeleteReply(from, { flow: "reminder" }, answerText, "delete_reminder", {
+    cancel: async () => {
+      clearPendingReminderDeletion(from);
+      logActivity(from, "delete_reminder", `cancelamento de "${pending.message}" nao confirmado`);
+      await sendText(from, `Beleza, não mexi em nada — o lembrete "${pending.message}" continua ativo.`);
+    },
+    confirm: async () => {
+      clearPendingReminderDeletion(from);
+      const fullReminder = getReminderById(from, pending.reminderId);
+      deleteReminder(from, pending.reminderId);
+      if (fullReminder) {
+        setPendingUndo(from, {
+          kind: "recreate_reminder",
+          params: { toNumber: from, message: fullReminder.message, dueAt: fullReminder.due_at },
+          description: fullReminder.message,
+        });
+      }
+      logActivity(from, "delete_reminder", `confirmado: removido "${pending.message}"`);
+      await replyWithUndo(from, `🗑️ Lembrete "${pending.message}" removido.`);
+    },
+  });
 }
 
 // resposta a "quer que eu crie como evento ou te explico como usar a agenda?"
@@ -2448,67 +2459,52 @@ async function resolveReminderAdvanceChoice(
 // resposta a "confirma que quer mudar N gastos pra categoria X?" -- so aplica de
 // verdade com um "sim" claro; resposta ambigua pergunta de novo em vez de assumir
 async function resolveBulkRecategorizeConfirmation(from: string, pending: PendingBulkRecategorize, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer mudar ${pending.summary} pra "${pending.toCategoryName}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingBulkRecategorize(from);
-  if (no) {
-    logActivity(from, "bulk_recategorize", `${pending.summary} -> "${pending.toCategoryName}" nao confirmado`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  bulkUpdateExpenseCategory(from, pending.expenseIds, pending.toCategoryId);
-  setPendingUndo(from, {
-    kind: "bulk_restore_category",
-    changes: pending.previous,
-    description: `${pending.summary} -> ${pending.toCategoryName}`,
+  await handleDeleteReply(from, { flow: "bulk" }, answerText, "bulk_recategorize", {
+    cancel: async () => {
+      clearPendingBulkRecategorize(from);
+      logActivity(from, "bulk_recategorize", `${pending.summary} -> "${pending.toCategoryName}" nao confirmado`);
+      await sendText(from, "Beleza, não mexi em nada.");
+    },
+    confirm: async () => {
+      clearPendingBulkRecategorize(from);
+      bulkUpdateExpenseCategory(from, pending.expenseIds, pending.toCategoryId);
+      setPendingUndo(from, {
+        kind: "bulk_restore_category",
+        changes: pending.previous,
+        description: `${pending.summary} -> ${pending.toCategoryName}`,
+      });
+      logActivity(from, "bulk_recategorize", `confirmado: ${pending.summary} -> "${pending.toCategoryName}"`);
+      await replyWithUndo(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
+    },
   });
-  logActivity(from, "bulk_recategorize", `confirmado: ${pending.summary} -> "${pending.toCategoryName}"`);
-  await replyWithUndo(from, `✅ Prontinho, ${pending.expenseIds.length} gasto(s) agora ${pending.expenseIds.length === 1 ? "está" : "estão"} em "${pending.toCategoryName}".`);
 }
 
 // resposta a "confirma que quer juntar a categoria X na Y?" -- so apaga a
 // categoria de origem de verdade com um "sim" claro
 async function resolveMergeCategoriesConfirmation(from: string, pending: PendingMergeCategories, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(
-      from,
-      `Não entendi — confirma que quer juntar "${pending.sourceCategoryName}" em "${pending.targetCategoryName}"? Responde "sim" ou "não".`
-    );
-    return;
-  }
-
-  clearPendingMergeCategories(from);
-  if (no) {
-    logActivity(from, "merge_categories", `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}" nao confirmado`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  bulkUpdateExpenseCategory(from, pending.expenseIds, pending.targetCategoryId);
-  deleteCategory(from, pending.sourceCategoryId);
-  setPendingUndo(from, {
-    kind: "undo_merge_categories",
-    expenseIds: pending.expenseIds,
-    sourceCategoryName: pending.sourceCategoryName,
-    description: `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}"`,
+  await handleDeleteReply(from, { flow: "merge" }, answerText, "merge_categories", {
+    cancel: async () => {
+      clearPendingMergeCategories(from);
+      logActivity(from, "merge_categories", `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}" nao confirmado`);
+      await sendText(from, "Beleza, não mexi em nada.");
+    },
+    confirm: async () => {
+      clearPendingMergeCategories(from);
+      bulkUpdateExpenseCategory(from, pending.expenseIds, pending.targetCategoryId);
+      deleteCategory(from, pending.sourceCategoryId);
+      setPendingUndo(from, {
+        kind: "undo_merge_categories",
+        expenseIds: pending.expenseIds,
+        sourceCategoryName: pending.sourceCategoryName,
+        description: `"${pending.sourceCategoryName}" -> "${pending.targetCategoryName}"`,
+      });
+      logActivity(from, "merge_categories", `confirmado: "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}"`);
+      await replyWithUndo(
+        from,
+        `✅ Categoria "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}". ${pending.expenseIds.length} gasto(s) movido(s), e "${pending.sourceCategoryName}" não existe mais.`
+      );
+    },
   });
-  logActivity(from, "merge_categories", `confirmado: "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}"`);
-  await replyWithUndo(
-    from,
-    `✅ Categoria "${pending.sourceCategoryName}" juntada em "${pending.targetCategoryName}". ${pending.expenseIds.length} gasto(s) movido(s), e "${pending.sourceCategoryName}" não existe mais.`
-  );
 }
 
 // resposta a "confirma que quer apagar o gasto X?" -- so apaga com um "sim"
@@ -2540,7 +2536,7 @@ async function performDeleteExpense(
     logActivity(from, "delete_expense", `compra parcelada apagada: ${baseName}, ${group.length} parcela(s), R$${total.toFixed(2)}`);
     await replyWithUndo(
       from,
-      `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total R$${total.toFixed(2)}) foram removidas.`
+      `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total ${formatBRL(total)}) foram removidas.`
     );
     return;
   }
@@ -2563,7 +2559,7 @@ async function performDeleteExpense(
     description: `R$${expense.amount.toFixed(2)} — ${expense.description}`,
   });
   logActivity(from, "delete_expense", `apagado: R$${expense.amount.toFixed(2)} — ${expense.description}`);
-  await replyWithUndo(from, `🗑️ Gasto apagado: R$${expense.amount.toFixed(2)} — ${expense.description}.`);
+  await replyWithUndo(from, `🗑️ Gasto "${expense.description}" apagado.`);
 }
 
 // mostra os ultimos gastos numerados pra o usuario escolher qual apagar
@@ -2583,14 +2579,14 @@ async function offerDeleteChoices(from: string) {
     paymentMethodId: null,
     choices: items.map((i) => i.id),
   });
-  const lines = items.map((item, idx) => `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${item.category ?? "sem categoria"}) — ${formatDateOnly(item.date)}`);
+  const lines = items.map((item, idx) => `${idx + 1}. ${expenseLine(item, item.payment_method)}`);
   await sendText(from, `Qual desses você quer apagar? Responde com o número (ou "cancelar").\n\n${lines.join("\n")}`);
 }
 
 async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDeleteExpense, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-
+  // modo "escolher": a resposta e o numero do gasto (RN06 do Card 9: comportamento mantido, so persistido)
   if (pending.choices) {
+    const normalized = answerText.trim().toLowerCase();
     const pick = Number(normalized.replace(/[^0-9]/g, ""));
     const id = /^\D*\d+\D*$/.test(normalized) ? pending.choices[pick - 1] : undefined;
     if (id) {
@@ -2603,7 +2599,7 @@ async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDe
       await performDeleteExpense(from, expense);
       return;
     }
-    if (/^(n[aã]o|n|deixa|espera)\b/.test(normalized)) {
+    if (interpretDeleteReply(answerText, false) === "cancel") {
       clearPendingDeleteExpense(from);
       await sendText(from, "Beleza, não apaguei nada.");
       return;
@@ -2612,66 +2608,56 @@ async function resolveDeleteExpenseConfirmation(from: string, pending: PendingDe
     return;
   }
 
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer apagar o gasto "${pending.description}" (R$${pending.amount.toFixed(2)})? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingDeleteExpense(from);
-  if (no) {
-    logActivity(from, "delete_expense", `apagar #${pending.expenseId} nao confirmado`);
-    if (pending.offerChoices) {
-      // nao disse qual gasto e o mais recente nao era esse: mostra os ultimos pra escolher
+  await handleDeleteReply(from, { flow: "expense", offerOther: pending.offerChoices }, answerText, "delete_expense", {
+    cancel: async () => {
+      clearPendingDeleteExpense(from);
+      logActivity(from, "delete_expense", `apagar #${pending.expenseId} nao confirmado`);
+      await sendText(from, "Beleza, não apaguei nada.");
+    },
+    // o usuario nao disse qual gasto e o mais recente nao era esse: opcao 2 mostra os ultimos pra escolher
+    other: async () => {
+      clearPendingDeleteExpense(from);
+      logActivity(from, "delete_expense", `apagar #${pending.expenseId}: nao era esse, mostrou os ultimos`);
       await offerDeleteChoices(from);
-      return;
-    }
-    await sendText(from, "Beleza, não apaguei nada.");
-    return;
-  }
-
-  const expense = getExpenseById(from, pending.expenseId);
-  if (!expense) {
-    await sendText(from, "Esse gasto já não existe mais.");
-    return;
-  }
-  await performDeleteExpense(from, expense);
+    },
+    confirm: async () => {
+      clearPendingDeleteExpense(from);
+      const expense = getExpenseById(from, pending.expenseId);
+      if (!expense) {
+        await sendText(from, "Esse gasto já não existe mais.");
+        return;
+      }
+      await performDeleteExpense(from, expense);
+    },
+  });
 }
 
 // resposta a "confirma que quer apagar a categoria X?" -- so apaga de verdade
 // com um "sim" claro. Os gastos ficam sem categoria (nunca sao apagados) e o
 // "desfaz isso" recria a categoria e devolve eles (mesmo undo do merge).
 async function resolveDeleteCategoryConfirmation(from: string, pending: PendingDeleteCategory, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer apagar a categoria "${pending.categoryName}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingDeleteCategory(from);
-  if (no) {
-    logActivity(from, "delete_category", `"${pending.categoryName}" nao confirmado`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  deleteCategory(from, pending.categoryId);
-  setPendingUndo(from, {
-    kind: "undo_merge_categories",
-    expenseIds: pending.expenseIds,
-    sourceCategoryName: pending.categoryName,
-    description: `categoria "${pending.categoryName}" apagada`,
+  await handleDeleteReply(from, { flow: "category" }, answerText, "delete_category", {
+    cancel: async () => {
+      clearPendingDeleteCategory(from);
+      logActivity(from, "delete_category", `"${pending.categoryName}" nao confirmado`);
+      await sendText(from, "Beleza, não mexi em nada.");
+    },
+    confirm: async () => {
+      clearPendingDeleteCategory(from);
+      deleteCategory(from, pending.categoryId);
+      setPendingUndo(from, {
+        kind: "undo_merge_categories",
+        expenseIds: pending.expenseIds,
+        sourceCategoryName: pending.categoryName,
+        description: `categoria "${pending.categoryName}" apagada`,
+      });
+      logActivity(from, "delete_category", `confirmado: "${pending.categoryName}" apagada (${pending.expenseIds.length} gasto(s) sem categoria)`);
+      await replyWithUndo(
+        from,
+        `✅ Categoria "${pending.categoryName}" apagada.${pending.expenseIds.length ? ` ${pending.expenseIds.length} gasto(s) dela ficaram sem categoria.` : ""}`
+      );
+    },
   });
-  logActivity(from, "delete_category", `confirmado: "${pending.categoryName}" apagada (${pending.expenseIds.length} gasto(s) sem categoria)`);
-  await replyWithUndo(
-    from,
-    `✅ Categoria "${pending.categoryName}" apagada.${pending.expenseIds.length ? ` ${pending.expenseIds.length} gasto(s) dela ficaram sem categoria.` : ""}`
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -4127,66 +4113,54 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
 // resposta a "confirma que quer remover o orcamento de X?" -- so remove de
 // verdade com um "sim" claro, igual as outras confirmacoes de exclusao
 async function resolveRemoveBudgetConfirmation(from: string, pending: PendingRemoveBudget, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer remover o orçamento de "${pending.categoryName}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingRemoveBudget(from);
-  if (no) {
-    logActivity(from, "remove_budget", `remocao do orcamento de ${pending.categoryName} nao confirmada`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  removeBudget(from, pending.categoryId);
-  setPendingUndo(from, {
-    kind: "restore_budget",
-    categoryId: pending.categoryId,
-    monthlyLimit: pending.monthlyLimit,
-    description: pending.categoryName,
+  await handleDeleteReply(from, { flow: "budget" }, answerText, "remove_budget", {
+    cancel: async () => {
+      clearPendingRemoveBudget(from);
+      logActivity(from, "remove_budget", `remocao do orcamento de ${pending.categoryName} nao confirmada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+    },
+    confirm: async () => {
+      clearPendingRemoveBudget(from);
+      removeBudget(from, pending.categoryId);
+      setPendingUndo(from, {
+        kind: "restore_budget",
+        categoryId: pending.categoryId,
+        monthlyLimit: pending.monthlyLimit,
+        description: pending.categoryName,
+      });
+      logActivity(from, "remove_budget", `confirmado: orcamento de ${pending.categoryName} removido`);
+      await replyWithUndo(from, `✅ Orçamento de "${pending.categoryName}" removido.`);
+    },
   });
-  logActivity(from, "remove_budget", `confirmado: orcamento de ${pending.categoryName} removido`);
-  await replyWithUndo(from, `✅ Orçamento de "${pending.categoryName}" removido.`);
 }
 
 // mesma ideia de resolveRemoveBudgetConfirmation, pra gasto fixo
 async function resolveRemoveRecurringConfirmation(from: string, pending: PendingRemoveRecurring, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer parar de lançar o gasto fixo "${pending.description}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingRemoveRecurring(from);
-  if (no) {
-    logActivity(from, "remove_recurring_expense", `remocao de "${pending.description}" nao confirmada`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  deactivateRecurringExpense(from, pending.recurringId);
-  setPendingUndo(from, {
-    kind: "restore_recurring_expense",
-    params: {
-      fromNumber: from,
-      description: pending.description,
-      amount: pending.amount,
-      categoryId: pending.categoryId,
-      paymentMethodId: pending.paymentMethodId,
-      dayOfMonth: pending.dayOfMonth,
+  await handleDeleteReply(from, { flow: "recurring" }, answerText, "remove_recurring_expense", {
+    cancel: async () => {
+      clearPendingRemoveRecurring(from);
+      logActivity(from, "remove_recurring_expense", `remocao de "${pending.description}" nao confirmada`);
+      await sendText(from, "Beleza, não mexi em nada.");
     },
-    description: pending.description,
+    confirm: async () => {
+      clearPendingRemoveRecurring(from);
+      deactivateRecurringExpense(from, pending.recurringId);
+      setPendingUndo(from, {
+        kind: "restore_recurring_expense",
+        params: {
+          fromNumber: from,
+          description: pending.description,
+          amount: pending.amount,
+          categoryId: pending.categoryId,
+          paymentMethodId: pending.paymentMethodId,
+          dayOfMonth: pending.dayOfMonth,
+        },
+        description: pending.description,
+      });
+      logActivity(from, "remove_recurring_expense", `confirmado: "${pending.description}" removido`);
+      await replyWithUndo(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
+    },
   });
-  logActivity(from, "remove_recurring_expense", `confirmado: "${pending.description}" removido`);
-  await replyWithUndo(from, `✅ Gasto fixo "${pending.description}" removido. Não vou mais lançar ele automaticamente.`);
 }
 
 // ---- gasto fixo ------------------------------------------------------------
@@ -4345,33 +4319,27 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
 
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
 async function resolveRemoveBillAlertConfirmation(from: string, pending: PendingRemoveBillAlert, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const yes = /^(sim|s|confirmo|confirma|pode|isso|exato|certo|ok|blz|beleza|claro|perfeito|com certeza|certeza|manda|fechado|positivo)\b/.test(normalized);
-  const no = /^(n[aã]o|n|cancela|deixa|espera|para|negativo|nem)\b/.test(normalized);
-
-  if (!yes && !no) {
-    await sendText(from, `Não entendi — confirma que quer parar de receber o alerta de "${pending.name}"? Responde "sim" ou "não".`);
-    return;
-  }
-
-  clearPendingRemoveBillAlert(from);
-  if (no) {
-    logActivity(from, "remove_bill_alert", `remocao de "${pending.name}" nao confirmada`);
-    await sendText(from, "Beleza, não mexi em nada.");
-    return;
-  }
-
-  deactivateBillAlert(from, pending.billAlertId);
-  setPendingUndo(from, {
-    kind: "restore_bill_alert",
-    params:
-      pending.recurrenceType === "interval"
-        ? { fromNumber: from, name: pending.name, intervalDays: pending.intervalDays! }
-        : { fromNumber: from, name: pending.name, dayOfMonth: pending.dayOfMonth },
-    description: pending.name,
+  await handleDeleteReply(from, { flow: "bill_alert" }, answerText, "remove_bill_alert", {
+    cancel: async () => {
+      clearPendingRemoveBillAlert(from);
+      logActivity(from, "remove_bill_alert", `remocao de "${pending.name}" nao confirmada`);
+      await sendText(from, "Beleza, não mexi em nada.");
+    },
+    confirm: async () => {
+      clearPendingRemoveBillAlert(from);
+      deactivateBillAlert(from, pending.billAlertId);
+      setPendingUndo(from, {
+        kind: "restore_bill_alert",
+        params:
+          pending.recurrenceType === "interval"
+            ? { fromNumber: from, name: pending.name, intervalDays: pending.intervalDays! }
+            : { fromNumber: from, name: pending.name, dayOfMonth: pending.dayOfMonth },
+        description: pending.name,
+      });
+      logActivity(from, "remove_bill_alert", `confirmado: "${pending.name}" removido`);
+      await replyWithUndo(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
+    },
   });
-  logActivity(from, "remove_bill_alert", `confirmado: "${pending.name}" removido`);
-  await replyWithUndo(from, `✅ Alerta de "${pending.name}" removido. Não vou mais te perguntar sobre isso.`);
 }
 
 // Resposta a pergunta "ja fez X, ou quer que eu lembre amanha?" (disparada
@@ -4507,10 +4475,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const event = getEventById(from, eventId)!;
       setPendingEventDeletion(from, event.id, event.title);
       logActivity(from, "delete_event", `pediu confirmacao pra cancelar "${event.title}"`);
-      await sendText(
-        from,
-        `Encontrei "${event.title}" em ${formatDateTime(event.start)}. Confirma que quer cancelar? Responde "sim" ou "não".`
-      );
+      await sendText(from, formatDeleteConfirmation({ flow: "event", title: "🗑️ Cancelar este evento?", detail: eventHeader(event) }));
       break;
     }
     case "edit_event": {
@@ -4670,10 +4635,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const reminder = getReminderById(from, reminderId)!;
       setPendingReminderDeletion(from, reminder.id, reminder.message);
       logActivity(from, "delete_reminder", `pediu confirmacao pra apagar "${reminder.message}"`);
-      await sendText(
-        from,
-        `Encontrei o lembrete "${reminder.message}" pra ${formatDateTime(reminder.due_at)}. Confirma que quer apagar? Responde "sim" ou "não".`
-      );
+      await sendText(from, formatDeleteConfirmation({ flow: "reminder", title: "🗑️ Apagar este lembrete?", detail: reminderLine(reminder) }));
       break;
     }
     case "edit_reminder": {
@@ -4882,7 +4844,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       logActivity(from, "remove_budget", `pediu confirmacao pra remover orcamento de ${category.name}`);
       await sendText(
         from,
-        `Vou remover o orçamento de "${category.name}" (R$${limit.toFixed(2)}/mês). Confirma? Responde "sim" ou "não".`
+        formatDeleteConfirmation({ flow: "budget", title: `🗑️ Remover o orçamento de "${category.name}"?`, detail: `${formatBRL(limit)}/mês` })
       );
       break;
     }
@@ -4971,7 +4933,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       logActivity(from, "merge_categories", `pediu confirmacao: "${sourceCategory.name}" -> "${targetCategory.name}" (${items.length} gasto(s))`);
       await sendText(
         from,
-        `Encontrei ${items.length} gasto(s) em "${sourceCategory.name}". Confirma que quer juntar essa categoria em "${targetCategory.name}"? "${sourceCategory.name}" vai deixar de existir. Responde "sim" ou "não".`
+        formatDeleteConfirmation({
+          flow: "merge",
+          title: `🔀 Juntar "${sourceCategory.name}" em "${targetCategory.name}"?`,
+          notes: [
+            `${items.length === 1 ? "1 gasto vai" : `${items.length} gastos vão`} pra "${targetCategory.name}" e "${sourceCategory.name}" vai deixar de existir.`,
+          ],
+        })
       );
       break;
     }
@@ -4987,7 +4955,13 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       logActivity(from, "delete_category", `pediu confirmacao: "${category.name}" (${items.length} gasto(s))`);
       await sendText(
         from,
-        `Confirma que quer apagar a categoria "${category.name}"? ${items.length ? `Os ${items.length} gasto(s) dela ficam sem categoria (não são apagados). ` : ""}Responde "sim" ou "não".`
+        formatDeleteConfirmation({
+          flow: "category",
+          title: `🗑️ Apagar a categoria "${category.name}"?`,
+          notes: items.length
+            ? [items.length === 1 ? "O 1 gasto dela fica sem categoria (não é apagado)." : `Os ${items.length} gastos dela ficam sem categoria (não são apagados).`]
+            : [],
+        })
       );
       break;
     }
@@ -5092,15 +5066,16 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         summary,
       });
 
-      const preview = items
-        .slice(0, 5)
-        .map((i) => `• R$${i.amount.toFixed(2)} — ${i.description}`)
-        .join("\n");
-      const extra = items.length > 5 ? `\n… e mais ${items.length - 5}` : "";
+      const previewLines = items.slice(0, 5).map((i) => `• ${formatBRL(i.amount)} — ${i.description}`);
+      if (items.length > 5) previewLines.push(`… e mais ${items.length - 5}`);
       logActivity(from, "bulk_recategorize", `pediu confirmacao: ${summary} -> "${toCategory.name}" (${items.length} gasto(s))`);
       await sendText(
         from,
-        `Encontrei ${items.length} gasto(s) (${summary}):\n${preview}${extra}\n\nConfirma que quer mudar ${items.length === 1 ? "ele" : "todos"} pra categoria "${toCategory.name}"? Responde "sim" ou "não".`
+        formatDeleteConfirmation({
+          flow: "bulk",
+          title: `🔀 Mudar ${items.length} ${items.length === 1 ? "gasto" : "gastos"} para "${toCategory.name}"?`,
+          notes: [`(${summary})`, ...previewLines],
+        })
       );
       break;
     }
@@ -5207,15 +5182,22 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         const total = installmentGroup.reduce((sum, e) => sum + e.amount, 0);
         await sendText(
           from,
-          `Essa é uma compra parcelada: "${baseName}" em ${installmentGroup.length}x (total R$${total.toFixed(2)}). Confirma que quer apagar TODAS as ${installmentGroup.length} parcelas? Responde "sim" ou "não".`
+          formatDeleteConfirmation({
+            flow: "installment",
+            title: `🗑️ Apagar TODAS as ${installmentGroup.length} parcelas?`,
+            detail: `${baseName} — ${installmentGroup.length}x · total ${formatBRL(total)}`,
+            offerOther: !explicitTarget,
+          })
         );
         break;
       }
+      const paymentName = expense.payment_method_id !== null ? getPaymentMethodById(from, expense.payment_method_id)?.name : null;
+      const expenseDetail = [`${expense.description} — ${formatBRL(expense.amount)}`, formatShortDate(expense.date), paymentName, category?.name]
+        .filter(Boolean)
+        .join(" · ");
       await sendText(
         from,
-        `Confirma que quer apagar este gasto? R$${expense.amount.toFixed(2)} — ${expense.description} (${category?.name ?? "sem categoria"}, ${formatDateOnly(expense.date)}). ${
-          explicitTarget ? 'Responde "sim" ou "não".' : 'Responde "sim", ou "não" se for outro (aí te mostro os últimos pra você escolher).'
-        }`
+        formatDeleteConfirmation({ flow: "expense", title: "🗑️ Apagar este gasto?", detail: expenseDetail, offerOther: !explicitTarget })
       );
       break;
     }
@@ -5316,7 +5298,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       logActivity(from, "remove_recurring_expense", `pediu confirmacao pra remover "${recurring.description}"`);
       await sendText(
         from,
-        `Vou parar de lançar o gasto fixo "${recurring.description}" (R$${recurring.amount.toFixed(2)}, todo dia ${recurring.day_of_month}). Confirma? Responde "sim" ou "não".`
+        formatDeleteConfirmation({ flow: "recurring", title: "🛑 Parar de lançar este gasto fixo?", detail: recurringLine(recurring) })
       );
       break;
     }
@@ -5492,7 +5474,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       });
       const recurrenceLabel = bill.recurrence_type === "interval" ? `a cada ${bill.interval_days} dias` : `todo dia ${bill.day_of_month}`;
       logActivity(from, "remove_bill_alert", `pediu confirmacao pra remover "${bill.name}"`);
-      await sendText(from, `Vou parar de te perguntar sobre "${bill.name}" (${recurrenceLabel}). Confirma? Responde "sim" ou "não".`);
+      await sendText(from, formatDeleteConfirmation({ flow: "bill_alert", title: `🛑 Parar o alerta de "${bill.name}"?`, detail: recurrenceLabel }));
       break;
     }
     case "income": {

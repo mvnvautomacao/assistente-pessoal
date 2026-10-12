@@ -20,7 +20,17 @@ export type PendingKind =
   | "field_menu"
   | "target_choice"
   | "edit_target"
-  | "undo";
+  | "undo"
+  // exclusoes e remocoes com confirmacao 1/3 (Card 9)
+  | "delete_event"
+  | "delete_reminder"
+  | "delete_expense"
+  | "delete_category"
+  | "remove_budget"
+  | "remove_recurring"
+  | "remove_bill_alert"
+  | "merge_categories"
+  | "bulk_recategorize";
 
 // quanto tempo depois do vencimento a linha ainda existe so pro aviso de expiracao
 export const EXPIRED_NOTICE_WINDOW_MS = 60 * 60 * 1000;

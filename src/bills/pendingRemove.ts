@@ -1,7 +1,8 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer parar de receber o alerta da conta X?" antes de aplicar de verdade.
 // Mesma ideia de expenses/pendingRemoveRecurring.ts.
-const TTL_MS = 5 * 60 * 1000;
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 
 export interface PendingRemoveBillAlert {
   billAlertId: number;
@@ -12,22 +13,18 @@ export interface PendingRemoveBillAlert {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingRemoveBillAlert>();
+const KIND = "remove_bill_alert";
+const VERSION = 1;
 
 export function setPendingRemoveBillAlert(fromNumber: string, data: Omit<PendingRemoveBillAlert, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: data.name, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingRemoveBillAlert(fromNumber: string): PendingRemoveBillAlert | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingRemoveBillAlert, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingRemoveBillAlert(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

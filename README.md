@@ -9,6 +9,7 @@ Bot de WhatsApp que:
 - Edita gastos já registrados pelo WhatsApp: vários campos de uma vez ("muda o 2 pra 45 e pix") e até 5 gastos numa mensagem, sempre com prévia "antes → depois", confirmação única (1 confirmar, 2 corrigir, 3 cancelar), validação de valor/data e desfazer em um passo
 - Menu guiado de edição: dizer só "editar" (ou "edita o mercado") mostra os itens numerados e depois as opções de campo (gasto, evento, lembrete e gasto fixo); dá pra escolher vários campos ("1 e 5") e responder uma pergunta curta por campo, caindo na mesma prévia 1/2/3
 - Entradas (receitas) pelo WhatsApp: "minhas entradas" lista numerada com o total; "muda o valor do 2 pra 850" (ou "muda o salário pra 3500") edita com prévia 1/2/3, "apaga o 2" pede confirmação (1 apagar / 3 cancelar), "editar" → "Entrada" abre o menu guiado, e "desfaz isso" volta a edição ou a exclusão
+- Apagar e remover (evento, lembrete, gasto, compra parcelada, categoria, orçamento, gasto fixo, alerta de conta, juntar categorias e recategorizar em lote) usam sempre a mesma confirmação: o bot mostra o item e pergunta *1* confirma / *3* cancela (no apagar gasto sem dizer qual, *2* mostra os últimos); só uma resposta inequívoca age ("pode ser amanhã" não apaga nada), vale 10 minutos e sobrevive a reinício do servidor
 - Agenda: dá pra definir o local e o término do evento pelo WhatsApp ("a consulta é na Clínica Sorriso", "vai até as 17h", "dura 2 horas"), editar vários campos com a opção 2 escolhendo qual corrigir, e adiar um lembrete que acabou de tocar ("adia 30 min", "adia pra amanhã 9h"); editar só título, local ou texto nunca reenvia um aviso que já foi enviado
 - Painel visual dos gastos em `/dashboard`
 
@@ -177,12 +178,12 @@ test/
 
 ## Estado de conversa (pendências e desfazer)
 
-As confirmações de edição (gasto, evento, lembrete, gasto fixo, entrada), a exclusão de entrada, o menu guiado de campos, a escolha numerada de item, o "editar" sem alvo e o "desfazer isso" ficam na tabela `pending_state` do SQLite (veja [src/pending/store.ts](src/pending/store.ts)), uma linha por número e tipo. Por isso um deploy ou reinício do servidor **não** perde a conversa: quem estava numa prévia "1 Confirmar / 2 Corrigir / 3 Cancelar" responde normalmente depois. O banco precisa estar no volume persistente (`/app/data`, veja o passo do Coolify acima).
+As confirmações de edição (gasto, evento, lembrete, gasto fixo, entrada), a exclusão de entrada e as demais exclusões/remoções com confirmação, o menu guiado de campos, a escolha numerada de item, o "editar" sem alvo e o "desfazer isso" ficam na tabela `pending_state` do SQLite (veja [src/pending/store.ts](src/pending/store.ts)), uma linha por número e tipo. Por isso um deploy ou reinício do servidor **não** perde a conversa: quem estava numa prévia "1 Confirmar / 2 Corrigir / 3 Cancelar" responde normalmente depois. O banco precisa estar no volume persistente (`/app/data`, veja o passo do Coolify acima).
 
 - Prazo de 10 minutos (`EDIT_PENDING_TTL_MS`). Se a pessoa responde só "1", "sim", "2", "3", "cancelar" ou "desfaz" **depois** do prazo (até 60 minutos), o bot explica que expirou em vez de interpretar a mensagem como outro pedido (veja [src/pending/expiredNotice.ts](src/pending/expiredNotice.ts)). Um pedido completo ("muda o mercado pra 40") é processado normalmente.
 - Uma rotina limpa as linhas vencidas há mais de 60 minutos (na inicialização e a cada 10 minutos).
 - Toda mensagem de sucesso de uma ação que registra desfazer termina com "Errou? Responde *desfazer*." (um só ponto no código: [src/undo/replyWithUndo.ts](src/undo/replyWithUndo.ts)). Só o último desfazer de cada número fica disponível.
-- Os demais pendentes mais antigos (exclusão de evento/lembrete/gasto/categoria, completar gasto, forma de pagamento...) e as listas numeradas de gastos/entradas continuam em memória; o store é genérico para migrá-los depois.
+- Os demais pendentes mais antigos (completar gasto, forma de pagamento, check-in de conta, aviso adiantado, recibo...) e as listas numeradas de gastos/entradas continuam em memória; o store é genérico para migrá-los depois.
 
 ## Testes
 

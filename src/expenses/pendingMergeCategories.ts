@@ -1,8 +1,9 @@
-// Cache curto e em memoria: guarda que um numero foi perguntado "confirma que
+// Estado curto de conversa (persistido em SQLite, ver pending/store.ts): guarda que um numero foi perguntado "confirma que
 // quer juntar a categoria X na Y?" antes de aplicar de verdade (a categoria de
 // origem deixa de existir, entao vale confirmar). Mesma ideia dos outros caches
 // de conversa (pendingDeletion.ts, pendingBulkRecategorize.ts).
-const TTL_MS = 5 * 60 * 1000;
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 
 export interface PendingMergeCategories {
   sourceCategoryId: number;
@@ -13,22 +14,18 @@ export interface PendingMergeCategories {
   createdAt: number;
 }
 
-const pending = new Map<string, PendingMergeCategories>();
+const KIND = "merge_categories";
+const VERSION = 1;
 
 export function setPendingMergeCategories(fromNumber: string, data: Omit<PendingMergeCategories, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+  setPending(fromNumber, KIND, { payload: data, label: `${data.sourceCategoryName} → ${data.targetCategoryName}`, ttlMs: EDIT_PENDING_TTL_MS, version: VERSION });
 }
 
 export function getPendingMergeCategories(fromNumber: string): PendingMergeCategories | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingMergeCategories, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingMergeCategories(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
 }

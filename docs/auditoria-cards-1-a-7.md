@@ -225,9 +225,11 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** o mesmo snapshot de `previous` comparado antes de aplicar, como em `confirmExpenseEdits`/`confirmIncomeEdit`. (Sugestão já registrada no Card 4, seção 14.)
 
 ### D-09 · Baixo · Textos e formatos inconsistentes entre fluxos novos e antigos
+> **Corrigido em parte pelo Card 9:** as confirmações de apagar/remover dos 9 fluxos (evento, lembrete, gasto e compra parcelada, categoria, orçamento, gasto fixo, alerta de conta, juntar categorias e recategorizar em lote) passaram para o padrão `1`/`3`, valor `R$ 10,00` e data `qui 15/10 às 10:00`, 10 minutos e persistentes. **Continua aberto:** o formato antigo `R$10.00` / `15/10/2026, 10:00:00` em mensagens de sucesso de outros fluxos (por exemplo "evento criado", "alterado: de ... pra ...") e a frase única "Já está assim, não mexi em nada.".
+
 - Dinheiro: `R$ 10,00` (novo) × `R$10.00` (exclusões e criações antigas).
 - Datas: `qui 15/10 às 10:00` (novo) × `15/10/2026, 10:00:00` (mensagem de sucesso de evento/lembrete e confirmação de cancelamento).
-- Confirmação de exclusão de evento, lembrete, gasto, categoria, orçamento e gasto fixo continua em `sim/não`, enquanto entrada usa `1 Apagar / 3 Cancelar` (já era fora de escopo).
+- ~~Confirmação de exclusão de evento, lembrete, gasto, categoria, orçamento e gasto fixo continua em `sim/não`~~ — **corrigido no Card 9** (agora todas usam `1`/`3`).
 - "Já está assim, não mexi em nada." (o Card 4 pedia "não mudei nada" para evento/lembrete/gasto fixo; foi adotada uma frase só).
 
 ### D-10 · Baixo · Ajuda e boas-vindas defasadas
