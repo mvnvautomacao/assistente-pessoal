@@ -1,6 +1,17 @@
 import { db } from "../db";
 
 const DEFAULT_REMINDER_MINUTES = 60;
+
+// Tolerancia do aviso (RN01): um aviso so e enviado ate esse tempo DEPOIS do inicio do evento --
+// cobre o aviso "na hora" (antecedencia 0), que dispara no primeiro minuto apos o inicio, e
+// pequenos atrasos do cron ou de um reinicio. Depois disso o evento "ja passou" e nao avisa mais.
+export const EVENT_REMINDER_GRACE_MINUTES = 5;
+
+// Evento editavel/cancelavel pelo WhatsApp (RN06): futuro, em andamento ou terminado ha ate 2 h.
+export const EVENT_EDIT_GRACE_MINUTES = 120;
+
+// janela de busca pra frente do menu "editar" -> evento (a mesma de antes)
+const EDIT_LIST_DAYS = 90;
 const DEFAULT_DURATION_MS = 60 * 60 * 1000;
 
 // contando o principal (events.reminder_minutes), cada evento pode ter no
@@ -151,13 +162,67 @@ export function findUpcomingEvents(fromNumber: string, query: string): EventRow[
     .all(fromNumber, `%${query}%`) as unknown as EventRow[];
 }
 
-export function getDueEventReminders(): EventRow[] {
+// "agora" vem de Date.now() (e nao do relogio do SQLite) pra poder ser injetado nos testes
+const nowDate = () => new Date(Date.now());
+
+// Eventos cujo aviso principal venceu (agora >= inicio - antecedencia) E que ainda nao passaram da
+// tolerancia (agora <= inicio + 5 min). Evento que ja comecou ha mais que isso nunca dispara, mesmo
+// com reminder_sent = 0 (ex: remarcado pro passado) -- nada e gravado, o filtro e so na consulta.
+export function getDueEventReminders(now: Date = nowDate()): EventRow[] {
+  const nowIso = now.toISOString();
   return db
     .prepare(
       `SELECT * FROM events
-       WHERE reminder_sent = 0 AND datetime('now') >= datetime(start, '-' || reminder_minutes || ' minutes')`
+       WHERE reminder_sent = 0
+         AND datetime(?) >= datetime(start, '-' || reminder_minutes || ' minutes')
+         AND datetime(?) <= datetime(start, '+' || ? || ' minutes')`
     )
-    .all() as unknown as EventRow[];
+    .all(nowIso, nowIso, EVENT_REMINDER_GRACE_MINUTES) as unknown as EventRow[];
+}
+
+// Eventos (ultimas 24 h) cujo aviso pendente foi IGNORADO por ja terem comecado (RF07) -- so pra
+// o agendador registrar no log; nao muda nada no banco.
+export function getSkippedEventReminders(now: Date = nowDate()): EventRow[] {
+  const nowIso = now.toISOString();
+  return db
+    .prepare(
+      `SELECT * FROM events
+       WHERE reminder_sent = 0
+         AND datetime(?) > datetime(start, '+' || ? || ' minutes')
+         AND datetime(?) <= datetime(start, '+24 hours')`
+    )
+    .all(nowIso, EVENT_REMINDER_GRACE_MINUTES, nowIso) as unknown as EventRow[];
+}
+
+// termino efetivo do evento no SQL: sem "end" gravado, usa a duracao padrao de 1 h
+const EFFECTIVE_END_SQL = `datetime(COALESCE(NULLIF(end, ''), datetime(start, '+60 minutes')))`;
+
+// Eventos que o usuario pode editar/cancelar (RN06): termino >= agora - 2 h (futuro, em andamento ou
+// terminado ha pouco), por texto no titulo. Mais cedo primeiro (os em andamento aparecem antes).
+// findUpcomingEvents (so futuros) continua como estava -- o painel e os avisos extras dependem dele.
+export function findEditableEvents(fromNumber: string, query: string, now: Date = nowDate()): EventRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM events
+       WHERE from_number = ? AND ${EFFECTIVE_END_SQL} >= datetime(?, '-' || ? || ' minutes')
+         AND title LIKE ?
+       ORDER BY start ASC
+       LIMIT 10`
+    )
+    .all(fromNumber, now.toISOString(), EVENT_EDIT_GRACE_MINUTES, `%${query}%`) as unknown as EventRow[];
+}
+
+// Lista do menu "editar -> Evento": editaveis ate 90 dias a frente, mais cedo primeiro.
+export function listEditableEvents(fromNumber: string, now: Date = nowDate(), limit?: number): EventRow[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM events
+       WHERE from_number = ? AND ${EFFECTIVE_END_SQL} >= datetime(?, '-' || ? || ' minutes')
+         AND datetime(start) <= datetime(?, '+' || ? || ' days')
+       ORDER BY start ASC`
+    )
+    .all(fromNumber, now.toISOString(), EVENT_EDIT_GRACE_MINUTES, now.toISOString(), EDIT_LIST_DAYS) as unknown as EventRow[];
+  return limit === undefined ? rows : rows.slice(0, limit);
 }
 
 export function markEventReminderSent(fromNumber: string, id: number) {
@@ -235,15 +300,19 @@ export interface DueExtraEventReminder {
   minutesBefore: number;
 }
 
-export function getDueExtraEventReminders(): DueExtraEventReminder[] {
+// mesma regra do aviso principal (RN03): venceu E o evento nao passou da tolerancia
+export function getDueExtraEventReminders(now: Date = nowDate()): DueExtraEventReminder[] {
+  const nowIso = now.toISOString();
   const rows = db
     .prepare(
       `SELECT er.id AS id, er.event_id AS eventId, ev.from_number AS fromNumber, ev.title AS title, ev.start AS start, er.minutes_before AS minutesBefore
        FROM event_extra_reminders er
        JOIN events ev ON ev.id = er.event_id
-       WHERE er.sent = 0 AND datetime('now') >= datetime(ev.start, '-' || er.minutes_before || ' minutes')`
+       WHERE er.sent = 0
+         AND datetime(?) >= datetime(ev.start, '-' || er.minutes_before || ' minutes')
+         AND datetime(?) <= datetime(ev.start, '+' || ? || ' minutes')`
     )
-    .all() as unknown as DueExtraEventReminder[];
+    .all(nowIso, nowIso, EVENT_REMINDER_GRACE_MINUTES) as unknown as DueExtraEventReminder[];
   return rows;
 }
 

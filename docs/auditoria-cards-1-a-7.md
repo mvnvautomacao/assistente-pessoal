@@ -31,7 +31,7 @@ Máquina: Windows 11, Node `v24.19.0`, TypeScript 5.9.3.
 | Script `coverage` | **não existe** (o comando acima foi usado direto) |
 | `scratch_audit_report.html` | untracked na raiz; **não usado nem commitado** |
 
-Os 7 testes `todo` são: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
+Os 7 testes `todo` eram: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. **D-02 e D-05 foram corrigidos no Card 10** e seus testes viraram testes normais (restam 5 `todo`). Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
 
 Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobertura da tabela.
 
@@ -129,8 +129,8 @@ Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobe
 | C6-09 | `edit_reminder` em lembrete já tocado explica como adiar | Atendido | W:4807 |
 | C6-10 | Menu do evento com 5 campos e cabeçalho com horário e local | Atendido | W:4057, 4676; U:fieldMenu |
 | C6-11 | Correção com várias mudanças (evento e lembrete) pergunta qual | Atendido | W:4642, 4721; A:340, A:626 |
-| C6-12 | Evento movido para uma data passada não gera aviso fora de hora | **Não atendido** | **D-02**; A:481 (todo) |
-| C6-13 | Evento em andamento pode ser editado (esticar o término) | **Não atendido** (não exigido, mas é o caso de uso mais natural do término) | **D-05**; A:807 (todo) |
+| C6-12 | Evento movido para uma data passada não gera aviso fora de hora | **Atendido (Card 10)** | D-02 corrigido; A:481 |
+| C6-13 | Evento em andamento pode ser editado (esticar o término) | **Atendido (Card 10)** | D-05 corrigido; A:807 |
 
 ### Card 7 — Pendências persistentes (`d0eb68d`)
 
@@ -183,7 +183,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida (1 linha):** incluir `delete_event`, `delete_reminder`, `delete_expense` e as demais exclusões/remoções (`remove_*`, `delete_category`, `merge_categories`, `bulk_recategorize`) em `EDIT_ACTION_TYPES` e em `pendingEditBlockerLabel`.
 - **Evidência:** A:450, A:465 (`todo`).
 
-### D-02 · Médio · Mover um evento para o passado reenvia o aviso
+### D-02 · Médio · Mover um evento para o passado reenvia o aviso — ✅ CORRIGIDO no Card 10
+- **Correção (Card 10):** `getDueEventReminders`/`getDueExtraEventReminders` ganharam o limite superior (agora ≤ início + 5 min, constante `EVENT_REMINDER_GRACE_MINUTES`); a prévia de remarcação para o passado mostra `⚠️ Esse horário já passou — não vou mandar aviso.`; o aviso ignorado vira `event_reminder_skipped` no log (uma vez por evento). O teste A:481 deixou de ser `todo`.
 - **Onde:** `getDueEventReminders` events/service.ts:154 (sem limite superior) + `updateEvent` (início mudou → `reminder_sent = 0`); `edit_event` não valida data passada.
 - **Reproduzir:** evento daqui a 3 dias já avisado; `"muda o evento pra anteontem"` → "1". `getDueEventReminders()` passa a incluir o evento e o "Daqui a 1 hora" dispara no minuto seguinte para algo que já passou. (O mesmo vale para os extras.)
 - **Esperado:** aviso só para evento que ainda não começou, ou aviso ao usuário ao remarcar para o passado.
@@ -202,7 +203,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** reaproveitar `NUMBER_WORDS` de `targetChoice/reply.ts` no classificador (um/uma → 1, dois → 2, três → 3).
 - **Evidência:** A:505 (`todo`).
 
-### D-05 · Médio · Evento em andamento não é encontrado
+### D-05 · Médio · Evento em andamento não é encontrado — ✅ CORRIGIDO no Card 10
+- **Correção (Card 10):** novas `findEditableEvents`/`listEditableEvents` (término ≥ agora − 2 h) são usadas por editar, cancelar e pelo menu "editar > Evento"; as listas e prévias mostram `· em andamento`. `findUpcomingEvents`/`listUpcomingEvents` seguem só com futuros (avisos extras, painel, relatório). O teste A:807 deixou de ser `todo`.
 - **Onde:** `findUpcomingEvents` events/service.ts (`datetime(start) >= datetime('now')`) e `listUpcomingEvents`.
 - **Reproduzir:** reunião começou há 30 min; `"a reunião vai durar 3 horas"` → `Não encontrei nenhum evento futuro parecido...`. Esticar o término depois que o evento começou é o caso de uso mais comum do campo "Término" (Card 6).
 - **Correção sugerida:** buscar eventos com `end >= now` (ou `start >= now - 24h`) nos fluxos de edição, mantendo só futuros para cancelar/remarcar se preferirem.
@@ -337,7 +339,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 ## 11. Ordem recomendada dos cards de correção
 
 1. **D-01** (Alto): bloquear `delete_*` e `remove_*` junto de `edit_*` na mesma mensagem. É a única que pode apagar algo que o usuário acha que está só editando.
-2. **D-02** + **D-05** (Médio, ambos de agenda): limitar os avisos a eventos que não começaram e permitir editar evento em andamento.
+2. ~~**D-02** + **D-05** (Médio, ambos de agenda)~~ — feito no Card 10.
 3. **D-06** + **D-04** (Médio): busca de evento/lembrete sem acento e números por extenso nas prévias; são o que mais aparece com áudio e teclado sem acento.
 4. **D-07** (Médio): saída explícita da prévia (decisão de produto).
 5. **D-03** (Baixo, uma linha) junto de **D-13** (script de cobertura/lint e `noUnusedLocals`).

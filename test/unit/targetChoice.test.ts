@@ -81,7 +81,7 @@ test("lista numerada: texto exato do contrato (lembretes), singular de verbo por
 });
 
 test("linhas de item e mensagens de erro", () => {
-  assert.equal(eventLine({ title: "Consulta dentista", start: "2026-10-09T14:00:00-03:00" }), "Consulta dentista — sex 09/10 às 14:00");
+  assert.equal(eventLine({ title: "Consulta dentista", start: "2026-10-09T14:00:00-03:00" }, new Date("2026-10-01T00:00:00-03:00")), "Consulta dentista — sex 09/10 às 14:00");
   assert.equal(expenseLine({ description: "Mercado", amount: 38, date: "2026-10-07" }, "Pix"), "Mercado — R$ 38,00 · 07/10 · Pix");
   assert.equal(expenseLine({ description: "Mercado", amount: 112.4, date: "2026-10-05" }, null), "Mercado — R$ 112,40 · 05/10");
   assert.equal(targetNotUnderstoodText(3), "Não entendi 🤔 Responde com um número de 1 a 3, ou *cancelar*.");

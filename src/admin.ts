@@ -192,6 +192,7 @@ const TYPE_LABEL: Record<string, string> = {
   event: "📅 Evento",
   delete_event: "🗑️ Evento cancelado",
   edit_event: "✏️ Evento remarcado",
+  event_reminder_skipped: "🔕 Aviso de evento ignorado",
   edit_reminder: "✏️ Lembrete remarcado",
   report: "📊 Relatório",
   correct_category: "✏️ Categoria corrigida",

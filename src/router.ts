@@ -34,6 +34,8 @@ import {
 import {
   createEvent,
   findUpcomingEvents,
+  findEditableEvents,
+  listEditableEvents,
   deleteEvent,
   updateEvent,
   listUpcomingEvents,
@@ -439,7 +441,7 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15" — eu mostro o compromisso e pergunto: *1* cancela, *3* mantém (qualquer outra resposta eu não considero, pra não apagar sem querer).`;
+Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Compromisso que já começou ainda dá pra mexer: "a reunião vai durar 3 horas" estica o término (a lista mostra "em andamento"). Eu aviso só dos compromissos que ainda não começaram — se você remarcar pra um horário que já passou, a prévia avisa que não vou mandar aviso. Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15" — eu mostro o compromisso e pergunto: *1* cancela, *3* mantém (qualquer outra resposta eu não considero, pra não apagar sem querer).`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -2697,7 +2699,7 @@ function targetActionVerb(action: Interpretation): string {
 // "editar" -> tipo, sem nada cadastrado
 const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
   expense: "Você ainda não tem nenhum gasto registrado pra editar.",
-  event: "Você não tem nenhum evento futuro pra editar.",
+  event: "Você não tem nenhum evento (em andamento ou futuro) pra editar.",
   reminder: "Você não tem nenhum lembrete pendente pra editar.",
   recurring: "Você não tem nenhum gasto fixo pra editar.",
   income: "Você ainda não tem nenhuma entrada registrada pra editar.",
@@ -2705,7 +2707,13 @@ const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
 };
 
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
-  if (kind === "event") return query ? `Não encontrei nenhum evento futuro parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.event;
+  if (kind === "event") {
+    if (!query) return NOTHING_TO_EDIT_TEXT.event;
+    // avisos extras so valem pra evento que ainda nao comecou; editar e cancelar enxergam tambem os em andamento
+    return eventScopeFor(action) === "upcoming"
+      ? `Não encontrei nenhum evento futuro parecido com "${query}".`
+      : `Não encontrei nenhum evento parecido com "${query}" (em andamento ou futuro).`;
+  }
   if (kind === "reminder") return query ? `Não encontrei nenhum lembrete parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.reminder;
   if (kind === "recurring") return query ? `Não achei nenhum gasto fixo parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.recurring;
   if (kind === "reminder_sent") return SNOOZE_NOT_FOUND_TEXT;
@@ -2727,10 +2735,19 @@ interface TargetSearch {
 
 // candidatos que batem com o texto (no maximo MAX_TARGET_CANDIDATES mostrados;
 // "total" diz quantos bateram de verdade, pra avisar que tem mais)
-function searchTargets(from: string, kind: TargetKind, query: string): TargetSearch {
+// Eventos: editar/cancelar enxergam tambem os em andamento e os que acabaram de terminar; adicionar
+// ou remover um aviso extra so faz sentido pra evento que ainda nao comecou (Card 10, RN07).
+type EventScope = "editable" | "upcoming";
+
+function eventScopeFor(action: Interpretation): EventScope {
+  return action.type === "add_event_reminder" || action.type === "remove_event_reminder" ? "upcoming" : "editable";
+}
+
+function searchTargets(from: string, kind: TargetKind, query: string, eventScope: EventScope = "editable"): TargetSearch {
   let entries: { id: number; line: string }[];
   if (kind === "event") {
-    entries = findUpcomingEvents(from, query).map((e) => ({ id: e.id, line: eventLine(e) }));
+    const events = eventScope === "upcoming" ? findUpcomingEvents(from, query) : findEditableEvents(from, query);
+    entries = events.map((e) => ({ id: e.id, line: eventLine(e) }));
   } else if (kind === "reminder") {
     entries = findPendingRemindersByText(from, query).map((r) => ({ id: r.id, line: reminderLine(r) }));
   } else if (kind === "recurring") {
@@ -2750,9 +2767,12 @@ function searchTargets(from: string, kind: TargetKind, query: string): TargetSea
 }
 
 // os itens de um tipo, sem busca (o usuario escolheu "editar" -> tipo)
-function browseTargets(from: string, kind: TargetKind): TargetSearch {
+function browseTargets(from: string, kind: TargetKind, eventScope: EventScope = "editable"): TargetSearch {
   let entries: { id: number; line: string }[];
-  if (kind === "event") entries = listUpcomingEvents(from, 90).map((e) => ({ id: e.id, line: eventLine(e) }));
+  if (kind === "event") {
+    const events = eventScope === "upcoming" ? listUpcomingEvents(from, 90) : listEditableEvents(from);
+    entries = events.map((e) => ({ id: e.id, line: eventLine(e) }));
+  }
   else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
   else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: incomeLine(i) }));
@@ -2837,7 +2857,7 @@ async function chooseTarget(
   }
   // os outros tipos sem texto de busca ("edita o gasto fixo"): lista os itens do tipo
   if (!query) {
-    const all = browseTargets(from, kind);
+    const all = browseTargets(from, kind, eventScopeFor(action));
     if (all.total === 0) {
       logActivity(from, action.type, "nenhum item cadastrado");
       await sendText(from, targetNotFoundText(action, kind));
@@ -2848,7 +2868,7 @@ async function chooseTarget(
     return null;
   }
 
-  const found = searchTargets(from, kind, query);
+  const found = searchTargets(from, kind, query, eventScopeFor(action));
   if (found.total === 0) {
     logActivity(from, action.type, `nenhum item encontrado para "${query}"`);
     await sendText(from, targetNotFoundText(action, kind, query));
@@ -2912,7 +2932,7 @@ async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoi
 
   // refino: nova busca do mesmo tipo e da mesma acao, trocando so o texto de busca
   const refinedAction = { ...pending.action, query: reply.query } as Interpretation;
-  const found = searchTargets(from, pending.kind, reply.query);
+  const found = searchTargets(from, pending.kind, reply.query, eventScopeFor(pending.action));
   if (found.total === 0) {
     logActivity(from, actionType, `refino "${reply.query}" nao achou nada`);
     await sendText(from, targetNotUnderstoodText(pending.candidateIds.length));
@@ -3847,8 +3867,14 @@ function eventEditKind(pending: Pick<PendingEditEvent, "previous" | "proposed" |
   return changes.length === 1 ? EVENT_CHANGE_KIND[changes[0].key] : "text";
 }
 
+const PAST_EVENT_WARNING = "⚠️ Esse horário já passou — não vou mandar aviso.";
+
 function buildEventPreview(pending: Omit<PendingEditEvent, "createdAt">): string {
-  return formatEditPreview(pending.headerText, currentEventChanges(pending));
+  const changes = currentEventChanges(pending);
+  // remarcar pro passado e permitido (pode ser correcao de registro), mas o usuario fica sabendo que nao ha aviso
+  const startMoved = changes.some((c) => c.key === "datetime");
+  const warning = startMoved && new Date(pending.proposed.start).getTime() < Date.now() ? PAST_EVENT_WARNING : undefined;
+  return formatEditPreview(pending.headerText, changes, warning);
 }
 
 // refaz a previa com um novo valor pro campo e recalcula o termino (RN02). Devolve false

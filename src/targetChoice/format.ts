@@ -1,6 +1,7 @@
 // Mensagens da escolha de alvo: lista numerada de candidatos, linhas por tipo de
 // item e textos de erro. Tudo funcao pura que devolve texto.
 import { formatBRL, formatShortDate, formatWhen } from "../confirmation/preview";
+import { eventStatusSuffix } from "../events/status";
 import type { TargetKind } from "./pending";
 
 // no maximo isso de candidatos por lista (RN02)
@@ -18,8 +19,8 @@ const BROWSE_TITLE: Record<TargetKind, string> = {
   reminder_sent: "Esses lembretes tocaram há pouco:",
 };
 
-export function eventLine(event: { title: string; start: string }): string {
-  return `${event.title} — ${formatWhen(event.start)}`;
+export function eventLine(event: { title: string; start: string; end?: string | null }, now: Date = new Date(Date.now())): string {
+  return `${event.title} — ${formatWhen(event.start)}${eventStatusSuffix(event, now)}`;
 }
 
 export function reminderLine(reminder: { message: string; due_at: string }): string {

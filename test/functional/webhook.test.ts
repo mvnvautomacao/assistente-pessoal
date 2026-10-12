@@ -4202,7 +4202,7 @@ test("card 4: 'editar' sem nada cadastrado, e mais de 8 itens mostra 8 e avisa q
   const { sent } = withMocks(t);
   for (const [option, text] of [
     ["1", "Você ainda não tem nenhum gasto registrado pra editar."],
-    ["4", "Você não tem nenhum evento futuro pra editar."],
+    ["4", "Você não tem nenhum evento (em andamento ou futuro) pra editar."],
     ["5", "Você não tem nenhum lembrete pendente pra editar."],
     ["7", "Você não tem nenhum gasto fixo pra editar."],
   ] as const) {

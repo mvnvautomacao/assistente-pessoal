@@ -4,6 +4,7 @@
 import { MAX_EVENT_MINUTES, MIN_EVENT_MINUTES, DURATION_RANGE_TEXT, EndSpec } from "../confirmation/parsers";
 import { formatWhen } from "../confirmation/preview";
 import { ensureBrazilOffset, spDateString, spTimeString } from "../timeSP";
+import { eventStatusSuffix } from "./status";
 import { formatMinutesBefore } from "./service";
 
 export type { EndSpec };
@@ -37,9 +38,9 @@ export function hhmm(iso: string): string {
 }
 
 // "Consulta — sex 10/10 às 14:00–15:00 · Clínica Sorriso" (RN07)
-export function eventHeader(event: { title: string; start: string; end: string; location: string | null }): string {
+export function eventHeader(event: { title: string; start: string; end: string; location: string | null }, now: Date = new Date(Date.now())): string {
   const place = event.location ? ` · ${event.location}` : "";
-  return `${event.title} — ${formatWhen(event.start)}–${hhmm(event.end)}${place}`;
+  return `${event.title} — ${formatWhen(event.start)}–${hhmm(event.end)}${place}${eventStatusSuffix(event, now)}`;
 }
 
 const sameInstant = (a: string, b: string) => new Date(a).getTime() === new Date(b).getTime();

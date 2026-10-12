@@ -478,7 +478,7 @@ test("D-01b (Alto): 'apaga o gasto X e muda o gasto Y' idem -- o '1' da previa c
   assert.ok(!/Não entendi — confirma que quer apagar/.test(last(sent)), "o 1 da previa de edicao nao pode cair na pergunta de exclusao");
 });
 
-test("D-02 (Medio): mover um evento pro passado reativa o aviso e o 'Daqui a...' dispara de novo no minuto seguinte", { todo: "defeito D-02 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-02 (corrigido no Card 10): mover um evento pro passado nao dispara o 'Daqui a...' no minuto seguinte", async (t) => {
   const N = "551100091815";
   seed(N);
   const ev = eventsService.createEvent({ fromNumber: N, title: "Evento movido pro passado", start: futureAt(3, 14) });
@@ -804,7 +804,7 @@ test("Card 7 RN11: a edicao de gasto fixo tambem termina com a dica de desfazer,
   assert.equal(last(sent).split("Errou? Responde *desfazer*.").length - 1, 1);
 });
 
-test("D-05 (Medio): evento EM ANDAMENTO nao e encontrado -- da pra esticar o termino so antes de ele comecar", { todo: "defeito D-05 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-05 (corrigido no Card 10): evento EM ANDAMENTO e encontrado -- da pra esticar o termino depois de comecar", async (t) => {
   const N = "551100091850";
   seed(N);
   const start = new Date(Date.now() - 30 * 60 * 1000);
@@ -833,8 +833,8 @@ test("Card 2: nenhum candidato -- evento, lembrete, gasto fixo, gasto e entrada 
     await handleIncomingMessage(evolutionMessage(N, "pedido sem candidato"));
     return last(sent);
   };
-  assert.equal(await ask({ type: "edit_event", query: "naoexiste", new_title: "x" }), 'Não encontrei nenhum evento futuro parecido com "naoexiste".');
-  assert.equal(await ask({ type: "delete_event", query: "naoexiste" }), 'Não encontrei nenhum evento futuro parecido com "naoexiste".');
+  assert.equal(await ask({ type: "edit_event", query: "naoexiste", new_title: "x" }), 'Não encontrei nenhum evento parecido com "naoexiste" (em andamento ou futuro).');
+  assert.equal(await ask({ type: "delete_event", query: "naoexiste" }), 'Não encontrei nenhum evento parecido com "naoexiste" (em andamento ou futuro).');
   assert.equal(await ask({ type: "edit_reminder", query: "naoexiste", new_message: "x" }), 'Não encontrei nenhum lembrete parecido com "naoexiste".');
   assert.equal(await ask({ type: "edit_recurring_expense", query: "naoexiste", new_amount: 10 }), 'Não achei nenhum gasto fixo parecido com "naoexiste".');
   assert.equal(await ask({ type: "edit_expense", query: "naoexiste", changes: [{ field: "amount", value: "10" }] }), 'Não achei nenhum gasto recente parecido com "naoexiste" pra editar.');

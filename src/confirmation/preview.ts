@@ -40,9 +40,9 @@ export function formatWhen(iso: string): string {
   return `${weekday} ${parts.day}/${parts.month} às ${parts.hour}:${parts.minute}`;
 }
 
-export function formatEditPreview(header: string, changes: PreviewChange[]): string {
+export function formatEditPreview(header: string, changes: PreviewChange[], warning?: string): string {
   const lines = changes.map((c) => `${c.label}: ${c.from} → ${c.to}`).join("\n");
-  return `✏️ ${header}\n${lines}\n\n${PREVIEW_OPTIONS}`;
+  return `✏️ ${header}\n${lines}${warning ? `\n${warning}` : ""}\n\n${PREVIEW_OPTIONS}`;
 }
 
 // "Mercado — R$ 38,00 · 07/10 · Pix" (forma de pagamento so se houver)

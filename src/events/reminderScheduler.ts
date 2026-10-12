@@ -1,6 +1,25 @@
 import cron from "node-cron";
 import { sendText } from "../whatsapp/client";
-import { getDueEventReminders, markEventReminderSent, getDueExtraEventReminders, markEventExtraReminderSent, formatMinutesBefore } from "./service";
+import { logActivity } from "../activity/service";
+import {
+  getDueEventReminders,
+  getSkippedEventReminders,
+  markEventReminderSent,
+  getDueExtraEventReminders,
+  markEventExtraReminderSent,
+  formatMinutesBefore,
+} from "./service";
+
+// eventos cujo aviso ja foi registrado como ignorado (RF07): no maximo uma vez por evento (por processo)
+const loggedSkipped = new Set<number>();
+
+export function logSkippedEventReminders() {
+  for (const event of getSkippedEventReminders()) {
+    if (loggedSkipped.has(event.id)) continue;
+    loggedSkipped.add(event.id);
+    logActivity(event.from_number, "event_reminder_skipped", `aviso de "${event.title}" ignorado: o evento ja comecou`);
+  }
+}
 
 const spTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
@@ -13,6 +32,7 @@ const spTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
 export function startEventReminderScheduler() {
   // roda a cada minuto, igual o scheduler de lembretes normais
   cron.schedule("* * * * *", async () => {
+    logSkippedEventReminders();
     const due = getDueEventReminders();
     for (const event of due) {
       try {
