@@ -2,9 +2,10 @@
 // explicacao clara, em vez de a mensagem ir pra IA e virar outra coisa. So vale quando o
 // numero nao tem nenhuma pendencia ativa (o router chama isto depois de todas as
 // checagens de pendencia, antes da IA) e a mensagem inteira e so uma resposta de pendencia.
-import { classifyConfirmationReply, normalizeReply } from "../confirmation/classify";
+import { classifyConfirmationReply } from "../confirmation/classify";
+import { normalizeReply } from "../confirmation/normalize";
+import { parseChoiceNumber } from "../confirmation/numbers";
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
-import { parseChoiceNumber } from "../targetChoice/reply";
 import { ExpiredPending, findExpiredUnnotified, markExpiredNotified } from "./store";
 
 const TTL_MINUTES = Math.round(EDIT_PENDING_TTL_MS / 60000);

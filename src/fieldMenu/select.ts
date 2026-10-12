@@ -1,11 +1,10 @@
 // Interpretacao da resposta ao menu de campos ("1 e 5", "valor pagamento",
 // "1,5"). Funcao pura, sem I/O e sem IA. Qualquer item invalido invalida a
 // resposta inteira (RN03).
+import { numberFromToken } from "../confirmation/numbers";
 import { FIELD_REGISTRY, FieldDef, MenuKind } from "./registry";
 
 export type FieldSelection = { ok: true; keys: string[] } | { ok: false };
-
-const NUMBER_WORDS: Record<string, number> = { um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5 };
 
 // no maximo isso de palavras seguidas formam um apelido ("forma de pagamento")
 const MAX_ALIAS_WORDS = 4;
@@ -36,8 +35,8 @@ export function parseFieldSelection(text: string, kind: MenuKind): FieldSelectio
   let i = 0;
   while (i < words.length) {
     const word = words[i];
-    const number = /^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word];
-    if (number !== undefined) {
+    const number = numberFromToken(word);
+    if (number !== null) {
       const field = fields[number - 1];
       if (!field) return { ok: false };
       picked.add(field);

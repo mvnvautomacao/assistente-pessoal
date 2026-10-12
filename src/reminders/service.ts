@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { filterByQuery, MAX_SEARCH_RESULTS, SEARCH_SCAN_LIMIT } from "../text/search";
 
 export function createReminder(toNumber: string, message: string, dueAt: string): number {
   const result = db
@@ -92,17 +93,16 @@ export function rescheduleReminder(toNumber: string, id: number, dueAt: string, 
 // hora do envio: o agendador roda a cada minuto, entao due_at e uma boa aproximacao.
 // Sem texto: os mais recentes; com texto: so os que batem com ele. Mais recente primeiro.
 export function findRecentSentReminders(toNumber: string, query: string | undefined, withinHours: number, limit = 10): Reminder[] {
-  const text = query?.trim();
-  return db
+  const rows = db
     .prepare(
       `SELECT id, to_number, message, due_at, sent FROM reminders
        WHERE to_number = ? AND sent = 1
          AND datetime(due_at) <= datetime('now') AND datetime(due_at) >= datetime('now', '-' || ? || ' hours')
-         AND (? = '' OR message LIKE ?)
        ORDER BY due_at DESC
        LIMIT ?`
     )
-    .all(toNumber, withinHours, text ?? "", `%${text ?? ""}%`, limit) as unknown as Reminder[];
+    .all(toNumber, withinHours, SEARCH_SCAN_LIMIT) as unknown as Reminder[];
+  return filterByQuery(rows, (r) => r.message, query, limit);
 }
 
 export function deleteReminder(toNumber: string, id: number) {
@@ -112,12 +112,13 @@ export function deleteReminder(toNumber: string, id: number) {
 // busca textual simples pra resolver "muda o lembrete do remedio pra amanha" --
 // so lembretes ainda nao enviados, igual findUpcomingEvents faz pra eventos.
 export function findPendingRemindersByText(toNumber: string, query: string): Reminder[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT id, to_number, message, due_at, sent FROM reminders
-       WHERE to_number = ? AND sent = 0 AND message LIKE ?
+       WHERE to_number = ? AND sent = 0
        ORDER BY due_at ASC
-       LIMIT 10`
+       LIMIT ?`
     )
-    .all(toNumber, `%${query}%`) as unknown as Reminder[];
+    .all(toNumber, SEARCH_SCAN_LIMIT) as unknown as Reminder[];
+  return filterByQuery(rows, (r) => r.message, query, MAX_SEARCH_RESULTS);
 }

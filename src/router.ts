@@ -233,6 +233,7 @@ import { isNumberAllowed } from "./access/allowlist";
 import { isNumberBlocked } from "./access/blocklist";
 import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } from "./pendingEditTarget";
 import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
+import { parseChoiceNumber } from "./confirmation/numbers";
 import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
@@ -1192,14 +1193,19 @@ const EDIT_TARGET_MENU =
 
 type EditTarget = "expense" | "category" | "payment_method" | "event" | "reminder" | "bill_alert" | "recurring" | "income";
 
+const EDIT_TARGETS = ["expense", "category", "payment_method", "event", "reminder", "bill_alert", "recurring", "income"] as const;
+
 function parseEditTarget(answer: string): EditTarget | null {
+  // "4", "quatro", "opcao 4": mesma leitura de numero das outras respostas (digito ou por extenso)
+  const chosen = parseChoiceNumber(answer);
+  if (chosen !== null && chosen >= 1 && chosen <= EDIT_TARGETS.length) return EDIT_TARGETS[chosen - 1];
   const t = answer
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
     .trim()
     .toLowerCase();
   if (/^[1-8]\D*$/.test(t)) {
-    return (["expense", "category", "payment_method", "event", "reminder", "bill_alert", "recurring", "income"] as const)[Number(t.replace(/\D/g, "")) - 1];
+    return EDIT_TARGETS[Number(t.replace(/\D/g, "")) - 1];
   }
   if (/gasto\s+fixo|despesa\s+fixa|recorrente/.test(t)) return "recurring";
   if (/entrada|entrou|receita|recebi|recebimento|salario/.test(t)) return "income";
@@ -3193,8 +3199,9 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
   const params = { def, step: pending.step + 1, total: pending.queue.length, options: pending.choices };
 
   let raw = answerText.trim();
-  if (isChoiceQuestion(def.question) && /^\d+$/.test(raw)) {
-    const picked = pending.choices[Number(raw) - 1];
+  const choiceNumber = isChoiceQuestion(def.question) ? parseChoiceNumber(raw) : null;
+  if (choiceNumber !== null) {
+    const picked = pending.choices[choiceNumber - 1];
     if (picked) raw = picked;
   }
   // o termino do evento depende do inicio JA com a mudanca de dia/hora respondida antes (se houve)
@@ -3380,8 +3387,8 @@ async function resolveEditIncomeConfirmation(from: string, pending: PendingEditI
     }
     if (pending.correctionStage === "pick") {
       const options = incomeCorrectionOptions(pending.views);
-      const trimmed = answerText.trim();
-      const picked = /^\d+$/.test(trimmed) ? options[Number(trimmed) - 1] : undefined;
+      const pickedNumber = parseChoiceNumber(answerText);
+      const picked = pickedNumber !== null ? options[pickedNumber - 1] : undefined;
       if (!picked) {
         await sendText(from, `Não entendi 🤔\n${formatCorrectionPicker(options)}`);
         return;
@@ -3764,8 +3771,8 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
     }
     if (pending.correctionStage === "pick") {
       const options = correctionOptions(pending.items);
-      const trimmed = answerText.trim();
-      const picked = /^\d+$/.test(trimmed) ? options[Number(trimmed) - 1] : undefined;
+      const pickedNumber = parseChoiceNumber(answerText);
+      const picked = pickedNumber !== null ? options[pickedNumber - 1] : undefined;
       if (!picked) {
         await sendText(from, `Não entendi 🤔\n${formatCorrectionPicker(options)}`);
         return;
@@ -3926,8 +3933,8 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
     }
     if (pending.correctionStage === "pick") {
       const changes = currentEventChanges(pending);
-      const trimmed = answerText.trim();
-      const picked = /^\d+$/.test(trimmed) ? changes[Number(trimmed) - 1] : undefined;
+      const pickedNumber = parseChoiceNumber(answerText);
+      const picked = pickedNumber !== null ? changes[pickedNumber - 1] : undefined;
       if (!picked) {
         await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(changes.map((c) => c.label))}`);
         return;
@@ -4065,8 +4072,8 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
     }
     if (pending.correctionStage === "pick") {
       const keys = reminderChangeKeys(pending);
-      const trimmed = answerText.trim();
-      const picked = /^\d+$/.test(trimmed) ? keys[Number(trimmed) - 1] : undefined;
+      const pickedNumber = parseChoiceNumber(answerText);
+      const picked = pickedNumber !== null ? keys[pickedNumber - 1] : undefined;
       if (!picked) {
         await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(keys.map((k) => REMINDER_KEY_LABEL[k]))}`);
         return;

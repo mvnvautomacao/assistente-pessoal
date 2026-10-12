@@ -502,7 +502,7 @@ test("D-03 (Baixo): ' cancelar ' com espacos durante a previa cai no cancelament
   assert.equal(last(sent), "Beleza, não mexi em nada.");
 });
 
-test("D-04 (Medio): numeros por extenso ('um', 'dois', 'tres') -- tipicos de audio -- nao respondem a previa 1/2/3", { todo: "defeito D-04 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-04 (corrigido no Card 11): numeros por extenso ('um', 'dois', 'tres') -- tipicos de audio -- respondem a previa 1/2/3", async (t) => {
   const N = "551100091817";
   seed(N);
   const cat = getOrCreateCategory(N, "Alimentação");
@@ -816,7 +816,7 @@ test("D-05 (corrigido no Card 10): evento EM ANDAMENTO e encontrado -- da pra es
   assert.match(last(sent), /Término:/, "esperado: previa do novo termino; obtido: " + last(sent));
 });
 
-test("D-06 (Medio): busca de evento e lembrete por texto distingue acento ('remedio' nao acha 'Remédio'); gastos, entradas e gastos fixos ignoram acento", { todo: "defeito D-06 -- ver docs/auditoria-cards-1-a-7.md" }, () => {
+test("D-06 (corrigido no Card 11): busca de evento e lembrete por texto ignora acento ('remedio' acha 'Remédio'), como gastos, entradas e gastos fixos", () => {
   const N = "551100091851";
   remindersService.createReminder(N, "Remédio da pressão", futureAt(2, 9));
   eventsService.createEvent({ fromNumber: N, title: "Consulta médica", start: futureAt(3, 14) });

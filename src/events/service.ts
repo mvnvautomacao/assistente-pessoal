@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { filterByQuery, MAX_SEARCH_RESULTS, SEARCH_SCAN_LIMIT } from "../text/search";
 
 const DEFAULT_REMINDER_MINUTES = 60;
 
@@ -151,15 +152,15 @@ export function getEventsForMonth(fromNumber: string, yearMonth: string): EventR
 // funcionar: corrigir um evento que a IA marcou pra uma data muito distante por
 // engano (ver ensureBrazilOffset / correcao do prompt em interpret.ts).
 export function findUpcomingEvents(fromNumber: string, query: string): EventRow[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT * FROM events
        WHERE from_number = ? AND datetime(start) >= datetime('now')
-         AND title LIKE ?
        ORDER BY start ASC
-       LIMIT 10`
+       LIMIT ?`
     )
-    .all(fromNumber, `%${query}%`) as unknown as EventRow[];
+    .all(fromNumber, SEARCH_SCAN_LIMIT) as unknown as EventRow[];
+  return filterByQuery(rows, (e) => e.title, query, MAX_SEARCH_RESULTS);
 }
 
 // "agora" vem de Date.now() (e nao do relogio do SQLite) pra poder ser injetado nos testes
@@ -201,15 +202,15 @@ const EFFECTIVE_END_SQL = `datetime(COALESCE(NULLIF(end, ''), datetime(start, '+
 // terminado ha pouco), por texto no titulo. Mais cedo primeiro (os em andamento aparecem antes).
 // findUpcomingEvents (so futuros) continua como estava -- o painel e os avisos extras dependem dele.
 export function findEditableEvents(fromNumber: string, query: string, now: Date = nowDate()): EventRow[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT * FROM events
        WHERE from_number = ? AND ${EFFECTIVE_END_SQL} >= datetime(?, '-' || ? || ' minutes')
-         AND title LIKE ?
        ORDER BY start ASC
-       LIMIT 10`
+       LIMIT ?`
     )
-    .all(fromNumber, now.toISOString(), EVENT_EDIT_GRACE_MINUTES, `%${query}%`) as unknown as EventRow[];
+    .all(fromNumber, now.toISOString(), EVENT_EDIT_GRACE_MINUTES, SEARCH_SCAN_LIMIT) as unknown as EventRow[];
+  return filterByQuery(rows, (e) => e.title, query, MAX_SEARCH_RESULTS);
 }
 
 // Lista do menu "editar -> Evento": editaveis ate 90 dias a frente, mais cedo primeiro.

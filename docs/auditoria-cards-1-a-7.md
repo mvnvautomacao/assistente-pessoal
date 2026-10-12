@@ -12,7 +12,7 @@
 1. Os 7 cards estão **funcionalmente entregues**: dos 66 itens do checklist, 60 estão Atendidos com teste que asserta o comportamento (9 deles só porque esta auditoria acrescentou o teste que faltava), 2 Parciais, 3 Não atendidos e 1 Não verificável; todos os que não estão Atendidos se ligam a defeitos listados abaixo.
 2. **Sem perda de dados nem vazamento entre números** nos cenários exercitados. Toda consulta nova filtra por `from_number`/`to_number` (conferido por leitura e por teste).
 3. O defeito mais sério é **D-01 (Alto)**: numa mesma mensagem, um pedido de **apagar** (evento, gasto, lembrete...) junto com um pedido de **editar** deixa duas perguntas abertas com instruções conflitantes; responder "1" à prévia de edição cai na pergunta antiga "sim/não" de exclusão.
-4. Outros 5 defeitos Médios: evento movido para o passado reenvia o aviso (D-02), números por extenso ("um", "dois") não respondem às prévias (D-04), eventos em andamento não são encontrados (D-05), busca de evento e lembrete diferencia acento (D-06) e prévia aberta bloqueia mensagem nova curta (D-07).
+4. Outros 5 defeitos Médios: evento movido para o passado reenvia o aviso (D-02), números por extenso ("um", "dois") não respondem às prévias (D-04, corrigido no Card 11), eventos em andamento não são encontrados (D-05), busca de evento e lembrete diferencia acento (D-06) e prévia aberta bloqueia mensagem nova curta (D-07).
 5. Linha de base **537 testes, 0 falhas**; depois da auditoria **568 testes, 561 passam, 0 falham, 7 `todo`** (os `todo` são os defeitos reproduzidos: D-01 tem duas variantes). Cobertura medida com o recurso nativo do Node: **todos os módulos novos ≥ 90 %**; o projeto inteiro foi de 89,31 % para 90,60 %. Não existe script de lint nem de cobertura no `package.json`.
 
 ---
@@ -31,7 +31,7 @@ Máquina: Windows 11, Node `v24.19.0`, TypeScript 5.9.3.
 | Script `coverage` | **não existe** (o comando acima foi usado direto) |
 | `scratch_audit_report.html` | untracked na raiz; **não usado nem commitado** |
 
-Os 7 testes `todo` eram: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. **D-02 e D-05 foram corrigidos no Card 10** e seus testes viraram testes normais (restam 5 `todo`). Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
+Os 7 testes `todo` eram: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. **D-02 e D-05 foram corrigidos no Card 10 e D-04 e D-06 no Card 11**; seus testes viraram testes normais (restam 3 `todo`: D-01, D-01b e D-03). Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
 
 Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobertura da tabela.
 
@@ -77,7 +77,7 @@ Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobe
 | C2-06 | Pedido novo explícito descarta a lista | Atendido | W:3590; A:266 |
 | C2-07 | Número inválido ou fora da lista recebe mensagem com a faixa válida | Atendido | W:3534; U:targetChoice 25, 83 |
 | C2-08 | Lista de gastos expirada oferece os gastos recentes | Atendido | W:3554; A:243 |
-| C2-09 | Busca por texto de **evento e lembrete** ignora acento/caixa como a de gastos | **Não atendido** (não exigido pelo card, mas inconsistente) | `findUpcomingEvents`/`findPendingRemindersByText` usam `LIKE`; **D-06**; A:819 (todo) |
+| C2-09 | Busca por texto de **evento e lembrete** ignora acento/caixa como a de gastos | **Atendido (Card 11)** | `src/text/search.ts` nas seis buscas; D-06 corrigido; A:819 |
 
 ### Card 3 — Vários campos e vários gastos (`fc10094`)
 
@@ -168,7 +168,7 @@ Todas executadas por teste funcional. Os testes de reinício **descartam todos o
 | (e) evento com vários campos + correção + local/término + desfazer | A:340 | **Passa** |
 | (f) lista de gastos antiga após reinício | A:243 | **Passa** como limitação documentada: "edita o 2" cai em "lista expirada" e oferece os recentes |
 | (g) duas edições seguidas, desfazer | A:387 | **Passa**: só a última volta; um 2º "desfaz" responde "Não tem nada recente" |
-| (h) áudio transcrito, acento e emoji | A:412 | **Passa** para "Sim." (áudio), "Sím", 👍, ❌, "Não."; **números por extenso falham** (D-04) |
+| (h) áudio transcrito, acento e emoji | A:412 | **Passa** para "Sim." (áudio), "Sím", 👍, ❌, "Não."; números por extenso falhavam (D-04, corrigido no Card 11) |
 
 ---
 
@@ -197,7 +197,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** restaurar `\s` no regex.
 - **Evidência:** A:493 (`todo`).
 
-### D-04 · Médio · Números por extenso não respondem à prévia 1/2/3
+### D-04 · Médio · Números por extenso não respondem à prévia 1/2/3 — ✅ CORRIGIDO no Card 11
+- **Correção (Card 11):** `normalizeReply` foi para `confirmation/normalize.ts` e `NUMBER_WORDS`/`parseChoiceNumber`/`looksLikeMultipleNumbers` para `confirmation/numbers.ts` (tabela única de um a dez, usada também pelo menu de campos); `classifyConfirmationReply` lê o número por `parseChoiceNumber` ("Um.", "opção um", "três" valem; "um pouco" continua texto livre). As etapas "qual corrigir" e a escolha de opção do menu de edição passaram a usar a mesma leitura. O teste A:505 deixou de ser `todo`.
 - **Onde:** `classifyConfirmationReply` (confirmation/classify.ts:35) só conhece "1", "2", "3"; a lista de escolha (`parseChoiceNumber`) e o menu de campos já aceitam "um", "dois"...
 - **Reproduzir:** com uma prévia aberta, responder por áudio "Um." (transcrição típica de "1") → `Não entendi 🤔 Responde *1*...`. O aviso de expiração (`replyShape`) já trata "um" como resposta, o que deixa as telas inconsistentes.
 - **Correção sugerida:** reaproveitar `NUMBER_WORDS` de `targetChoice/reply.ts` no classificador (um/uma → 1, dois → 2, três → 3).
@@ -210,7 +211,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** buscar eventos com `end >= now` (ou `start >= now - 24h`) nos fluxos de edição, mantendo só futuros para cancelar/remarcar se preferirem.
 - **Evidência:** A:807 (`todo`).
 
-### D-06 · Médio · Busca de evento e lembrete diferencia acento e caixa
+### D-06 · Médio · Busca de evento e lembrete diferencia acento e caixa — ✅ CORRIGIDO no Card 11
+- **Correção (Card 11):** novo `src/text/search.ts` (`normalizeSearch`, `matchesQuery`, `filterByQuery`): sem acento, sem caixa, todas as palavras em qualquer ordem, artigos ignorados, `%` e `_` sem função de curinga. As seis buscas (`findUpcomingEvents`, `findEditableEvents`, `findPendingRemindersByText`, `findRecentSentReminders`, `findActiveBillAlertByName`, `findActiveRecurringExpenseByDescription`) trazem até 500 linhas já filtradas por número/janela e filtram o texto em código; o limite de 10 vale depois do filtro. O teste A:819 deixou de ser `todo`.
 - **Onde:** `findUpcomingEvents` (`title LIKE ?`) e `findPendingRemindersByText` (`message LIKE ?`); `LIKE` do SQLite só ignora maiúsculas ASCII. Gastos, entradas e gastos fixos usam normalização sem acento.
 - **Reproduzir:** lembrete "Remédio da pressão", pedido `"muda o lembrete do remedio..."` (sem acento, como a maioria digita) → `Não encontrei nenhum lembrete parecido com "remedio"` (a IA nem sempre devolve o acento). Idem "Consulta médica" × "medica". Os caracteres `%` e `_` na busca também não são escapados.
 - **Correção sugerida:** filtrar em JS com a mesma `normalize` de `incomes/service.ts` (janela de 20-50 itens), como já é feito para gastos.
@@ -340,7 +342,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 
 1. **D-01** (Alto): bloquear `delete_*` e `remove_*` junto de `edit_*` na mesma mensagem. É a única que pode apagar algo que o usuário acha que está só editando.
 2. ~~**D-02** + **D-05** (Médio, ambos de agenda)~~ — feito no Card 10.
-3. **D-06** + **D-04** (Médio): busca de evento/lembrete sem acento e números por extenso nas prévias; são o que mais aparece com áudio e teclado sem acento.
+3. ~~**D-06** + **D-04** (Médio)~~ — feito no Card 11.
 4. **D-07** (Médio): saída explícita da prévia (decisão de produto).
 5. **D-03** (Baixo, uma linha) junto de **D-13** (script de cobertura/lint e `noUnusedLocals`).
 6. **D-08**, **D-09**, **D-10** (consistência de produto), **D-12** (retenção do log) e **D-11** (refatoração do `router.ts`, fazer por último e com os testes desta auditoria como rede de segurança).

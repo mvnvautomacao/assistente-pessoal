@@ -1,7 +1,9 @@
 // Confirmacao de apagar/remover no padrao 1/3 (Card 9): monta a pergunta de cada um dos
 // 9 fluxos, a mensagem "nao entendi" e interpreta a resposta. Funcoes puras, sem I/O --
 // o router so liga isto aos handlers de cada fluxo.
-import { classifyConfirmationReply, normalizeReply } from "./classify";
+import { classifyConfirmationReply } from "./classify";
+import { normalizeReply } from "./normalize";
+import { parseChoiceNumber } from "./numbers";
 
 export type DeleteFlow =
   | "event"
@@ -72,7 +74,7 @@ export function interpretDeleteReply(answerText: string, offerOther: boolean): D
   if (reply === "cancel") return "cancel";
   if (offerOther) {
     const normalized = normalizeReply(answerText);
-    if (normalized === "2" || OTHER_PHRASES.has(normalized)) return "other";
+    if (parseChoiceNumber(answerText) === 2 || OTHER_PHRASES.has(normalized)) return "other";
   }
   return "not_understood";
 }

@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { filterByQuery, SEARCH_SCAN_LIMIT } from "../text/search";
 import { spDateString, addDaysToDateString } from "../timeSP";
 
 export interface BillAlert {
@@ -82,10 +83,10 @@ export function updateBillAlert(
 }
 
 export function findActiveBillAlertByName(fromNumber: string, query: string): BillAlert | null {
-  const row = db
-    .prepare(`SELECT * FROM bill_alerts WHERE from_number = ? AND active = 1 AND LOWER(name) LIKE ? ORDER BY id DESC LIMIT 1`)
-    .get(fromNumber, `%${query.trim().toLowerCase()}%`) as BillAlert | undefined;
-  return row ?? null;
+  const rows = db
+    .prepare(`SELECT * FROM bill_alerts WHERE from_number = ? AND active = 1 ORDER BY id DESC LIMIT ?`)
+    .all(fromNumber, SEARCH_SCAN_LIMIT) as unknown as BillAlert[];
+  return filterByQuery(rows, (b) => b.name, query, 1)[0] ?? null;
 }
 
 export function markBillAlertAsked(fromNumber: string, id: number, todayDate: string) {

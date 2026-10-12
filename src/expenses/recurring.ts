@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { filterByQuery, SEARCH_SCAN_LIMIT } from "../text/search";
 
 export interface RecurringExpense {
   id: number;
@@ -69,12 +70,10 @@ export function deactivateRecurringExpense(fromNumber: string, id: number): bool
 }
 
 export function findActiveRecurringExpenseByDescription(fromNumber: string, query: string): RecurringExpense | null {
-  const row = db
-    .prepare(
-      `SELECT * FROM recurring_expenses WHERE from_number = ? AND active = 1 AND LOWER(description) LIKE ? ORDER BY id DESC LIMIT 1`
-    )
-    .get(fromNumber, `%${query.trim().toLowerCase()}%`) as RecurringExpense | undefined;
-  return row ?? null;
+  const rows = db
+    .prepare(`SELECT * FROM recurring_expenses WHERE from_number = ? AND active = 1 ORDER BY id DESC LIMIT ?`)
+    .all(fromNumber, SEARCH_SCAN_LIMIT) as unknown as RecurringExpense[];
+  return filterByQuery(rows, (r) => r.description, query, 1)[0] ?? null;
 }
 
 // TODOS os gastos fixos ativos cujo nome bate com o texto (sem diferenciar acento

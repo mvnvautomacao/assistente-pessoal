@@ -8,34 +8,33 @@
 // por isso "pode ser as 16h" (comeca com "pode"), "para sexta as 16h" e "nao, e
 // as 16h" NUNCA sao lidos como sim/nao, e a correcao embutida nao se perde.
 
+import { normalizeReply } from "./normalize";
+import { parseChoiceNumber } from "./numbers";
+
+// quem importava daqui continua importando (a funcao mora em ./normalize)
+export { normalizeReply };
+
 export type ConfirmationReply = "confirm" | "cancel" | "correct" | "free_text";
 
 const CONFIRM_TERMS = new Set([
-  "sim", "s", "1", "confirmo", "confirma", "confirmar", "pode", "isso", "mesmo",
+  "sim", "s", "1", "um", "uma", "confirmo", "confirma", "confirmar", "pode", "isso", "mesmo",
   "certo", "ok", "claro", "blz", "beleza", "fechado", "perfeito", "manda",
   "positivo", "certeza", "com",
 ]);
 
-const CANCEL_TERMS = new Set(["nao", "n", "3", "cancela", "cancelar", "deixa", "pra", "la", "esquece", "negativo", "nem"]);
-
-// minusculas, sem acento, sem pontuacao nem emoji, espacos colapsados. Os dois
-// emojis que valem como resposta viram palavra antes de serem removidos.
-export function normalizeReply(text: string): string {
-  return text
-    .replace(/👍/gu, " sim ")
-    .replace(/❌/gu, " nao ")
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const CANCEL_TERMS = new Set(["nao", "n", "3", "tres", "cancela", "cancelar", "deixa", "pra", "la", "esquece", "negativo", "nem"]);
 
 export function classifyConfirmationReply(text: string): ConfirmationReply {
   const normalized = normalizeReply(text);
   if (!normalized) return "free_text";
-  if (normalized === "2" || normalized === "corrigir") return "correct";
+
+  // numero (digito ou por extenso, com ou sem "opcao"/"o"/"a"): 1 confirma, 2 corrige, 3 cancela
+  const number = parseChoiceNumber(text);
+  if (number === 1) return "confirm";
+  if (number === 2) return "correct";
+  if (number === 3) return "cancel";
+  if (number !== null) return "free_text";
+  if (normalized === "corrigir") return "correct";
 
   const tokens = normalized.split(" ");
   if (tokens.every((t) => CONFIRM_TERMS.has(t))) return "confirm";
