@@ -112,6 +112,8 @@ export type UndoAction =
       params: { fromNumber: string; name: string } & ({ dayOfMonth: number } | { intervalDays: number });
       description: string;
     }
+  | { kind: "deactivate_recurring_expense"; recurringId: number; description: string } // desfazer o cadastro de um gasto fixo
+  | { kind: "deactivate_bill_alert"; billAlertId: number; description: string } // desfazer o cadastro de um alerta
   | {
       // editar um gasto fixo (edit_recurring_expense) so muda campos (UPDATE),
       // nao apaga/recria -- desfazer e so devolver os campos de antes, mesma

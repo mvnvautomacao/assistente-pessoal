@@ -128,13 +128,16 @@ export type Interpretation =
   | {
       type: "unknown";
       description?: string;
-      likely_intent?: "expense" | "event" | "reminder";
+      likely_intent?: "expense" | "event" | "reminder" | "recurring_expense" | "bill_alert" | "recurring_unclear";
       title?: string;
       message?: string;
       date?: string;
       time?: string;
       amount?: number;
       category?: string;
+      // cadastro parcial de gasto fixo / alerta (likely_intent recurring_*, bill_alert): dados ja conhecidos
+      day_of_month?: number;
+      interval_days?: number;
     };
 
 const ACTION_SCHEMA = {
@@ -269,9 +272,9 @@ const ACTION_SCHEMA = {
     },
     likely_intent: {
       type: "string",
-      enum: ["expense", "event", "reminder"],
+      enum: ["expense", "event", "reminder", "recurring_expense", "bill_alert", "recurring_unclear"],
       description:
-        "So para type=unknown: se a mensagem foi uma tentativa curta/incompleta de um desses tipos (faltou valor, data, etc.), qual pareceu ser. Deixe de fora se nao deu pra identificar nem isso.",
+        "So para type=unknown: se a mensagem foi uma tentativa curta/incompleta de um desses tipos (faltou valor, data, etc.), qual pareceu ser. 'recurring_expense' = tentativa de cadastrar um GASTO FIXO mensal que lanca sozinho (ex: 'cadastrar gasto fixo', '15 reais gasto fixo dia 10', 'gasto fixo internet dia 10') com algum dado faltando; 'bill_alert' = tentativa de cadastrar um ALERTA/aviso de conta ou compra recorrente (ex: 'me lembra da luz todo dia 5' sem mais dados, 'ração a cada 45 dias' incompleto); 'recurring_unclear' = 'conta fixa'/'fixo' sem valor, sem intervalo e sem palavra de aviso (nao da pra saber se lanca gasto ou so avisa). Nesses tres casos preencha o que ja se sabe: 'description' (nome), 'amount' (valor), 'day_of_month' OU 'interval_days'. Deixe de fora se nao deu pra identificar nem isso.",
     },
     topic: {
       type: "string",
@@ -560,7 +563,9 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
 
-Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.${buildShownListContext(fromNumber)}`;
+Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.
+
+Cadastro de GASTO FIXO e de ALERTA de conta (aceite erros de digitacao, ex: "Cadatrar gasto fixo"): (1) se a mensagem tem INTERVALO ("a cada 45 dias", "de 15 em 15 dias", "a cada 2 meses" = 60 dias) e ALERTA (set_bill_alert com interval_days; gasto fixo so tem dia do mes) -- se vier junto um valor ("racao 80 reais a cada 45 dias"), ignore o valor. (2) dia do mes + valor + nome ("todo dia 10 pago 50 de internet") = set_recurring_expense; dia do mes + palavras de aviso ("me lembra", "me avisa", "alerta") = set_bill_alert. (3) "gasto fixo", "despesa fixa", "lanca sozinho", "debita" = gasto fixo: se faltar nome, valor ou dia, NAO invente -- classifique como unknown com likely_intent='recurring_expense' preenchendo SO o que foi dito (ex: "15 reais gasto fixo dia 10" -> amount=15, day_of_month=10, sem description; "cadastrar gasto fixo" -> so likely_intent). (4) "conta fixa" ou "fixo" SEM valor, sem intervalo e sem palavra de aviso (ex: "conta fixa internet dia 10") -> unknown com likely_intent='recurring_unclear' (description e day_of_month preenchidos). Nunca invente valor, nome ou dia.${buildShownListContext(fromNumber)}`;
 }
 
 async function classify(fromNumber: string, content: Anthropic.MessageParam["content"]): Promise<Interpretation[]> {

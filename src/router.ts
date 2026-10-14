@@ -155,6 +155,8 @@ import {
   getRecurringExpenseById,
   deactivateRecurringExpense,
   updateRecurringExpense,
+  markRecurringExpenseRunForMonth,
+  RecurringExpense,
 } from "./expenses/recurring";
 import {
   setPendingEditRecurring,
@@ -163,7 +165,7 @@ import {
   PendingEditRecurring,
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
-import { createBillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
+import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
 import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import {
@@ -235,6 +237,46 @@ import { setPendingEditTarget, getPendingEditTarget, clearPendingEditTarget } fr
 import { classifyConfirmationReply, isCancelWord, normalizeReply } from "./confirmation/classify";
 import { parseChoiceNumber } from "./confirmation/numbers";
 import { countWords, isSafeNewRequest, MIN_WORDS_FOR_NEW_REQUEST, PendingKind, replacedPendingText, takeSecondChance, undoWithPendingText } from "./pending/newRequest";
+import {
+  RecurrenceDraft,
+  RecurrenceKind,
+  RecurrenceMode,
+  dayAlreadyPassed,
+  decideMode,
+  dueDateThisMonth,
+  findDuplicate,
+  missingFields,
+  parseFillAnswer,
+  reconcileKind,
+  sanitizeDraft,
+} from "./recurrence/rules";
+import {
+  CANCELLED_TEXT,
+  CHOOSE_TYPE_NOT_UNDERSTOOD,
+  DUPLICATE_NOT_UNDERSTOOD,
+  MULTIPLE_CREATIONS_NOTICE,
+  THIS_MONTH_NOT_UNDERSTOOD,
+  alertCreatedText,
+  chooseTypeQuestion,
+  correctionChoices,
+  correctionValueQuestion,
+  duplicateQuestion,
+  fillQuestion,
+  previewText,
+  recurringCreatedText,
+  scheduleLabel,
+  thisMonthQuestion,
+  withProblem,
+} from "./recurrence/messages";
+import {
+  PendingCreateRecurrence,
+  clearPendingCreateRecurrence,
+  getPendingCreateRecurrence,
+  recurrenceLabel,
+  setPendingCreateRecurrence,
+} from "./recurrence/pending";
+import { launchRecurringExpense } from "./expenses/recurringLaunch";
+import { normalizeSearch } from "./text/search";
 import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
@@ -268,7 +310,7 @@ import {
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
-import { spDateString, ensureBrazilOffset, addDaysToDateString } from "./timeSP";
+import { spDateString, spTimeString, ensureBrazilOffset, addDaysToDateString } from "./timeSP";
 import {
   ensureUserSeeded,
   findCategoryByName,
@@ -367,7 +409,7 @@ function mergeDateTime(existingIso: string, newDate?: string, newTime?: string):
 
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
 // informacao pra completar; pede o que falta em vez de um "nao entendi" generico
-function unknownFollowUp(likelyIntent?: "expense" | "event" | "reminder"): string {
+function unknownFollowUp(likelyIntent?: Extract<Interpretation, { type: "unknown" }>["likely_intent"]): string {
   switch (likelyIntent) {
     case "expense":
       return 'Beleza, um gasto! Me diga o valor e do que foi, tudo numa mensagem só — ex: "50 no mercado" ou "35,90 na farmácia no pix".';
@@ -417,9 +459,11 @@ Pra ver as entradas numeradas: "minhas entradas". Aí é só corrigir ou apagar 
 
 Diga o valor, do que é e o dia do mês em que costuma pagar.
 
-Exemplo: "todo dia 10 pago 50 reais de internet"
+Exemplo: "todo dia 10 pago 50 reais de internet" — ou só "cadastrar gasto fixo" que eu pergunto o que faltar (nome, valor e dia).
 
-A partir daí, todo mês eu lanço esse gasto sozinho, no dia certo, sem você precisar mandar mensagem de novo.
+Antes de gravar eu mostro um resumo: *1* confirma, *2* corrige, *3* cancela. Se você já tem um com nome parecido, eu aviso e deixo atualizar o que existe. Se o dia já passou neste mês, pergunto se lanço o deste mês agora.
+
+A partir daí, todo mês eu lanço esse gasto sozinho, no dia certo, sem você precisar mandar mensagem de novo. Se for só pra ser avisado (sem lançar), diga "me lembra da luz todo dia 5" ou "me lembra da ração a cada 45 dias" — isso cria um alerta, que só pergunta "já fez?".
 
 Pra ver quais você já tem: "quais gastos fixos eu tenho"
 
@@ -749,6 +793,13 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    // cadastro de gasto fixo / alerta de conta em andamento (Card 13)
+    const pendingCreateRecurrence = getPendingCreateRecurrence(from);
+    if (pendingCreateRecurrence) {
+      await resolveCreateRecurrence(from, pendingCreateRecurrence, text);
+      return;
+    }
+
     let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
     while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
       await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
@@ -951,6 +1002,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
 // atende o que a IA entendeu da mensagem: gastos completos em lote primeiro, depois os demais pedidos
 async function dispatchInterpretations(from: string, interpretations: Interpretation[]) {
+  const { kept, skipped } = limitRecurrenceCreations(interpretations);
+  await dispatchAllInterpretations(from, kept);
+  if (skipped) await sendText(from, MULTIPLE_CREATIONS_NOTICE);
+}
+
+async function dispatchAllInterpretations(from: string, interpretations: Interpretation[]) {
   // Uma mensagem pode conter varios pedidos (ex: "marca dentista amanha e reuniao sexta");
   // processa cada acao separadamente, uma falha nao impede as outras. Gastos
   // completos (2+) sao tentados em LOTE primeiro, pra confirmar todos numa
@@ -1032,6 +1089,425 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
   // a unica linha de log da resposta nao entendida (os resolvedores nao registram a sua)
   if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida`);
   await sendText(from, notUnderstoodText);
+}
+
+// ---- cadastro de gasto fixo e alerta de conta (Card 13) ------------------------------------------------
+// Nada e gravado antes do "1": o rascunho vive em pending_state (recurrence/pending.ts). Etapas: fill (pergunta
+// o que falta), choose_type (gasto fixo ou so aviso?), duplicate, confirm (previa 1/2/3) e this_month (o dia ja
+// passou neste mes). Regras puras em recurrence/rules.ts; textos em recurrence/messages.ts.
+
+const RECURRENCE_ACTIVITY = "recurrence_flow";
+
+const RECURRENCE_INTENTS = new Set(["recurring_expense", "bill_alert", "recurring_unclear"]);
+
+function isRecurrenceCreation(interpretation: Interpretation): boolean {
+  if (interpretation.type === "set_recurring_expense" || interpretation.type === "set_bill_alert") return true;
+  return interpretation.type === "unknown" && interpretation.likely_intent !== undefined && RECURRENCE_INTENTS.has(interpretation.likely_intent);
+}
+
+// RN15: mais de um cadastro na mesma mensagem -> so o primeiro; o resto e avisado no fim
+function limitRecurrenceCreations(interpretations: Interpretation[]): { kept: Interpretation[]; skipped: boolean } {
+  const creations = interpretations.filter(isRecurrenceCreation);
+  if (creations.length <= 1) return { kept: interpretations, skipped: false };
+  return { kept: interpretations.filter((i) => !isRecurrenceCreation(i) || i === creations[0]), skipped: true };
+}
+
+function recurrenceDraftFrom(interpretation: Interpretation): { hint: RecurrenceMode; draft: RecurrenceDraft } | null {
+  if (interpretation.type === "set_recurring_expense") {
+    return {
+      hint: "recurring_expense",
+      draft: {
+        description: interpretation.description,
+        amount: interpretation.amount,
+        categoryName: interpretation.category,
+        paymentMethodName: interpretation.payment_method,
+        dayOfMonth: interpretation.day_of_month,
+      },
+    };
+  }
+  if (interpretation.type === "set_bill_alert") {
+    return { hint: "bill_alert", draft: { description: interpretation.description, dayOfMonth: interpretation.day_of_month, intervalDays: interpretation.interval_days } };
+  }
+  if (interpretation.type === "unknown" && interpretation.likely_intent && RECURRENCE_INTENTS.has(interpretation.likely_intent)) {
+    const hint: RecurrenceMode = interpretation.likely_intent === "recurring_unclear" ? "unclear" : (interpretation.likely_intent as RecurrenceKind);
+    return {
+      hint,
+      draft: {
+        description: interpretation.description,
+        amount: interpretation.amount,
+        categoryName: interpretation.category,
+        dayOfMonth: interpretation.day_of_month,
+        intervalDays: interpretation.interval_days,
+      },
+    };
+  }
+  return null;
+}
+
+// ponto de entrada: a IA entendeu (parte de) um cadastro
+async function startRecurrenceCreation(from: string, interpretation: Interpretation) {
+  const parsed = recurrenceDraftFrom(interpretation);
+  if (!parsed) return;
+  const { draft, problems } = sanitizeDraft(
+    Object.fromEntries(Object.entries(parsed.draft).filter(([, v]) => v !== undefined && v !== null && v !== "")) as RecurrenceDraft
+  );
+  // uma nova tentativa de cadastro substitui o rascunho anterior
+  await advanceRecurrence(from, { mode: decideMode(parsed.hint, draft), step: "fill", draft }, problems[0]);
+}
+
+function recurrenceItemLabel(mode: RecurrenceMode, item: RecurringExpense | BillAlert): string {
+  if (mode === "bill_alert") {
+    const bill = item as BillAlert;
+    return `${bill.name} — ${scheduleLabel(bill.recurrence_type === "interval" ? { intervalDays: bill.interval_days ?? undefined } : { dayOfMonth: bill.day_of_month })}`;
+  }
+  const r = item as RecurringExpense;
+  return recurringHeader({ description: r.description, amount: r.amount, dayOfMonth: r.day_of_month });
+}
+
+type RecurrenceState = Omit<PendingCreateRecurrence, "createdAt">;
+
+// decide a proxima pergunta: o que falta, tipo ambiguo, duplicata ou a previa
+async function advanceRecurrence(from: string, input: RecurrenceState, problem?: string) {
+  const reconciled = reconcileKind(input.mode, input.draft);
+  const mode = decideMode(reconciled.mode, reconciled.draft);
+  const state: RecurrenceState = { ...input, mode, draft: reconciled.draft, correction: undefined };
+
+  const missing = missingFields(mode, state.draft);
+  if (missing.length > 0) {
+    setPendingCreateRecurrence(from, { ...state, step: "fill", ask: missing[0], duplicateOfId: undefined });
+    logActivity(from, RECURRENCE_ACTIVITY, `cadastro de ${mode === "bill_alert" ? "alerta" : "gasto fixo"}: pedindo ${missing[0]}`);
+    await sendText(from, withProblem(problem, fillQuestion(mode, missing[0], state.draft)));
+    return;
+  }
+  if (mode === "unclear") {
+    setPendingCreateRecurrence(from, { ...state, step: "choose_type", ask: undefined });
+    logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${state.draft.description}": perguntou gasto fixo ou alerta`);
+    await sendText(from, chooseTypeQuestion(state.draft));
+    return;
+  }
+
+  const existing =
+    mode === "bill_alert"
+      ? findDuplicate(listBillAlerts(from).map((b) => ({ id: b.id, name: b.name, row: b })), state.draft.description!)
+      : findDuplicate(listRecurringExpenses(from).map((r) => ({ id: r.id, name: r.description, row: r })), state.draft.description!);
+  if (existing) {
+    setPendingCreateRecurrence(from, { ...state, step: "duplicate", ask: undefined, duplicateOfId: existing.id });
+    logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${state.draft.description}": ja existe "${existing.name}"`);
+    await sendText(from, duplicateQuestion(mode, recurrenceItemLabel(mode, existing.row)));
+    return;
+  }
+  await showRecurrencePreview(from, state);
+}
+
+// categoria e forma de pagamento mostradas na previa SEM criar nada (RN08)
+function recurrencePreviewContext(from: string, draft: RecurrenceDraft) {
+  const category =
+    (draft.categoryName && findCategoryByName(from, draft.categoryName)) || (draft.description ? findCategoryByKeyword(from, draft.description) : null);
+  const categoryName = category?.name ?? draft.categoryName?.trim() ?? "Outros";
+  const payment = draft.paymentMethodName ? (findPaymentMethodByName(from, draft.paymentMethodName)?.name ?? draft.paymentMethodName.trim()) : (getDefaultPaymentMethod(from)?.name ?? null);
+  return { categoryName, paymentName: payment, todayDate: spDateString(new Date(Date.now())) };
+}
+
+async function showRecurrencePreview(from: string, state: RecurrenceState) {
+  setPendingCreateRecurrence(from, { ...state, step: "confirm", ask: undefined, duplicateOfId: undefined, correction: undefined });
+  await sendText(from, previewText(state.mode, state.draft, recurrencePreviewContext(from, state.draft)));
+}
+
+function looksLikeQuestion(text: string): boolean {
+  return /\?/.test(text) || /^\s*(quanto|quanta|qual|quais|quando|onde|como|o que|que)\b/i.test(text);
+}
+
+async function cancelRecurrenceCreation(from: string, pending: PendingCreateRecurrence, why: string) {
+  clearPendingCreateRecurrence(from);
+  logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${recurrenceLabel(pending)}" cancelado ${why}`);
+  await sendText(from, CANCELLED_TEXT);
+}
+
+// grava de verdade (so depois do "1")
+function createRecurringFromDraft(from: string, draft: RecurrenceDraft) {
+  const resolved = recurrencePreviewContext(from, draft);
+  const category = getOrCreateCategory(from, resolved.categoryName);
+  const paymentMethod = autoResolvePaymentMethod(from, draft.paymentMethodName);
+  const recurring = createRecurringExpense({
+    fromNumber: from,
+    description: draft.description!,
+    amount: draft.amount!,
+    categoryId: category.id,
+    paymentMethodId: paymentMethod?.id ?? null,
+    dayOfMonth: draft.dayOfMonth!,
+  });
+  return { recurring, category, paymentMethod };
+}
+
+async function finishRecurringCreation(from: string, draft: RecurrenceDraft, monthChoice: "none" | "launch" | "skip") {
+  const { recurring, category, paymentMethod } = createRecurringFromDraft(from, draft);
+  const today = spDateString(new Date(Date.now()));
+  let launchedText: string | null = null;
+  if (monthChoice === "launch") launchedText = launchRecurringExpense(recurring, dueDateThisMonth(draft.dayOfMonth!, today)).text;
+  else if (monthChoice === "skip") markRecurringExpenseRunForMonth(from, recurring.id, today.slice(0, 7));
+  setPendingUndo(from, { kind: "deactivate_recurring_expense", recurringId: recurring.id, description: recurring.description });
+  logActivity(from, "set_recurring_expense", `R${draft.amount!.toFixed(2)} em ${category.name} — ${draft.description}, todo dia ${draft.dayOfMonth}`);
+  await replyWithUndo(from, recurringCreatedText(draft, category.name, paymentMethod?.name ?? null));
+  if (launchedText) await sendText(from, launchedText);
+}
+
+async function finishAlertCreation(from: string, draft: RecurrenceDraft) {
+  const created = createBillAlert(
+    draft.intervalDays !== undefined
+      ? { fromNumber: from, name: draft.description!, intervalDays: draft.intervalDays }
+      : { fromNumber: from, name: draft.description!, dayOfMonth: draft.dayOfMonth! }
+  );
+  setPendingUndo(from, { kind: "deactivate_bill_alert", billAlertId: created.id, description: created.name });
+  logActivity(from, "set_bill_alert", `${draft.description}, ${scheduleLabel(draft)}`);
+  await replyWithUndo(from, alertCreatedText(draft));
+}
+
+// opcao 2 da duplicata: atualiza o que ja existe com os valores novos
+async function updateExistingFromDraft(from: string, pending: PendingCreateRecurrence) {
+  const draft = pending.draft;
+  clearPendingCreateRecurrence(from);
+  if (pending.mode === "bill_alert") {
+    const bill = pending.duplicateOfId ? getBillAlertById(from, pending.duplicateOfId) : null;
+    if (!bill || !bill.active) {
+      await sendText(from, "Esse alerta não existe mais. Manda o cadastro de novo, se ainda quiser.");
+      return;
+    }
+    const sameName = normalizeSearch(bill.name) === normalizeSearch(draft.description);
+    const updated = updateBillAlert(from, bill.id, {
+      name: sameName ? undefined : draft.description,
+      dayOfMonth: draft.intervalDays === undefined ? draft.dayOfMonth : undefined,
+      intervalDays: draft.intervalDays,
+    });
+    if (!updated) {
+      await sendText(from, `Não consegui atualizar "${bill.name}".`);
+      return;
+    }
+    const label = updated.recurrence_type === "interval" ? `a cada ${updated.interval_days} dias` : `todo dia ${updated.day_of_month}`;
+    logActivity(from, "edit_bill_alert", `"${bill.name}" -> "${updated.name}", ${label} (pelo cadastro duplicado)`);
+    await sendText(from, `✏️ Alerta atualizado: "${updated.name}" — ${label}.`);
+    return;
+  }
+  const existing = pending.duplicateOfId ? getRecurringExpenseById(from, pending.duplicateOfId) : null;
+  if (!existing || !existing.active) {
+    await sendText(from, "Esse gasto fixo não existe mais. Manda o cadastro de novo, se ainda quiser.");
+    return;
+  }
+  logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${draft.description}": atualizando o existente "${existing.description}"`);
+  await proposeRecurringEdit(from, existing, {
+    new_description: draft.description!.trim().toLowerCase() === existing.description.trim().toLowerCase() ? undefined : draft.description,
+    new_amount: draft.amount,
+    new_day_of_month: draft.dayOfMonth,
+    new_category: draft.categoryName,
+    new_payment_method: draft.paymentMethodName,
+  });
+}
+
+async function resolveCreateRecurrence(from: string, pending: PendingCreateRecurrence, answerText: string) {
+  const state: RecurrenceState = {
+    mode: pending.mode,
+    step: pending.step,
+    draft: pending.draft,
+    ask: pending.ask,
+    duplicateOfId: pending.duplicateOfId,
+    correction: pending.correction,
+  };
+  const label = recurrenceLabel(pending);
+  const context = { activity: RECURRENCE_ACTIVITY, label, kind: "question" as const };
+  const isCancelText = isCancelWord(answerText) || normalizeReply(answerText) === "cancela";
+
+  // ---- corrigir (opcao 2 da previa) ----
+  if (pending.correction) {
+    if (isCancelText) return cancelRecurrenceCreation(from, pending, "na correcao");
+    const choices = correctionChoices(pending.mode);
+    if (pending.correction.stage === "pick") {
+      const number = parseChoiceNumber(answerText);
+      const picked = number !== null ? choices[number - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(choices.map((c) => c.label))}`);
+        return;
+      }
+      setPendingCreateRecurrence(from, { ...state, correction: { stage: "value", field: picked.field } });
+      await sendText(from, correctionValueQuestion(pending.mode, picked.field));
+      return;
+    }
+    const field = pending.correction.field!;
+    const question = correctionValueQuestion(pending.mode, field);
+    const draft = { ...pending.draft };
+    if (field === "description") {
+      const name = answerText.trim();
+      if (!name) {
+        await sendText(from, withProblem("Não entendi o nome.", question));
+        return;
+      }
+      draft.description = name.charAt(0).toUpperCase() + name.slice(1);
+    } else if (field === "category") {
+      draft.categoryName = answerText.trim();
+    } else if (field === "payment") {
+      draft.paymentMethodName = answerText.trim();
+    } else {
+      const parsed = parseFillAnswer(field, answerText);
+      if (parsed.problem) {
+        await sendText(from, withProblem(parsed.problem, question));
+        return;
+      }
+      Object.assign(draft, parsed.patch);
+      if (parsed.patch.dayOfMonth !== undefined) delete draft.intervalDays;
+    }
+    const reconciled = reconcileKind(pending.mode, draft);
+    logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${label}": corrigiu ${field}`);
+    await showRecurrencePreview(from, { ...state, mode: decideMode(reconciled.mode, reconciled.draft), draft: reconciled.draft, correction: undefined });
+    return;
+  }
+
+  switch (pending.step) {
+    case "fill": {
+      if (isCancelText) return cancelRecurrenceCreation(from, pending, "no preenchimento");
+      const ask = pending.ask ?? missingFields(pending.mode, pending.draft)[0];
+      if (ask === "description" && looksLikeQuestion(answerText)) {
+        // uma pergunta ("quanto gastei?") nao e o nome: segunda chance do Card 12
+        await handleNotUnderstood(from, answerText, fillQuestion(pending.mode, ask, pending.draft), context);
+        return;
+      }
+      const parsed = parseFillAnswer(ask, answerText);
+      const gotSomething = Object.keys(parsed.patch).length > 0;
+      if (parsed.problem && !gotSomething) {
+        await handleNotUnderstood(from, answerText, withProblem(parsed.problem, fillQuestion(pending.mode, ask, pending.draft)), context);
+        return;
+      }
+      const draft = { ...pending.draft, ...parsed.patch };
+      if (parsed.patch.dayOfMonth !== undefined) delete draft.intervalDays;
+      await advanceRecurrence(from, { ...state, draft }, parsed.problem);
+      return;
+    }
+    case "choose_type": {
+      const reply = classifyConfirmationReply(answerText);
+      if (reply === "cancel") return cancelRecurrenceCreation(from, pending, "na escolha do tipo");
+      if (reply === "confirm" || reply === "correct") {
+        const mode: RecurrenceKind = reply === "confirm" ? "recurring_expense" : "bill_alert";
+        logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${label}": escolheu ${mode === "bill_alert" ? "so avisar" : "lancar sozinho"}`);
+        await advanceRecurrence(from, { ...state, mode });
+        return;
+      }
+      await handleNotUnderstood(from, answerText, CHOOSE_TYPE_NOT_UNDERSTOOD, context);
+      return;
+    }
+    case "duplicate": {
+      const reply = classifyConfirmationReply(answerText);
+      if (reply === "cancel") return cancelRecurrenceCreation(from, pending, "na duplicata");
+      if (reply === "confirm") {
+        logActivity(from, RECURRENCE_ACTIVITY, `cadastro de "${label}": cadastrar outro mesmo assim`);
+        await showRecurrencePreview(from, state);
+        return;
+      }
+      if (reply === "correct") {
+        await updateExistingFromDraft(from, pending);
+        return;
+      }
+      await handleNotUnderstood(from, answerText, DUPLICATE_NOT_UNDERSTOOD, context);
+      return;
+    }
+    case "confirm": {
+      const reply = classifyConfirmationReply(answerText);
+      if (reply === "cancel") return cancelRecurrenceCreation(from, pending, "na previa");
+      if (reply === "correct") {
+        setPendingCreateRecurrence(from, { ...state, correction: { stage: "pick" } });
+        await sendText(from, formatCorrectionLabels(correctionChoices(pending.mode).map((c) => c.label)));
+        return;
+      }
+      if (reply !== "confirm") {
+        await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, context);
+        return;
+      }
+      if (pending.mode === "bill_alert") {
+        clearPendingCreateRecurrence(from);
+        await finishAlertCreation(from, pending.draft);
+        return;
+      }
+      // gasto fixo: o dia deste mes ja passou? entao pergunta antes de gravar (RN12)
+      const now = new Date(Date.now());
+      const today = spDateString(now);
+      const hour = Number(spTimeString(now).slice(0, 2));
+      if (dayAlreadyPassed(pending.draft.dayOfMonth!, today, hour)) {
+        setPendingCreateRecurrence(from, { ...state, step: "this_month" });
+        const due = dueDateThisMonth(pending.draft.dayOfMonth!, today);
+        await sendText(from, thisMonthQuestion(pending.draft.dayOfMonth!, pending.draft.amount!, due));
+        return;
+      }
+      clearPendingCreateRecurrence(from);
+      await finishRecurringCreation(from, pending.draft, "none");
+      return;
+    }
+    case "this_month": {
+      const reply = classifyConfirmationReply(answerText);
+      if (reply === "cancel") return cancelRecurrenceCreation(from, pending, "no mes corrente");
+      if (reply === "confirm" || reply === "correct") {
+        clearPendingCreateRecurrence(from);
+        await finishRecurringCreation(from, pending.draft, reply === "confirm" ? "launch" : "skip");
+        return;
+      }
+      await handleNotUnderstood(from, answerText, THIS_MONTH_NOT_UNDERSTOOD, context);
+      return;
+    }
+  }
+}
+
+interface RecurringEditChanges {
+  new_description?: string;
+  new_amount?: number;
+  new_category?: string;
+  new_day_of_month?: number;
+  new_payment_method?: string;
+}
+
+// monta a previa 1/2/3 de uma edicao de gasto fixo (RN07: categoria/pagamento novos so sao criados no "1").
+// Usada pelo pedido de editar e pela opcao "atualizar o que ja existe" do cadastro duplicado.
+async function proposeRecurringEdit(from: string, recurring: RecurringExpense, changes: RecurringEditChanges) {
+  const previous: RecurringExpenseParams = {
+    description: recurring.description,
+    amount: recurring.amount,
+    categoryId: recurring.category_id,
+    paymentMethodId: recurring.payment_method_id,
+    dayOfMonth: recurring.day_of_month,
+  };
+  const proposedParams: RecurringExpenseParams = { ...previous };
+  // RN07: categoria / forma de pagamento que ainda nao existem so sao criadas no "1"
+  let newCategoryName: string | null = null;
+  let newPaymentMethodName: string | null = null;
+
+  if (changes.new_description) proposedParams.description = changes.new_description.trim();
+  if (changes.new_amount !== undefined) proposedParams.amount = changes.new_amount;
+  if (changes.new_category) {
+    const found = findCategoryByName(from, changes.new_category);
+    if (found) proposedParams.categoryId = found.id;
+    else newCategoryName = changes.new_category.trim();
+  }
+  if (changes.new_day_of_month !== undefined) proposedParams.dayOfMonth = changes.new_day_of_month;
+  if (changes.new_payment_method) {
+    const found = findPaymentMethodByName(from, changes.new_payment_method);
+    if (found) proposedParams.paymentMethodId = found.id;
+    else newPaymentMethodName = changes.new_payment_method.trim();
+  }
+
+  const changeText = buildRecurringChangeText(from, { previous, proposedParams, newCategoryName, newPaymentMethodName });
+  if (!changeText) {
+    logActivity(from, "edit_recurring_expense", `pedido sem nenhuma mudanca real em "${recurring.description}"`);
+    await sendText(from, NO_CHANGE_TEXT);
+    return;
+  }
+  const pendingRecurring = {
+    recurringId: recurring.id,
+    previous,
+    proposedParams,
+    newCategoryName,
+    newPaymentMethodName,
+    changeText,
+    awaitingCorrection: false,
+    headerText: recurringHeader({ description: previous.description, amount: previous.amount, dayOfMonth: previous.dayOfMonth }),
+  };
+  clearEditConfirmations(from);
+  setPendingEditRecurring(from, pendingRecurring);
+  logActivity(from, "edit_recurring_expense", `pediu confirmacao: "${recurring.description}": ${changeText}`);
+  await sendText(from, buildRecurringPreview(from, pendingRecurring));
 }
 
 const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>([
@@ -1372,6 +1848,7 @@ function cancelAllPendings(from: string): number {
     [getPendingEditTarget(from) || null, () => clearPendingEditTarget(from)],
     [getPendingTargetChoice(from), () => clearPendingTargetChoice(from)],
     [getPendingFieldMenu(from), () => clearPendingFieldMenu(from)],
+    [getPendingCreateRecurrence(from), () => clearPendingCreateRecurrence(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
   ];
@@ -2103,6 +2580,10 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
 // informacao parcial suficiente pra isso (aí o chamador usa a mensagem
 // generica de sempre).
 async function maybeStartPendingCompletion(from: string, interpretation: Extract<Interpretation, { type: "unknown" }>): Promise<boolean> {
+  if (isRecurrenceCreation(interpretation)) {
+    await startRecurrenceCreation(from, interpretation);
+    return true;
+  }
   if (interpretation.likely_intent === "event" && interpretation.title) {
     const missing = missingDateTimeParts(interpretation.date, interpretation.time);
     if (missing.length === 0) {
@@ -3023,6 +3504,8 @@ async function resolveTargetChoiceReply(from: string, pending: PendingTargetChoi
 function describeActiveEditConfirmation(from: string): { label: string; awaitingCorrection: boolean; kind: CorrectionKind } | null {
   const menu = getPendingFieldMenu(from);
   if (menu) return { label: menu.label, awaitingCorrection: menu.stage === "ask_value", kind: "text" };
+  const creation = getPendingCreateRecurrence(from);
+  if (creation) return { label: recurrenceLabel(creation), awaitingCorrection: creation.step === "fill" || creation.correction !== undefined, kind: "text" };
   const expense = getPendingEditExpense(from);
   if (expense) return { label: expenseEditLabel(expense.items), awaitingCorrection: expense.awaitingCorrection, kind: expenseEditKind(expense) };
   const income = getPendingEditIncome(from);
@@ -5328,29 +5811,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "set_recurring_expense": {
-      if (interpretation.day_of_month < 1 || interpretation.day_of_month > 31) {
-        await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.day_of_month}" não é um dia válido.`);
-        break;
-      }
-      const category = getOrCreateCategory(from, interpretation.category);
-      const paymentMethod = autoResolvePaymentMethod(from, interpretation.payment_method);
-      createRecurringExpense({
-        fromNumber: from,
-        description: interpretation.description,
-        amount: interpretation.amount,
-        categoryId: category.id,
-        paymentMethodId: paymentMethod?.id ?? null,
-        dayOfMonth: interpretation.day_of_month,
-      });
-      logActivity(
-        from,
-        "set_recurring_expense",
-        `R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}, todo dia ${interpretation.day_of_month}`
-      );
-      await sendText(
-        from,
-        `🔁 Gasto fixo cadastrado: R$${interpretation.amount.toFixed(2)} em ${category.name} — ${interpretation.description}, todo dia ${interpretation.day_of_month}. Vou lançar esse valor automaticamente todo mês, sem você precisar mandar mensagem.`
-      );
+      // Card 13: nada e gravado antes da previa 1/2/3 (ver startRecurrenceCreation)
+      await startRecurrenceCreation(from, interpretation);
       break;
     }
     case "list_recurring_expenses": {
@@ -5419,85 +5881,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
 
-      const previous: RecurringExpenseParams = {
-        description: recurring.description,
-        amount: recurring.amount,
-        categoryId: recurring.category_id,
-        paymentMethodId: recurring.payment_method_id,
-        dayOfMonth: recurring.day_of_month,
-      };
-      const proposedParams: RecurringExpenseParams = { ...previous };
-      // RN07: categoria / forma de pagamento que ainda nao existem so sao criadas no "1"
-      let newCategoryName: string | null = null;
-      let newPaymentMethodName: string | null = null;
-
-      if (interpretation.new_description) proposedParams.description = interpretation.new_description.trim();
-      if (interpretation.new_amount !== undefined) proposedParams.amount = interpretation.new_amount;
-      if (interpretation.new_category) {
-        const found = findCategoryByName(from, interpretation.new_category);
-        if (found) proposedParams.categoryId = found.id;
-        else newCategoryName = interpretation.new_category.trim();
-      }
-      if (interpretation.new_day_of_month !== undefined) proposedParams.dayOfMonth = interpretation.new_day_of_month;
-      if (interpretation.new_payment_method) {
-        const found = findPaymentMethodByName(from, interpretation.new_payment_method);
-        if (found) proposedParams.paymentMethodId = found.id;
-        else newPaymentMethodName = interpretation.new_payment_method.trim();
-      }
-
-      const changeText = buildRecurringChangeText(from, { previous, proposedParams, newCategoryName, newPaymentMethodName });
-      if (!changeText) {
-        logActivity(from, "edit_recurring_expense", `pedido sem nenhuma mudanca real em "${recurring.description}"`);
-        await sendText(from, NO_CHANGE_TEXT);
-        break;
-      }
-      const pendingRecurring = {
-        recurringId: recurring.id,
-        previous,
-        proposedParams,
-        newCategoryName,
-        newPaymentMethodName,
-        changeText,
-        awaitingCorrection: false,
-        headerText: recurringHeader({ description: previous.description, amount: previous.amount, dayOfMonth: previous.dayOfMonth }),
-      };
-      clearEditConfirmations(from);
-      setPendingEditRecurring(from, pendingRecurring);
-      logActivity(from, "edit_recurring_expense", `pediu confirmacao: "${recurring.description}": ${changeText}`);
-      await sendText(from, buildRecurringPreview(from, pendingRecurring));
+      await proposeRecurringEdit(from, recurring, interpretation);
       break;
     }
     case "set_bill_alert": {
-      const hasDayOfMonth = typeof interpretation.day_of_month === "number";
-      const hasInterval = typeof interpretation.interval_days === "number";
-
-      if (!hasDayOfMonth && !hasInterval) {
-        await sendText(
-          from,
-          `Não entendi a recorrência de "${interpretation.description}". Pode ser um dia fixo do mês (ex: "todo dia 10") ou um intervalo (ex: "a cada 45 dias")?`
-        );
-        break;
-      }
-      if (hasDayOfMonth && (interpretation.day_of_month! < 1 || interpretation.day_of_month! > 31)) {
-        await sendText(from, `O dia do mês precisa ser entre 1 e 31. "${interpretation.day_of_month}" não é um dia válido.`);
-        break;
-      }
-      if (hasInterval && interpretation.interval_days! < 1) {
-        await sendText(from, `O intervalo precisa ser de pelo menos 1 dia.`);
-        break;
-      }
-
-      createBillAlert(
-        hasDayOfMonth
-          ? { fromNumber: from, name: interpretation.description, dayOfMonth: interpretation.day_of_month! }
-          : { fromNumber: from, name: interpretation.description, intervalDays: interpretation.interval_days! }
-      );
-      const recurrenceLabel = hasDayOfMonth ? `todo dia ${interpretation.day_of_month}` : `a cada ${interpretation.interval_days} dias`;
-      logActivity(from, "set_bill_alert", `${interpretation.description}, ${recurrenceLabel}`);
-      await sendText(
-        from,
-        `📌 Alerta cadastrado: ${recurrenceLabel} eu te pergunto se já fez "${interpretation.description}". Se ainda não tiver feito, é só pedir pra eu lembrar de novo no dia seguinte.`
-      );
+      await startRecurrenceCreation(from, interpretation);
       break;
     }
     case "list_bill_alerts": {
@@ -5831,6 +6219,16 @@ ${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
           createBillAlert(undo.params);
           logActivity(from, "undo", `alerta de conta fixa recriado: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" voltou a ser perguntado todo mês.`);
+          break;
+        case "deactivate_recurring_expense":
+          deactivateRecurringExpense(from, undo.recurringId);
+          logActivity(from, "undo", `gasto fixo desativado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o gasto fixo "${undo.description}" não vai mais ser lançado.`);
+          break;
+        case "deactivate_bill_alert":
+          deactivateBillAlert(from, undo.billAlertId);
+          logActivity(from, "undo", `alerta desativado: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" foi removido.`);
           break;
         case "restore_recurring_expense_fields":
           updateRecurringExpense(from, undo.recurringId, undo.previous);

@@ -82,6 +82,20 @@ function evolutionAudioMessage(from: string) {
 // resposta que a IA "daria"; cada chamada a interpretText consome uma da fila
 // (fila vazia = simula a IA nao ter sido chamada, retornando nenhuma acao — util
 // pra confirmar que fluxos de resposta pendente interceptam ANTES da IA).
+// o withMocks guarda aqui as mensagens do teste em andamento (pra helpers de preparo)
+let currentSent: { to: string; text: string }[] = [];
+
+// Card 13: cadastrar gasto fixo / alerta agora passa por previa 1/2/3. Quando o cadastro e so PREPARO do teste,
+// cadastra de ponta a ponta ("1" e, se o dia ja passou neste mes, "2" = so a partir do mes que vem) e deixa em
+// "sent" apenas a mensagem de sucesso, entao os indices usados pelos testes continuam os mesmos.
+async function registerRecurrence(n: string, text: string) {
+  const start = currentSent.length;
+  await handleIncomingMessage(evolutionMessage(n, text));
+  await handleIncomingMessage(evolutionMessage(n, "1"));
+  if (/já passou neste mês/.test(currentSent[currentSent.length - 1].text)) await handleIncomingMessage(evolutionMessage(n, "2"));
+  currentSent.splice(start, currentSent.length - start - 1);
+}
+
 function withMocks(t: TestContext) {
   // reseta contadores globais em memoria (rate limit, alerta pro dono) -- sem
   // isso, testes que reusam o mesmo numero repetidas vezes no arquivo (convencao
@@ -90,6 +104,7 @@ function withMocks(t: TestContext) {
   resetRateLimitForTests();
   resetOwnerAlertForTests();
   const sent: { to: string; text: string }[] = [];
+  currentSent = sent;
   t.mock.method(whatsappClient, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
@@ -1292,29 +1307,36 @@ test("undo: desfaz o lembrete acabado de criar (delete_reminder)", async (t) => 
   assert.equal(listReminders(U7).length, 0);
 });
 
-test("set_recurring_expense: cadastra o gasto fixo e confirma com o dia do mes", async (t) => {
+test("set_recurring_expense: mostra a previa e so cadastra depois do 1 (Card 13)", async (t) => {
   const R1 = "551100090030";
   seed(R1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "internet", amount: 99.9, category: "Contas", day_of_month: 10 }]);
   await handleIncomingMessage(evolutionMessage(R1, "todo dia 10 pago 99,90 de internet"));
 
-  assert.match(sent[0].text, /🔁/);
-  assert.match(sent[0].text, /dia 10/);
+  assert.match(sent[0].text, /🔁 Cadastrar gasto fixo/);
+  assert.match(sent[0].text, /todo dia 10/);
+  assert.equal(listRecurringExpenses(R1).length, 0); // so a previa: nada gravado antes do 1
+
+  await handleIncomingMessage(evolutionMessage(R1, "1"));
+  if (/já passou neste mês/.test(sent[sent.length - 1].text)) await handleIncomingMessage(evolutionMessage(R1, "2"));
+  assert.match(sent[sent.length - 1].text, /🔁 Gasto fixo cadastrado/);
+  assert.match(sent[sent.length - 1].text, /dia 10/);
   const recurring = listRecurringExpenses(R1);
   assert.equal(recurring.length, 1);
   assert.equal(recurring[0].description, "internet");
   assert.equal(recurring[0].day_of_month, 10);
 });
 
-test("set_recurring_expense: dia do mes invalido nao cadastra nada", async (t) => {
+test("set_recurring_expense: dia do mes invalido nao cadastra nada e pergunta o dia de novo", async (t) => {
   const R2 = "551100090031";
   seed(R2);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "algo estranho", amount: 10, category: "Contas", day_of_month: 40 }]);
   await handleIncomingMessage(evolutionMessage(R2, "todo dia 40 pago 10 de algo estranho"));
 
-  assert.match(sent[0].text, /entre 1 e 31/);
+  assert.match(sent[0].text, /O dia precisa ser de 1 a 31/);
+  assert.match(sent[0].text, /Em que dia do mês/);
   assert.equal(listRecurringExpenses(R2).length, 0);
 });
 
@@ -1325,7 +1347,7 @@ test("list_recurring_expenses: lista os gastos fixos cadastrados, isolado por nu
   const { sent, queueReply } = withMocks(t);
 
   queueReply([{ type: "set_recurring_expense", description: "academia", amount: 89.9, category: "Saude", day_of_month: 5 }]);
-  await handleIncomingMessage(evolutionMessage(R3, "todo dia 5 pago 89,90 de academia"));
+  await registerRecurrence(R3, "todo dia 5 pago 89,90 de academia");
 
   queueReply([{ type: "list_recurring_expenses" }]);
   await handleIncomingMessage(evolutionMessage(R4, "quais gastos fixos eu tenho"));
@@ -1341,7 +1363,7 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
   seed(R5);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "streaming filmes", amount: 39.9, category: "Lazer", day_of_month: 20 }]);
-  await handleIncomingMessage(evolutionMessage(R5, "todo dia 20 pago 39,90 de streaming filmes"));
+  await registerRecurrence(R5, "todo dia 20 pago 39,90 de streaming filmes");
 
   queueReply([{ type: "remove_recurring_expense", query: "streaming" }]);
   await handleIncomingMessage(evolutionMessage(R5, "cancela o gasto fixo do streaming"));
@@ -1355,57 +1377,66 @@ test("remove_recurring_expense: desativa o gasto fixo encontrado por texto", asy
 
 // Alerta de conta fixa: diferente de gasto fixo, NUNCA lanca um gasto sozinho --
 // so pergunta "ja pagou?" todo mes no dia configurado (ver bills/scheduler.ts).
-test("set_bill_alert: cadastra o alerta e confirma com o dia do mes", async (t) => {
+test("set_bill_alert: mostra a previa e so cadastra o alerta depois do 1 (Card 13)", async (t) => {
   const BA1 = "551100090301";
   seed(BA1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Conta de água", day_of_month: 5 }]);
   await handleIncomingMessage(evolutionMessage(BA1, "me lembra de pagar a conta de água todo dia 5"));
 
-  assert.match(sent[0].text, /📌/);
-  assert.match(sent[0].text, /dia 5/);
+  assert.match(sent[0].text, /📌 Cadastrar alerta/);
+  assert.match(sent[0].text, /todo dia 5/);
+  assert.equal(listBillAlerts(BA1).length, 0);
+
+  await handleIncomingMessage(evolutionMessage(BA1, "1"));
+  assert.match(sent[1].text, /📌 Alerta cadastrado/);
+  assert.match(sent[1].text, /dia 5/);
   const bills = listBillAlerts(BA1);
   assert.equal(bills.length, 1);
   assert.equal(bills[0].name, "Conta de água");
   assert.equal(bills[0].day_of_month, 5);
 });
 
-test("set_bill_alert: dia do mes invalido nao cadastra nada", async (t) => {
+test("set_bill_alert: dia do mes invalido nao cadastra nada e pergunta de novo", async (t) => {
   const BA2 = "551100090302";
   seed(BA2);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Conta esquisita", day_of_month: 32 }]);
   await handleIncomingMessage(evolutionMessage(BA2, "me lembra da conta esquisita todo dia 32"));
 
-  assert.match(sent[0].text, /entre 1 e 31/);
+  assert.match(sent[0].text, /O dia precisa ser de 1 a 31/);
   assert.equal(listBillAlerts(BA2).length, 0);
 });
 
 // Recorrencia por INTERVALO (ex: "comprar ração a cada 45 dias"), alternativa
 // ao dia fixo do mes -- mesma pergunta "ja fez?", mas contando em dias corridos
 // a partir de hoje em vez de um dia de calendario.
-test("set_bill_alert: intervalo em dias (\"a cada N dias\") cadastra o alerta", async (t) => {
+test('set_bill_alert: intervalo em dias ("a cada N dias") cadastra o alerta depois do 1', async (t) => {
   const BA11 = "551100090311";
   seed(BA11);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Ração do cachorro", interval_days: 45 }]);
   await handleIncomingMessage(evolutionMessage(BA11, "me lembra de comprar ração a cada 45 dias"));
-
   assert.match(sent[0].text, /a cada 45 dias/);
+  assert.equal(listBillAlerts(BA11).length, 0);
+
+  await handleIncomingMessage(evolutionMessage(BA11, "1"));
+  assert.match(sent[1].text, /a cada 45 dias/);
   const bills = listBillAlerts(BA11);
   assert.equal(bills.length, 1);
   assert.equal(bills[0].recurrence_type, "interval");
   assert.equal(bills[0].interval_days, 45);
 });
 
-test("set_bill_alert: sem dia do mes e sem intervalo pede pra esclarecer a recorrencia", async (t) => {
+test("set_bill_alert: sem dia do mes e sem intervalo pergunta quando avisar", async (t) => {
   const BA12 = "551100090312";
   seed(BA12);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Alguma coisa vaga" }]);
   await handleIncomingMessage(evolutionMessage(BA12, "me lembra de fazer alguma coisa"));
 
-  assert.match(sent[0].text, /recorrência/i);
+  assert.match(sent[0].text, /Quando devo te avisar de Alguma coisa vaga\?/);
+  assert.match(sent[0].text, /a cada 45 dias/);
   assert.equal(listBillAlerts(BA12).length, 0);
 });
 
@@ -1414,7 +1445,7 @@ test("bill checkin: alerta por intervalo confirmado avisa 'daqui a N dias', nao 
   seed(BA13);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Ração checkin", interval_days: 45 }]);
-  await handleIncomingMessage(evolutionMessage(BA13, "me lembra de comprar ração a cada 45 dias"));
+  await registerRecurrence(BA13, "me lembra de comprar ração a cada 45 dias");
   const bill = listBillAlerts(BA13)[0];
 
   setPendingBillCheckin(BA13, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
@@ -1437,7 +1468,7 @@ test("list_bill_alerts: lista os alertas cadastrados, isolado por numero", async
   const { sent, queueReply } = withMocks(t);
 
   queueReply([{ type: "set_bill_alert", description: "Conta de luz", day_of_month: 10 }]);
-  await handleIncomingMessage(evolutionMessage(BA3, "cadastra um alerta da luz todo dia 10"));
+  await registerRecurrence(BA3, "cadastra um alerta da luz todo dia 10");
 
   queueReply([{ type: "list_bill_alerts" }]);
   await handleIncomingMessage(evolutionMessage(BA4, "quais alertas de conta eu tenho"));
@@ -1453,7 +1484,7 @@ test("remove_bill_alert: desativa o alerta encontrado por texto", async (t) => {
   seed(BA5);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Internet fixa", day_of_month: 20 }]);
-  await handleIncomingMessage(evolutionMessage(BA5, "me lembra da internet fixa todo dia 20"));
+  await registerRecurrence(BA5, "me lembra da internet fixa todo dia 20");
 
   queueReply([{ type: "remove_bill_alert", query: "internet" }]);
   await handleIncomingMessage(evolutionMessage(BA5, "cancela o alerta da internet"));
@@ -1470,7 +1501,7 @@ test("remove_bill_alert: responder 'nao' mantem o alerta ativo", async (t) => {
   seed(BA6);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Gás encanado", day_of_month: 8 }]);
-  await handleIncomingMessage(evolutionMessage(BA6, "me lembra do gás encanado todo dia 8"));
+  await registerRecurrence(BA6, "me lembra do gás encanado todo dia 8");
 
   queueReply([{ type: "remove_bill_alert", query: "gás" }]);
   await handleIncomingMessage(evolutionMessage(BA6, "cancela o alerta do gás"));
@@ -1484,7 +1515,7 @@ test("remove_bill_alert: undo recria o alerta removido", async (t) => {
   seed(BA7);
   const { queueReply } = withMocks(t);
   queueReply([{ type: "set_bill_alert", description: "Condomínio undo", day_of_month: 12 }]);
-  await handleIncomingMessage(evolutionMessage(BA7, "me lembra do condomínio undo todo dia 12"));
+  await registerRecurrence(BA7, "me lembra do condomínio undo todo dia 12");
 
   queueReply([{ type: "remove_bill_alert", query: "condomínio undo" }]);
   await handleIncomingMessage(evolutionMessage(BA7, "cancela o alerta do condomínio undo"));
@@ -2920,7 +2951,7 @@ test("remove_recurring_expense: responder 'nao' mantem o gasto fixo ativo", asyn
   seed(RR1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "academia nao", amount: 89.9, category: "Saude", day_of_month: 5 }]);
-  await handleIncomingMessage(evolutionMessage(RR1, "todo dia 5 pago 89,90 de academia nao"));
+  await registerRecurrence(RR1, "todo dia 5 pago 89,90 de academia nao");
 
   queueReply([{ type: "remove_recurring_expense", query: "academia nao" }]);
   await handleIncomingMessage(evolutionMessage(RR1, "cancela o gasto fixo da academia nao"));
@@ -2934,7 +2965,7 @@ test("remove_recurring_expense: undo recria o gasto fixo removido", async (t) =>
   seed(RR2);
   const { queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "netflix undo", amount: 39.9, category: "Lazer", day_of_month: 15 }]);
-  await handleIncomingMessage(evolutionMessage(RR2, "todo dia 15 pago 39,90 de netflix undo"));
+  await registerRecurrence(RR2, "todo dia 15 pago 39,90 de netflix undo");
 
   queueReply([{ type: "remove_recurring_expense", query: "netflix undo" }]);
   await handleIncomingMessage(evolutionMessage(RR2, "cancela o gasto fixo do netflix undo"));
@@ -2958,7 +2989,7 @@ test("edit_recurring_expense: muda varios campos de uma vez, com confirmacao ant
   seed(ERC1);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "academia edit", amount: 89.9, category: "Saude", day_of_month: 5 }]);
-  await handleIncomingMessage(evolutionMessage(ERC1, "todo dia 5 pago 89,90 de academia edit"));
+  await registerRecurrence(ERC1, "todo dia 5 pago 89,90 de academia edit");
 
   queueReply([{ type: "edit_recurring_expense", query: "academia edit", new_amount: 99.9, new_day_of_month: 8 }]);
   await handleIncomingMessage(evolutionMessage(ERC1, "muda o gasto fixo da academia edit pra 99,90 e vencendo dia 8"));
@@ -2991,7 +3022,7 @@ test("edit_recurring_expense: renomear, responder 'nao', gasto fixo inexistente,
   assert.match(sent[0].text, /[Nn]ão achei/);
 
   queueReply([{ type: "set_recurring_expense", description: "streaming renomear", amount: 25, category: "Lazer", day_of_month: 20 }]);
-  await handleIncomingMessage(evolutionMessage(ERC2, "todo dia 20 pago 25 de streaming renomear"));
+  await registerRecurrence(ERC2, "todo dia 20 pago 25 de streaming renomear");
 
   queueReply([{ type: "edit_recurring_expense", query: "streaming renomear", new_day_of_month: 40 }]);
   await handleIncomingMessage(evolutionMessage(ERC2, "muda o gasto fixo do streaming renomear pro dia 40"));
@@ -3326,7 +3357,7 @@ test("confirmacao de gasto fixo: 1/2/3 com valor BR na correcao", async (t) => {
   seed(CF7);
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "set_recurring_expense", description: "academia fixo", amount: 89.9, category: "Saude", day_of_month: 5 }]);
-  await handleIncomingMessage(evolutionMessage(CF7, "todo dia 5 pago 89,90 de academia fixo"));
+  await registerRecurrence(CF7, "todo dia 5 pago 89,90 de academia fixo");
 
   queueReply([{ type: "edit_recurring_expense", query: "academia fixo", new_amount: 99.9 }]);
   await handleIncomingMessage(evolutionMessage(CF7, "muda o valor do gasto fixo da academia fixo pra 99,90"));

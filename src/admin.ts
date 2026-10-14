@@ -221,6 +221,7 @@ const TYPE_LABEL: Record<string, string> = {
   income: "💵 Entrada",
   income_report: "💵 Resumo de entradas",
   pending_expired: "⌛ Confirmação expirada",
+  recurrence_flow: "🔁 Cadastro de gasto fixo/alerta (passo)",
   pending_replaced: "🔄 Confirmação trocada por pedido novo",
   pending_not_understood: "❔ Resposta não entendida (confirmação mantida)",
   snooze_reminder: "⏰ Lembrete adiado",

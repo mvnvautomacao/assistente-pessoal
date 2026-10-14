@@ -20,6 +20,8 @@ export type PendingKind =
   | "field_menu"
   | "target_choice"
   | "edit_target"
+  // cadastro de gasto fixo / alerta de conta com previa (Card 13)
+  | "create_recurrence"
   | "undo"
   // exclusoes e remocoes com confirmacao 1/3 (Card 9)
   | "delete_event"
