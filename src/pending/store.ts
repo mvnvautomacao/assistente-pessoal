@@ -22,6 +22,8 @@ export type PendingKind =
   | "edit_target"
   // cadastro de gasto fixo / alerta de conta com previa (Card 13)
   | "create_recurrence"
+  // aviso "ja pagou a conta X?" com lista 1/2/3 e pergunta do valor (Card 15)
+  | "bill_checkin"
   | "undo"
   // exclusoes e remocoes com confirmacao 1/3 (Card 9)
   | "delete_event"

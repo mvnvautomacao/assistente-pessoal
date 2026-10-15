@@ -1,9 +1,10 @@
 import cron from "node-cron";
 import { sendText } from "../whatsapp/client";
-import { getDueBillAlerts, markBillAlertAsked } from "./service";
-import { setPendingBillCheckin } from "./pendingCheckin";
+import { getDueBillAlerts, markBillAlertAsked, snoozeBillAlert } from "./service";
+import { enqueueBillCheckin } from "./pendingCheckin";
+import { buildBillAlertQuestion } from "./checkinReply";
 import { logActivity } from "../activity/service";
-import { spDateString } from "../timeSP";
+import { addDaysToDateString, spDateString } from "../timeSP";
 
 export function startBillAlertScheduler() {
   // roda todo dia as 8h: pergunta "ja fez?" pros alertas cujo dia do mes bate
@@ -20,18 +21,17 @@ export function startBillAlertScheduler() {
           // Na ordem antiga, uma falha aqui deixava o sistema achando que
           // perguntou (e esperando a resposta) sem o cliente nunca ter visto
           // a pergunta -- a proxima mensagem dele recebia "ja resolveu X?" do nada.
-          const question =
-            bill.recurrence_type === "interval"
-              ? `📌 Hora de: ${bill.name}. Já resolveu, ou quer que eu te lembre amanhã?`
-              : `📌 Hoje é dia de pagar: ${bill.name}. Já pagou, ou quer que eu te lembre amanhã?`;
-          await sendText(bill.from_number, question);
+          await sendText(bill.from_number, buildBillAlertQuestion({ name: bill.name, recurrenceType: bill.recurrence_type }));
           markBillAlertAsked(bill.from_number, bill.id, today);
-          setPendingBillCheckin(bill.from_number, {
+          const position = enqueueBillCheckin(bill.from_number, {
             billAlertId: bill.id,
             name: bill.name,
             recurrenceType: bill.recurrence_type,
             intervalDays: bill.interval_days,
           });
+          // varios avisos no mesmo dia: o que espera na fila volta a perguntar amanha se a fila se perder
+          // (ex: o da vez vence esperando o valor)
+          if (position === "queued") snoozeBillAlert(bill.from_number, bill.id, addDaysToDateString(today, 1));
           logActivity(bill.from_number, "bill_alert", `pergunta enviada: ${bill.name}`);
         } catch (err) {
           console.error(`Erro ao avisar alerta de conta fixa ${bill.id}:`, err);

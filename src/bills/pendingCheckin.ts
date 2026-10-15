@@ -1,36 +1,79 @@
-// Cache curto e em memoria: guarda que o bot perguntou "ja pagou a conta X?"
-// e esta esperando a resposta (confirma pago, ou "lembra amanha"). Mesma ideia
-// dos outros caches de conversa (pendingRemoveRecurring.ts etc). TTL mais longo
-// que os outros -- e uma pergunta que o bot fez sozinho (nao o usuario), entao
-// pode demorar bem mais que alguns minutos pra ser respondida; se expirar antes
-// da resposta, o scheduler pergunta nesse mesmo dia de novo se rodar, ou no
-// dia seguinte (ver getDueBillAlerts).
-const TTL_MS = 20 * 60 * 60 * 1000;
+// Estado do aviso "ja pagou a conta X?" (Card 15), persistido em pending_state (ver pending/store.ts): sobrevive a
+// reinicio do servidor. Duas etapas: ask_paid (a lista 1/2/3, ate 20 h -- o bot que puxou o assunto, entao o
+// usuario pode demorar) e ask_value (esperando o valor, 10 min como as outras confirmacoes). Varios avisos no mesmo
+// dia viram uma fila: o primeiro e o da vez e os outros esperam em "queued".
+import { clearPending, getPending, setPending } from "../pending/store";
+import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
+import { BillRecurrence } from "./checkinReply";
 
-export interface PendingBillCheckin {
+export const BILL_CHECKIN_PAID_TTL_MS = 20 * 60 * 60 * 1000;
+
+export type BillCheckinStep = "ask_paid" | "ask_value";
+
+export interface BillCheckinItem {
   billAlertId: number;
   name: string;
-  recurrenceType: "day_of_month" | "interval";
+  recurrenceType: BillRecurrence;
   intervalDays: number | null;
+}
+
+export interface PendingBillCheckin extends BillCheckinItem {
+  step: BillCheckinStep;
+  queued: BillCheckinItem[];
   createdAt: number;
 }
 
-const pending = new Map<string, PendingBillCheckin>();
+const KIND = "bill_checkin";
+const VERSION = 1;
 
-export function setPendingBillCheckin(fromNumber: string, data: Omit<PendingBillCheckin, "createdAt">) {
-  pending.set(fromNumber, { ...data, createdAt: Date.now() });
+export function setPendingBillCheckin(
+  fromNumber: string,
+  data: Omit<PendingBillCheckin, "createdAt" | "queued" | "step"> & { step?: BillCheckinStep; queued?: BillCheckinItem[] }
+) {
+  const step: BillCheckinStep = data.step ?? "ask_paid";
+  const payload = { ...data, step, queued: data.queued ?? [] };
+  const ttlMs = step === "ask_value" ? EDIT_PENDING_TTL_MS : BILL_CHECKIN_PAID_TTL_MS;
+  setPending(fromNumber, KIND, { payload, label: data.name, ttlMs, version: VERSION });
 }
 
 export function getPendingBillCheckin(fromNumber: string): PendingBillCheckin | null {
-  const entry = pending.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    pending.delete(fromNumber);
-    return null;
-  }
-  return entry;
+  const stored = getPending<Omit<PendingBillCheckin, "createdAt">>(fromNumber, KIND, VERSION);
+  return stored ? { ...stored.payload, queued: stored.payload.queued ?? [], createdAt: stored.createdAt } : null;
 }
 
 export function clearPendingBillCheckin(fromNumber: string) {
-  pending.delete(fromNumber);
+  clearPending(fromNumber, KIND);
+}
+
+// novo aviso: vira o da vez se nao ha nenhum aberto; senao espera na fila (e nao entra duas vezes)
+export function enqueueBillCheckin(fromNumber: string, item: BillCheckinItem): "head" | "queued" {
+  const current = getPendingBillCheckin(fromNumber);
+  if (!current) {
+    setPendingBillCheckin(fromNumber, { ...item, step: "ask_paid" });
+    return "head";
+  }
+  if (current.billAlertId === item.billAlertId) {
+    // o mesmo alerta perguntando de novo (ex: dia seguinte): volta pra etapa da lista
+    setPendingBillCheckin(fromNumber, { ...item, step: "ask_paid", queued: current.queued });
+    return "head";
+  }
+  if (!current.queued.some((q) => q.billAlertId === item.billAlertId)) {
+    const { createdAt, ...rest } = current;
+    void createdAt;
+    setPendingBillCheckin(fromNumber, { ...rest, queued: [...current.queued, item] });
+  }
+  return "queued";
+}
+
+// o aviso da vez foi resolvido: o proximo da fila (se houver) vira o da vez, na etapa da lista
+export function advanceBillCheckin(fromNumber: string): BillCheckinItem | null {
+  const current = getPendingBillCheckin(fromNumber);
+  if (!current) return null;
+  const [next, ...rest] = current.queued;
+  if (!next) {
+    clearPendingBillCheckin(fromNumber);
+    return null;
+  }
+  setPendingBillCheckin(fromNumber, { ...next, step: "ask_paid", queued: rest });
+  return next;
 }

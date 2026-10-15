@@ -35,6 +35,9 @@ export function expiredNoticeText(expired: Pick<ExpiredPending, "kind" | "label"
   if (expired.kind === "undo") {
     return `⌛ O prazo pra desfazer "${expired.label ?? "essa ação"}" já passou (${TTL_MINUTES} minutos). Se precisar corrigir, é só pedir a edição de novo.`;
   }
+  if (expired.kind === "bill_checkin") {
+    return `⌛ A pergunta sobre "${expired.label ?? "a conta"}" expirou e eu não registrei nada. Volto a te avisar amanhã.`;
+  }
   if (LIST_KINDS.has(expired.kind)) {
     return `⌛ A lista de opções expirou (passaram mais de ${TTL_MINUTES} minutos). Me diz de novo o que você quer fazer, ex: "muda o mercado pra 40".`;
   }

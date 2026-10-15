@@ -63,10 +63,10 @@ function hasRequiredFields(interpretation: Interpretation): boolean {
 }
 
 // RN03 + RN04: todos os itens da lista segura (e completos) e a mensagem com palavras suficientes
-export function isSafeNewRequest(interpretations: Interpretation[] | null | undefined, text: string): boolean {
+export function isSafeNewRequest(interpretations: Interpretation[] | null | undefined, text: string, minWords: number = MIN_WORDS_FOR_NEW_REQUEST): boolean {
   if (!interpretations || interpretations.length === 0) return false;
   const words = countWords(text);
-  if (words < MIN_WORDS_FOR_NEW_REQUEST) return false;
+  if (words < minWords) return false;
   return interpretations.every(
     (i) => SAFE_NEW_REQUEST_TYPES.has(i.type) && hasRequiredFields(i) && (!CREATE_TYPES.includes(i.type) || words >= MIN_WORDS_FOR_CREATION)
   );

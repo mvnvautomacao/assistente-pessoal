@@ -166,7 +166,8 @@ import {
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
 import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
-import { setPendingBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
+import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
+import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply } from "./bills/checkinReply";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import {
   insertIncome,
@@ -937,8 +938,8 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
 
     const pendingBillCheckin = getPendingBillCheckin(from);
     if (pendingBillCheckin) {
-      await resolveBillCheckinAnswer(from, pendingBillCheckin, text);
-      return;
+      // devolve false quando a mensagem nao e pra ele (ex: "desfaz isso"): segue o fluxo normal
+      if (await resolveBillCheckinAnswer(from, pendingBillCheckin, text)) return;
     }
 
     const pendingReceipt = getPendingReceiptConfirmation(from);
@@ -1050,6 +1051,10 @@ interface NotUnderstoodContext {
   activity: string;
   label?: string | null;
   kind?: PendingKind;
+  // pedido novo seguro e atendido SEM descartar a pergunta aberta (o aviso de conta continua valendo) e sem a linha de troca
+  keepPending?: boolean;
+  // minimo de palavras pra ir pra IA (padrao 2; o aviso de conta aceita 1, ex: "ajuda")
+  minWords?: number;
 }
 
 // Card 12 (D-07): o resolvedor de uma confirmacao aberta NAO entendeu a mensagem. Antes de so repetir
@@ -1058,7 +1063,7 @@ interface NotUnderstoodContext {
 // de saida (que ja vem em notUnderstoodText). A IA e chamada no maximo uma vez por mensagem (e no maximo
 // SECOND_CHANCE_MAX_CALLS vezes por janela) e so depois que o resolvedor desistiu; nada da confirmacao e descartado antes de o pedido novo ser aprovado.
 async function handleNotUnderstood(from: string, text: string, notUnderstoodText: string, context: NotUnderstoodContext) {
-  const { activity, label = null, kind = "edit" } = context;
+  const { activity, label = null, kind = "edit", keepPending = false, minWords } = context;
   const what = label ?? "pergunta anterior";
 
   if (isUndoText(text)) {
@@ -1070,7 +1075,7 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
 
   let interpretations: Interpretation[] | null = null;
   let logged = false;
-  if (countWords(text) >= MIN_WORDS_FOR_NEW_REQUEST) {
+  if (countWords(text) >= (minWords ?? MIN_WORDS_FOR_NEW_REQUEST)) {
     const chance = takeSecondChance(secondChanceCalls.get(from) ?? [], Date.now());
     secondChanceCalls.set(from, chance.history);
     if (chance.allowed) {
@@ -1084,11 +1089,15 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
     }
   }
 
-  if (interpretations && isSafeNewRequest(interpretations, text)) {
+  if (interpretations && isSafeNewRequest(interpretations, text, minWords)) {
     secondChanceCalls.delete(from);
-    cancelAllPendings(from);
-    logActivity(from, "pending_replaced", `${activity}: "${what}" descartada por pedido novo: ${interpretations.map((i) => i.type).join(", ")}`);
-    await sendText(from, replacedPendingText(label, kind));
+    if (keepPending) {
+      logActivity(from, "pending_replaced", `${activity}: pedido novo atendido, "${what}" continua aberta: ${interpretations.map((i) => i.type).join(", ")}`);
+    } else {
+      cancelAllPendings(from);
+      logActivity(from, "pending_replaced", `${activity}: "${what}" descartada por pedido novo: ${interpretations.map((i) => i.type).join(", ")}`);
+      await sendText(from, replacedPendingText(label, kind));
+    }
     await dispatchInterpretations(from, interpretations);
     return;
   }
@@ -4890,35 +4899,49 @@ async function resolveRemoveBillAlertConfirmation(from: string, pending: Pending
   });
 }
 
-// Resposta a pergunta "ja fez X, ou quer que eu lembre amanha?" (disparada
-// pelo scheduler, ver bills/scheduler.ts). So duas saidas possiveis, sem
-// meio-termo -- se nao reconhecer nenhuma, pergunta nas mesmas duas opcoes de
-// novo, sem deixar a pendencia sem resposta.
-async function resolveBillCheckinAnswer(from: string, pending: PendingBillCheckin, answerText: string) {
-  const normalized = answerText.trim().toLowerCase();
-  const paid = /^(sim|s|j[aá] paguei|paguei|pago|quitei|j[aá] fiz|fiz|j[aá] comprei|comprei|resolvido|resolvi|feito|confirmo|confirma)\b/.test(
-    normalized
-  );
-  const snooze = /^(n[aã]o|n|ainda n[aã]o|amanh[aã]|lembra|manda amanh[aã]|depois|mais tarde)\b/.test(normalized);
+// Resposta ao aviso de conta fixa (disparado pelo scheduler, ver bills/scheduler.ts), Card 15. A resposta e lida
+// sobre a mensagem INTEIRA (bills/checkinReply.ts): 1 pago, 2 adiar, 3 pular, ou uma frase clara. Resposta ambigua
+// NUNCA fecha nem adia: repete a lista -- e um pedido novo e atendido normalmente enquanto o aviso continua aberto.
+// Devolve false quando a mensagem nao e pra este aviso (o fluxo normal segue).
+async function resolveBillCheckinAnswer(from: string, pending: PendingBillCheckin, answerText: string): Promise<boolean> {
+  // "desfaz isso" fala da ultima acao, nao do aviso
+  if (isUndoText(answerText)) return false;
 
-  if (!paid && !snooze) {
-    await sendText(from, `Não entendi — já resolveu "${pending.name}", ou quer que eu lembre amanhã?`);
-    return;
+  const reply = classifyBillCheckinReply(answerText);
+  if (reply === "unclear") {
+    await handleNotUnderstood(from, answerText, billCheckinRepeat(pending, { mentionName: pending.queued.length > 0 }), {
+      activity: "bill_alert",
+      label: pending.name,
+      kind: "question",
+      keepPending: true,
+      minWords: 1,
+    });
+    return true;
   }
 
-  clearPendingBillCheckin(from);
-  const today = spDateString();
-  if (paid) {
+  const today = spDateString(new Date(Date.now()));
+  const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
+  if (reply === "paid") {
     confirmBillAlertPaid(from, pending.billAlertId, today);
     logActivity(from, "bill_alert", `confirmado: ${pending.name}`);
-    const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
     await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" ${nextLabel}.`);
-    return;
+  } else if (reply === "skip") {
+    confirmBillAlertPaid(from, pending.billAlertId, today);
+    logActivity(from, "bill_alert", `pulado neste ciclo: ${pending.name}`);
+    await sendText(from, `Beleza, pulei ${pending.name} neste ciclo. Te aviso de novo ${nextLabel}.`);
+  } else {
+    snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
+    logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
+    await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
   }
+  await moveToNextBillCheckin(from);
+  return true;
+}
 
-  snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
-  logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
-  await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
+// terminou o aviso da vez: se havia outros esperando na fila, o proximo vira o da vez e a lista dele sai de novo
+async function moveToNextBillCheckin(from: string) {
+  const next = advanceBillCheckin(from);
+  if (next) await sendText(from, buildBillAlertQuestion(next));
 }
 
 async function handleInterpretation(from: string, interpretation: Interpretation, resolvedTargetId?: number) {
