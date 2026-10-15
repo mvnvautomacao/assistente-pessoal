@@ -2160,7 +2160,7 @@ test("list_expenses com intervalo de dias mostra detalhado com total, e 'qual o 
   assert.match(sent[0].text, /intervalo um/);
   assert.match(sent[0].text, /intervalo dois/);
   assert.doesNotMatch(sent[0].text, /fora do intervalo/);
-  assert.match(sent[0].text, /Total: R[$]42.50/);
+  assert.match(sent[0].text, /Total: R\$ 42,50/);
 
   queueReply([{ type: "total_last_list" }]);
   await handleIncomingMessage(evolutionMessage(LT, "qual o total?"));
@@ -2217,14 +2217,14 @@ test("balance: cartao nao abate do saldo, so mostra o gasto no cartao e o limite
 
   queueReply([{ type: "balance", period: "month" }]);
   await handleIncomingMessage(evolutionMessage(BL, "qual meu saldo"));
-  assert.match(sent[0].text, /Saldo: R[$]900\.00/);
-  assert.match(sent[0].text, /No cartão: R[$]300\.00/);
+  assert.match(sent[0].text, /Saldo: R\$ 900,00/);
+  assert.match(sent[0].text, /No cartão: R\$ 300,00/);
   assert.doesNotMatch(sent[0].text, /limite disponível/);
 
   setPaymentMethodLimit(BL, card.id, 1000);
   queueReply([{ type: "balance", period: "month" }]);
   await handleIncomingMessage(evolutionMessage(BL, "qual meu saldo"));
-  assert.match(sent[1].text, /limite disponível R[$]700\.00 de R[$]1000\.00/);
+  assert.match(sent[1].text, /limite disponível R\$ 700,00 de R\$ 1\.000,00/);
 });
 
 // Pedido do usuario: nao tinha como mandar o bot PARAR -- qualquer texto
@@ -4283,7 +4283,7 @@ test("card 5: 'recebi 3500 de salario' continua registrando (nao vira edicao) e 
   assert.match(sent[0].text, /💵 Entrada registrada: R\$3500\.00 — salario/);
   queueReply([{ type: "income_report", period: "month" }]);
   await handleIncomingMessage(evolutionMessage(I0, "quanto recebi esse mes"));
-  assert.match(sent[1].text, /Total: R\$3500\.00 em 1 entrada\(s\)/);
+  assert.match(sent[1].text, /Total: R\$ 3\.500,00 em 1 entrada\(s\)/);
   assert.doesNotMatch(sent[1].text, /1\. /);
   queueReply([{ type: "list_incomes", period: "month" }]);
   await handleIncomingMessage(evolutionMessage(I0, "minhas entradas"));

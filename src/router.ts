@@ -207,6 +207,7 @@ import {
   incomeLine,
 } from "./confirmation/incomePreview";
 import { getRangeBalance } from "./expenses/balance";
+import { periodExpenseList, runBalance, runExpenseReport, runIncomeReport, runListExpenses, runListIncomes } from "./expenses/queries";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
 import { replyWithUndo } from "./undo/replyWithUndo";
@@ -512,9 +513,15 @@ Quando você chegar perto ou passar desse valor no mês, eu aviso automaticament
 É só perguntar, do jeito que quiser.
 
 Exemplos:
-• "quanto gastei esse mês"
-• "quanto gastei essa semana"
-• "últimos 15 dias quanto gastei em mercado"
+• "quanto gastei esse mês" / "essa semana" / "em setembro" / "no mês passado"
+• "quanto gastei no Nubank em setembro" (por forma de pagamento) ou "em mercado" (por categoria)
+• "gastos de 10 a 20 de setembro"
+• "quanto recebi no mês passado", "minhas entradas de agosto" e "saldo de setembro"
+
+Pra ver os gastos um a um:
+• "mostra as 10 últimas compras" ou "últimas 5 de mercado no pix" (até 20 por vez)
+• "gastos de mercado essa semana" ou "gastos no pix hoje"
+Em listas grandes eu mostro as primeiras e aviso o resto, com o total de tudo e o link do painel. Depois da lista, "muda o valor do 2 pra 45" e "apaga o 3" funcionam.
 
 Eu também mando um resumo automático toda sexta-feira às 9h, e outro no último dia de cada mês, sem você precisar pedir. Pra mudar o dia da semana: "quero receber toda quarta".`;
     case "edit_expense":
@@ -2827,35 +2834,6 @@ async function finalizePendingExpensePaymentMethodByTimeout(from: string, pendin
   }
 }
 
-// gastos individuais de mais de 1 dia, agrupados por dia com um cabecalho — mas
-// numerados em sequencia unica (1, 2, 3...) pra "edita o 2" continuar funcionando
-// independente de qual dia o item 2 seja.
-function buildGroupedExpenseListText(items: ExpenseListItem[], label: string): string {
-  const days: string[] = [];
-  const byDay = new Map<string, ExpenseListItem[]>();
-  for (const item of items) {
-    const day = item.date.slice(0, 10);
-    if (!byDay.has(day)) {
-      byDay.set(day, []);
-      days.push(day);
-    }
-    byDay.get(day)!.push(item);
-  }
-
-  let counter = 0;
-  const sections = days.map((day) => {
-    const lines = byDay.get(day)!.map((item) => {
-      counter += 1;
-      const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
-      return `${counter}. R$${item.amount.toFixed(2)} — ${item.description} (${details})`;
-    });
-    return `📅 ${formatDateOnly(day)}\n${lines.join("\n")}`;
-  });
-
-  const total = items.reduce((sum, i) => sum + i.amount, 0);
-  return `🧾 Gastos — ${label}\n\n${sections.join("\n\n")}\n\n💰 Total: R$${total.toFixed(2)}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`;
-}
-
 // resposta a "resumo por categoria ou detalhado por dia?" — se nao der pra saber
 // qual das duas, pergunta de novo em vez de escolher por conta propria
 async function resolveListChoice(from: string, days: number, answerText: string) {
@@ -2869,7 +2847,7 @@ async function resolveListChoice(from: string, days: number, answerText: string)
   }
 
   clearPendingListChoice(from);
-  const range = lastNDaysRange(days);
+  const range = lastNDaysRange(days, spDateString(new Date(Date.now())));
 
   if (wantsSummary) {
     logActivity(from, "expense_report", range.label);
@@ -2877,15 +2855,12 @@ async function resolveListChoice(from: string, days: number, answerText: string)
     return;
   }
 
-  const items = getExpensesBetween(from, range.start, range.end);
-  if (!items.length) {
-    logActivity(from, "list_expenses", `nenhum gasto em ${range.label}`);
-    await sendText(from, `Nenhum gasto registrado em ${range.label}.`);
-    return;
+  const outcome = periodExpenseList(from, range);
+  logActivity(from, "list_expenses", outcome.log);
+  if (outcome.type === "reply") {
+    if (outcome.shownIds) setLastShownExpenses(from, outcome.shownIds, outcome.label ?? range.label);
+    await sendText(from, outcome.text);
   }
-  setLastShownExpenses(from, items.map((item) => item.id), range.label);
-  logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label} (detalhado)`);
-  await sendText(from, buildGroupedExpenseListText(items, range.label));
 }
 
 // resposta a "confirma que quer cancelar o evento X?" -- so exclui de verdade
@@ -5321,24 +5296,9 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "expense_report": {
-      const range = interpretation.days
-        ? lastNDaysRange(interpretation.days)
-        : interpretation.period === "week"
-          ? currentWeekRange()
-          : currentMonthRange();
-
-      const category = interpretation.category
-        ? findCategoryByName(from, interpretation.category) ?? findCategoryMentionedIn(from, interpretation.category)
-        : null;
-
-      const text = buildExpenseReportText(range, {
-        compare: true,
-        fromNumber: from,
-        categoryId: category?.id,
-        categoryName: category?.name,
-      });
-      logActivity(from, "expense_report", `${range.label}${category ? ` (${category.name})` : ""}`);
-      await sendText(from, text);
+      const report = runExpenseReport(from, interpretation);
+      logActivity(from, "expense_report", report.log);
+      await sendText(from, report.text);
       break;
     }
     case "set_report_day": {
@@ -5653,66 +5613,22 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "list_expenses": {
-      // periodo de mais de 1 dia: pergunta se quer o resumo por categoria (como
-      // era antes) ou o detalhado, gasto a gasto separado por dia, em vez de
-      // decidir por conta propria
-      const hasDateRange = Boolean(interpretation.date_start && interpretation.date_end);
-      if (!hasDateRange && interpretation.days && interpretation.days > 1) {
-        setPendingListChoice(from, interpretation.days);
-        logActivity(from, "list_expenses", `perguntou formato pros ultimos ${interpretation.days} dias`);
+      // Card 14: ultimas N, filtros por categoria/forma de pagamento, mes e intervalo (ver expenses/queries.ts)
+      const outcome = runListExpenses(from, interpretation);
+      logActivity(from, "list_expenses", outcome.log);
+      if (outcome.type === "ask_format") {
+        // periodo de mais de 1 dia sem filtro: pergunta se quer o resumo por categoria ou o detalhado
+        setPendingListChoice(from, outcome.days);
         await sendText(
           from,
           `Você quer o *resumo por categoria* (com o total, como antes) ou o *detalhado*, com cada gasto separado por dia? Responde "resumo" ou "detalhado".`
         );
         break;
       }
-
-      // pedido vago tipo "editar compras", sem dia nenhum mencionado: antes de
-      // mostrar a lista, avisa qual dia foi assumido, pra nao confundir quem
-      // queria outro dia
-      const noDaySpecified = !interpretation.date && !interpretation.days && !hasDateRange;
-      if (noDaySpecified) {
-        await sendText(
-          from,
-          `Você não disse o dia, então vou te mostrar as compras de hoje. Se quiser outro dia, é só especificar, ex: "editar compras de ontem" ou "gastos do dia 20".`
-        );
-      }
-
-      const range = hasDateRange
-        ? {
-            start: interpretation.date_start!.slice(0, 10),
-            end: addOneDayToDateString(interpretation.date_end!),
-            label: `${formatDateOnly(interpretation.date_start!)} a ${formatDateOnly(interpretation.date_end!)}`,
-          }
-        : interpretation.date
-        ? singleDayRange(interpretation.date.slice(0, 10), formatDateOnly(interpretation.date))
-        : interpretation.days
-          ? lastNDaysRange(interpretation.days)
-          : singleDayRange(spDateString(), "hoje");
-
-      const items = getExpensesBetween(from, range.start, range.end);
-      if (!items.length) {
-        logActivity(from, "list_expenses", `nenhum gasto em ${range.label}`);
-        await sendText(from, `Nenhum gasto registrado em ${range.label}.`);
-        break;
-      }
-
-      setLastShownExpenses(from, items.map((item) => item.id), range.label);
-      if (hasDateRange) {
-        // intervalo de varios dias: sempre detalhado, separado por dia, ja com o total
-        logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label} (detalhado)`);
-        await sendText(from, buildGroupedExpenseListText(items, range.label));
-        break;
-      }
-      const lines = items.map((item, idx) => {
-        const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
-        return `${idx + 1}. R$${item.amount.toFixed(2)} — ${item.description} (${details}) — ${formatDateOnly(item.date)}`;
-      });
-      logActivity(from, "list_expenses", `${items.length} gasto(s) em ${range.label}`);
-      await sendText(
-        from,
-        `🧾 Gastos — ${range.label}\n\n${lines.join("\n")}\n\n💰 Total: R$${items.reduce((sum, i) => sum + i.amount, 0).toFixed(2)}\n\nPra editar um, é só dizer, ex: "muda o valor do 2 pra 45" ou "o 2 foi no pix".`
-      );
+      if (outcome.preface) await sendText(from, outcome.preface);
+      // a lista mostrada vale pro "muda o valor do 2 pra 45" e "apaga o 3" (so os itens que apareceram)
+      if (outcome.shownIds) setLastShownExpenses(from, outcome.shownIds, outcome.label ?? "");
+      await sendText(from, outcome.text);
       break;
     }
     case "delete_expense": {
@@ -5968,25 +5884,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "list_incomes": {
-      const range = interpretation.days
-        ? lastNDaysRange(interpretation.days)
-        : interpretation.period === "week"
-          ? currentWeekRange()
-          : currentMonthRange();
-      const all = listIncomesBetween(from, range.start, range.end);
-      if (!all.length) {
-        logActivity(from, "list_incomes", `nenhuma entrada em ${range.label}`);
-        await sendText(from, `💵 Entradas — ${range.label}\n\nNenhuma entrada registrada nesse período.`);
-        break;
-      }
-      const shown = all.slice(0, MAX_INCOME_LIST);
-      const summary = getIncomeSummaryBetween(range.start, range.end, from);
-      setLastShownIncomes(from, shown.map((i) => i.id), range.label);
-      logActivity(from, "list_incomes", `${all.length} entrada(s) em ${range.label}`);
-      await sendText(
-        from,
-        formatIncomeList({ label: range.label, items: shown, total: summary.total, totalCount: all.length, dashboardUrl: config.dashboardUrl })
-      );
+      const incomes = runListIncomes(from, interpretation);
+      logActivity(from, "list_incomes", incomes.log);
+      if (incomes.shownIds) setLastShownIncomes(from, incomes.shownIds, incomes.label ?? "");
+      await sendText(from, incomes.text);
       break;
     }
     case "edit_income": {
@@ -6022,48 +5923,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "income_report": {
-      const range = interpretation.days
-        ? lastNDaysRange(interpretation.days)
-        : interpretation.period === "week"
-          ? currentWeekRange()
-          : currentMonthRange();
-      const summary = getIncomeSummaryBetween(range.start, range.end, from);
-      logActivity(from, "income_report", `${range.label}: R$${summary.total.toFixed(2)} em ${summary.count} entrada(s)`);
-      if (!summary.count) {
-        await sendText(from, `💵 Entradas — ${range.label}\n\nNenhuma entrada registrada nesse período.`);
-        break;
-      }
-      await sendText(from, `💵 Entradas — ${range.label}\n\nTotal: R$${summary.total.toFixed(2)} em ${summary.count} entrada(s)`);
+      const report = runIncomeReport(from, interpretation);
+      logActivity(from, "income_report", report.log);
+      await sendText(from, report.text);
       break;
     }
     case "balance": {
-      const range = interpretation.days
-        ? lastNDaysRange(interpretation.days)
-        : interpretation.period === "week"
-          ? currentWeekRange()
-          : currentMonthRange();
-      // regra: gasto no Pix/dinheiro (e sem forma de pagamento) abate das entradas;
-      // gasto no cartao so abate do limite do cartao (se o usuario informou um --
-      // sem limite, nao mostra nada dele alem do quanto foi gasto no cartao)
-      const bal = getRangeBalance(from, range.start, range.end);
-      const balanceEmoji = bal.balance >= 0 ? "✅" : "🔻";
-      const cardLines =
-        bal.spentCard > 0 || bal.cards.length
-          ? `
-
-💳 No cartão: R$${bal.spentCard.toFixed(2)} (não abate do saldo)` +
-            bal.cards.map((c) => `
-   • ${c.name}: limite disponível R$${c.available.toFixed(2)} de R$${c.limit.toFixed(2)}`).join("")
-          : "";
-      logActivity(from, "balance", `${range.label}: entradas R$${bal.incomeTotal.toFixed(2)}, gastos (pix/dinheiro) R$${bal.spentNonCard.toFixed(2)}, saldo R$${bal.balance.toFixed(2)}`);
-      await sendText(
-        from,
-        `📊 Saldo — ${range.label}
-
-💵 Entradas: R$${bal.incomeTotal.toFixed(2)}
-💰 Gastos (Pix/dinheiro): R$${bal.spentNonCard.toFixed(2)}
-${balanceEmoji} Saldo: R$${bal.balance.toFixed(2)}${cardLines}`
-      );
+      const balance = runBalance(from, interpretation);
+      logActivity(from, "balance", balance.log);
+      await sendText(from, balance.text);
       break;
     }
     case "undo": {

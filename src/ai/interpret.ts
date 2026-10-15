@@ -40,7 +40,7 @@ export type Interpretation =
   | { type: "delete_reminder"; query: string }
   | { type: "edit_reminder"; query: string; new_message?: string; new_date?: string; new_time?: string }
   | { type: "report"; days?: number; month?: string }
-  | { type: "expense_report"; period?: "week" | "month"; days?: number; category?: string }
+  | { type: "expense_report"; period?: "week" | "month"; days?: number; category?: string; payment_method?: string; month?: string; date_start?: string; date_end?: string }
   | { type: "correct_category"; category: string; query?: string }
   | { type: "set_default_payment"; payment_method: string }
   | { type: "set_report_day"; day_of_week?: string }
@@ -84,8 +84,8 @@ export type Interpretation =
   | { type: "remove_bill_alert"; query: string }
   | { type: "edit_bill_alert"; query: string; new_name?: string; day_of_month?: number; interval_days?: number }
   | { type: "income"; amount: number; description: string; date: string }
-  | { type: "income_report"; period?: "week" | "month"; days?: number }
-  | { type: "list_incomes"; period?: "week" | "month"; days?: number }
+  | { type: "income_report"; period?: "week" | "month"; days?: number; month?: string; date_start?: string; date_end?: string }
+  | { type: "list_incomes"; period?: "week" | "month"; days?: number; month?: string; date_start?: string; date_end?: string }
   | {
       type: "edit_income";
       list_ref?: number;
@@ -96,7 +96,7 @@ export type Interpretation =
       value?: string;
     }
   | { type: "delete_income"; list_ref?: number; query?: string }
-  | { type: "balance"; period?: "week" | "month"; days?: number }
+  | { type: "balance"; period?: "week" | "month"; days?: number; month?: string; date_start?: string; date_end?: string }
   | {
       type: "help";
       topic?:
@@ -112,7 +112,7 @@ export type Interpretation =
         | "recurring_expense"
         | "income";
     }
-  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string }
+  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string }
   | { type: "total_last_list" }
   | { type: "delete_expense"; list_ref?: number; query?: string }
   | {
@@ -206,7 +206,7 @@ const ACTION_SCHEMA = {
     category: {
       type: "string",
       description:
-        "Categoria do gasto (type=expense, type=installment_expense ou type=set_recurring_expense), a nova categoria desejada (type=correct_category), o nome da categoria a criar (type=create_category), o filtro de categoria (type=expense_report ou type=list_budgets, opcional), a categoria do orcamento (type=set_budget, type=remove_budget), a categoria de ORIGEM que vai ser apagada (type=merge_categories), a categoria a apagar (type=delete_category) ou a renomear (type=rename_category, nome ATUAL -- o nome novo vai em 'new_name'), ou a categoria de ORIGEM (type=bulk_recategorize, so quando scope='from_category' -- o destino vai em 'to_category'). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido (exceto em create_category, que e justamente pra criar uma nova).",
+        "Categoria do gasto (type=expense, type=installment_expense ou type=set_recurring_expense), a nova categoria desejada (type=correct_category), o nome da categoria a criar (type=create_category), o filtro de categoria (type=expense_report, type=list_expenses ou type=list_budgets, opcional -- ex: 'gastos de mercado', 'ultimas 5 de mercado'), a categoria do orcamento (type=set_budget, type=remove_budget), a categoria de ORIGEM que vai ser apagada (type=merge_categories), a categoria a apagar (type=delete_category) ou a renomear (type=rename_category, nome ATUAL -- o nome novo vai em 'new_name'), ou a categoria de ORIGEM (type=bulk_recategorize, so quando scope='from_category' -- o destino vai em 'to_category'). Prefira uma das categorias existentes informadas no system prompt quando fizer sentido (exceto em create_category, que e justamente pra criar uma nova).",
     },
     total_amount: {
       type: "number",
@@ -238,11 +238,16 @@ const ACTION_SCHEMA = {
     },
     date_start: {
       type: "string",
-      description: "Data ISO 8601 (so a data) de inicio do intervalo, so para type=list_expenses com intervalo de dias ou type=bulk_recategorize com scope='period' quando o usuario deu um intervalo exato (ex: 'gastos de 10 a 20 desse mes').",
+      description: "Data ISO 8601 (so a data) de inicio de um intervalo exato que o usuario pediu (ex: 'gastos de 10 a 20 de setembro', 'entradas de 10 a 20', 'saldo de 1 a 15'). Vale para type=list_expenses, type=expense_report, type=income_report, type=list_incomes, type=balance e type=bulk_recategorize (scope='period'). Use junto com 'date_end'; resolva o mes e o ano pelo contexto.",
     },
     date_end: {
       type: "string",
-      description: "Data ISO 8601 (so a data) de fim do intervalo (inclusive), so para type=bulk_recategorize com scope='period' ou type=list_expenses com intervalo de dias, usado junto com 'date_start'.",
+      description: "Data ISO 8601 (so a data) de fim do intervalo (inclusive), usado junto com 'date_start' (mesmos tipos de 'date_start').",
+    },
+    last_n: {
+      type: "number",
+      description:
+        "So para type=list_expenses: quantos dos gastos MAIS RECENTES listar ('as 10 ultimas compras' -> 10, 'ultimas 5 de mercado' -> 5, 'mostra as ultimas compras' sem numero -> 10). Preencha quando o usuario pede 'ultimas/ultimos N' (ou so 'ultimas compras'); NAO use 'days' nesse caso. Pode vir junto com 'category' e/ou 'payment_method'.",
     },
     scope: {
       type: "string",
@@ -253,7 +258,7 @@ const ACTION_SCHEMA = {
     payment_method: {
       type: "string",
       description:
-        "Forma de pagamento mencionada (type=expense, type=installment_expense ou type=set_recurring_expense, so se o usuario mencionou explicitamente), a forma de pagamento a definir como padrao (type=set_default_payment), ou a forma de pagamento a renomear (type=rename_payment_method, nome ATUAL -- o nome novo vai em 'new_name'). Prefira uma das formas de pagamento existentes informadas no system prompt quando fizer sentido, ex: Pix, Dinheiro, ou o nome de um cartao especifico.",
+        "Forma de pagamento mencionada (type=expense, type=installment_expense ou type=set_recurring_expense, so se o usuario mencionou explicitamente), a forma de pagamento a definir como padrao (type=set_default_payment), ou a forma de pagamento a renomear (type=rename_payment_method, nome ATUAL -- o nome novo vai em 'new_name'). Prefira uma das formas de pagamento existentes informadas no system prompt quando fizer sentido, ex: Pix, Dinheiro, ou o nome de um cartao especifico. Em type=list_expenses ou type=expense_report e o FILTRO de forma de pagamento da consulta (ex: 'gastos no pix hoje', 'quanto gastei no Nubank em setembro').",
     },
     description: {
       type: "string",
@@ -449,18 +454,18 @@ const ACTION_SCHEMA = {
     days: {
       type: "number",
       description:
-        "Quantidade de dias a frente pro relatorio de agenda (type=report, se nao especificar use 7), quantidade de dias pra tras ate hoje pro resumo de gastos ou lista de gastos (type=expense_report ou type=list_expenses, so quando o usuario menciona um numero de dias especifico, ex: 'ultimos 15 dias'), ou pro periodo de bulk_recategorize (scope='period').",
+        "Quantidade de dias a frente pro relatorio de agenda (type=report, se nao especificar use 7), quantidade de dias pra tras ate hoje pro resumo de gastos ou lista de gastos (type=expense_report, type=list_expenses, type=income_report, type=list_incomes ou type=balance, so quando o usuario menciona um numero de dias especifico, ex: 'ultimos 15 dias'), ou pro periodo de bulk_recategorize (scope='period').",
     },
     period: {
       type: "string",
       enum: ["week", "month"],
       description:
-        "Periodo do resumo de gastos (type=expense_report ou type=bulk_recategorize com scope='period', so quando 'days' nao foi usado): 'week' pros ultimos 7 dias, 'month' pro mes atual. Se o usuario nao especificar nem period nem um numero de dias em expense_report, use period='month'.",
+        "Periodo do resumo de gastos, entradas ou saldo (type=expense_report, type=income_report, type=list_incomes, type=balance ou type=bulk_recategorize com scope='period', so quando 'days', 'month' e 'date_start'/'date_end' nao foram usados): 'week' pros ultimos 7 dias, 'month' pro mes atual. Se o usuario nao especificar nem period nem um numero de dias em expense_report, use period='month'.",
     },
     month: {
       type: "string",
       description:
-        "Mes especifico no formato 'YYYY-MM' (so para type=report, quando o usuario pede a agenda de um MES nomeado, ex: 'agenda de novembro' -> resolva o ano certo). Nao preencher junto com 'days'.",
+        "Mes especifico no formato 'YYYY-MM': a agenda de um MES nomeado (type=report, ex: 'agenda de novembro') ou um mes nas consultas de dinheiro (type=expense_report, type=income_report, type=list_incomes, type=balance e type=list_expenses, ex: 'quanto gastei em setembro' -> mes de setembro, 'saldo do mes passado' -> o mes anterior ao atual, 'entradas de agosto do ano passado'). Resolva SEMPRE o ano certo pela data de hoje. Nao preencher junto com 'days'.",
     },
     day_of_week: {
       type: "string",
@@ -564,6 +569,8 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
 
 Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.
+
+Consultas de gastos e entradas: "as 10 ultimas compras", "ultimas 5 de mercado" e "mostra as ultimas compras" = list_expenses com last_n (10 se nao houver numero) e, quando citados, category e/ou payment_method; "gastos no pix hoje" = list_expenses com payment_method='Pix' e date de hoje; "gastos de mercado" sem periodo = list_expenses com category (sem date/days); "quanto gastei no Nubank em setembro" = expense_report com payment_method e month='YYYY-MM'; "gastos de 10 a 20 de setembro" = list_expenses com date_start/date_end; "quanto recebi no mes passado" = income_report com month do mes anterior; "saldo de setembro" = balance com month; "entradas de 10 a 20" = list_incomes com date_start/date_end. Resolva o ano pela data de hoje (mes nomeado sem ano = o mais recente que ja comecou, a nao ser que o usuario diga outro ano).
 
 Cadastro de GASTO FIXO e de ALERTA de conta (aceite erros de digitacao, ex: "Cadatrar gasto fixo"): (1) se a mensagem tem INTERVALO ("a cada 45 dias", "de 15 em 15 dias", "a cada 2 meses" = 60 dias) e ALERTA (set_bill_alert com interval_days; gasto fixo so tem dia do mes) -- se vier junto um valor ("racao 80 reais a cada 45 dias"), ignore o valor. (2) dia do mes + valor + nome ("todo dia 10 pago 50 de internet") = set_recurring_expense; dia do mes + palavras de aviso ("me lembra", "me avisa", "alerta") = set_bill_alert. (3) "gasto fixo", "despesa fixa", "lanca sozinho", "debita" = gasto fixo: se faltar nome, valor ou dia, NAO invente -- classifique como unknown com likely_intent='recurring_expense' preenchendo SO o que foi dito (ex: "15 reais gasto fixo dia 10" -> amount=15, day_of_month=10, sem description; "cadastrar gasto fixo" -> so likely_intent). (4) "conta fixa" ou "fixo" SEM valor, sem intervalo e sem palavra de aviso (ex: "conta fixa internet dia 10") -> unknown com likely_intent='recurring_unclear' (description e day_of_month preenchidos). Nunca invente valor, nome ou dia.${buildShownListContext(fromNumber)}`;
 }

@@ -807,6 +807,7 @@ test("Card 7 RN11: a edicao de gasto fixo tambem termina com a dica de desfazer,
 test("D-05 (corrigido no Card 10): evento EM ANDAMENTO e encontrado -- da pra esticar o termino depois de comecar", async (t) => {
   const N = "551100091850";
   seed(N);
+  t.mock.method(Date, "now", () => new Date("2026-10-14T12:00:00-03:00").getTime()); // meio-dia de SP: +3 h nao vira o dia
   const start = new Date(Date.now() - 30 * 60 * 1000);
   const end = new Date(Date.now() + 30 * 60 * 1000);
   eventsService.createEvent({ fromNumber: N, title: "Reuniao em andamento", start: start.toISOString(), end: end.toISOString() });

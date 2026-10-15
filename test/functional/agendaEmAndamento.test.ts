@@ -74,6 +74,7 @@ test("Card 10 -- menu 'editar > Evento' lista o evento em andamento (com ' · em
 test("Card 10 -- esticar o termino da reuniao EM ANDAMENTO: previa mostra 'Término: antes → depois' e confirma", async (t) => {
   const N = "551100092502";
   seed(N);
+  t.mock.method(Date, "now", () => new Date("2026-10-14T12:00:00-03:00").getTime()); // meio-dia de SP: +3 h nao vira o dia
   const event = createOngoing(N, "Reuniao esticar");
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "edit_event", query: "reuniao esticar", new_duration_minutes: 180 }]);

@@ -438,18 +438,19 @@ export function updateExpenseCategory(fromNumber: string, expenseId: number, cat
 
 // os N gastos mais recentes de um numero, pra recategorizacao em lote ("muda os
 // ultimos 5 gastos pra mercado")
-export function getRecentExpensesList(fromNumber: string, n: number): ExpenseListItem[] {
+export function getRecentExpensesList(fromNumber: string, n: number, filters: ExpenseQueryFilters = {}): ExpenseListItem[] {
+  const where = expenseFilterConditions(fromNumber, filters);
   return db
     .prepare(
       `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
-       WHERE e.from_number = ?
+       WHERE ${where.sql}
        ORDER BY e.date DESC, e.id DESC
        LIMIT ?`
     )
-    .all(fromNumber, n) as unknown as ExpenseListItem[];
+    .all(...where.params, n) as unknown as ExpenseListItem[];
 }
 
 // todos os gastos de uma categoria especifica, pra recategorizacao em lote
@@ -531,6 +532,37 @@ export function backdatePendingCategorizationForTests(id: number, ageMs: number)
 
 // --- consultas pro dashboard ---
 
+// filtros opcionais das consultas de gastos (Card 14): categoria, forma de pagamento, periodo [start, end) e limite
+export interface ExpenseQueryFilters {
+  categoryId?: number;
+  paymentMethodId?: number;
+  start?: string;
+  end?: string;
+  limit?: number;
+}
+
+function expenseFilterConditions(fromNumber: string, filters: ExpenseQueryFilters): { sql: string; params: (string | number)[] } {
+  const conditions = ["e.from_number = ?"];
+  const params: (string | number)[] = [fromNumber];
+  if (filters.start !== undefined) {
+    conditions.push("e.date >= ?");
+    params.push(filters.start);
+  }
+  if (filters.end !== undefined) {
+    conditions.push("e.date < ?");
+    params.push(filters.end);
+  }
+  if (filters.categoryId !== undefined) {
+    conditions.push("e.category_id = ?");
+    params.push(filters.categoryId);
+  }
+  if (filters.paymentMethodId !== undefined) {
+    conditions.push("e.payment_method_id = ?");
+    params.push(filters.paymentMethodId);
+  }
+  return { sql: conditions.join(" AND "), params };
+}
+
 export interface ExpenseListItem {
   id: number;
   amount: number;
@@ -542,17 +574,19 @@ export interface ExpenseListItem {
 
 // start inclusivo, end exclusivo, ambos "YYYY-MM-DD" — gastos individuais (nao o
 // resumo por categoria), usado pro fluxo de listar/editar gastos pelo WhatsApp.
-export function getExpensesBetween(fromNumber: string, start: string, end: string): ExpenseListItem[] {
+export function getExpensesBetween(fromNumber: string, start: string, end: string, filters: ExpenseQueryFilters = {}): ExpenseListItem[] {
+  const where = expenseFilterConditions(fromNumber, { ...filters, start, end });
+  const limit = filters.limit !== undefined ? " LIMIT ?" : "";
   return db
     .prepare(
       `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
-       WHERE e.from_number = ? AND e.date >= ? AND e.date < ?
-       ORDER BY e.date DESC, e.id DESC`
+       WHERE ${where.sql}
+       ORDER BY e.date DESC, e.id DESC${limit}`
     )
-    .all(fromNumber, start, end) as unknown as ExpenseListItem[];
+    .all(...where.params, ...(filters.limit !== undefined ? [filters.limit] : [])) as unknown as ExpenseListItem[];
 }
 
 export function getExpensesForMonth(fromNumber: string, yearMonth: string): ExpenseListItem[] {
@@ -661,7 +695,8 @@ export function getExpenseSummaryBetween(
   start: string,
   end: string,
   fromNumber?: string,
-  categoryId?: number
+  categoryId?: number,
+  paymentMethodId?: number
 ): ExpenseSummary {
   const conditions = ["e.date >= ?", "e.date < ?"];
   const params: (string | number)[] = [start, end];
@@ -672,6 +707,10 @@ export function getExpenseSummaryBetween(
   if (categoryId) {
     conditions.push("e.category_id = ?");
     params.push(categoryId);
+  }
+  if (paymentMethodId) {
+    conditions.push("e.payment_method_id = ?");
+    params.push(paymentMethodId);
   }
 
   const rows = db
