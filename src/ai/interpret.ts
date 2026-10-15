@@ -8,7 +8,7 @@ import { getIncomeById } from "../incomes/service";
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
 export type Interpretation =
-  | { type: "expense"; amount: number; description: string; category?: string; date?: string; payment_method?: string }
+  | { type: "expense"; amount: number; description: string; category?: string; date?: string; payment_method?: string; is_fixed?: boolean }
   | {
       type: "installment_expense";
       description?: string;
@@ -18,6 +18,7 @@ export type Interpretation =
       installment_amount?: number;
       installments?: number;
       payment_method?: string;
+      is_fixed?: boolean;
     }
   | { type: "event"; title: string; start: string; end?: string; location?: string }
   | { type: "delete_event"; query: string }
@@ -138,6 +139,7 @@ export type Interpretation =
       // cadastro parcial de gasto fixo / alerta (likely_intent recurring_*, bill_alert): dados ja conhecidos
       day_of_month?: number;
       interval_days?: number;
+      is_fixed?: boolean; // gasto parcial que o usuario ja disse que e fixo (Card 15)
     };
 
 const ACTION_SCHEMA = {
@@ -274,6 +276,11 @@ const ACTION_SCHEMA = {
       type: "number",
       description:
         "So para type=set_bill_alert, quando o usuario pede recorrencia por INTERVALO de tempo em vez de um dia fixo do mes (ex: 'comprar ração a cada 45 dias' -> 45, 'trocar o filtro a cada 2 meses' -> 60, 'de 15 em 15 dias' -> 15). Nao preencher junto com 'day_of_month' -- use um ou outro, nunca os dois.",
+    },
+    is_fixed: {
+      type: "boolean",
+      description:
+        "type=expense, type=installment_expense (ou type=unknown com likely_intent='expense'): true SOMENTE se o usuario disse EXPLICITAMENTE que ESSE gasto e fixo (palavras como 'conta fixa', 'gasto fixo', 'despesa fixa', 'e fixo', 'fixo'). Em qualquer outro caso OMITA o campo -- nunca deduza que um gasto e fixo pelo nome ou pela repeticao ('paguei a luz', 'aluguel 1500', 'internet 100' sao gastos comuns). Consulta ('meus gastos fixos') nao e registro.",
     },
     likely_intent: {
       type: "string",
@@ -569,6 +576,8 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
 
 Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.
+
+Gasto "fixo": so preencha is_fixed=true em expense/installment_expense quando a mensagem de REGISTRO diz explicitamente que o gasto e fixo ("gastei 80 na luz, conta fixa", "paguei 120 de internet, gasto fixo"). Exemplos que NAO sao fixos: "gastei 80 na luz", "paguei o aluguel", "internet 100". Nunca infira.
 
 Consultas de gastos e entradas: "as 10 ultimas compras", "ultimas 5 de mercado" e "mostra as ultimas compras" = list_expenses com last_n (10 se nao houver numero) e, quando citados, category e/ou payment_method; "gastos no pix hoje" = list_expenses com payment_method='Pix' e date de hoje; "gastos de mercado" sem periodo = list_expenses com category (sem date/days); "quanto gastei no Nubank em setembro" = expense_report com payment_method e month='YYYY-MM'; "gastos de 10 a 20 de setembro" = list_expenses com date_start/date_end; "quanto recebi no mes passado" = income_report com month do mes anterior; "saldo de setembro" = balance com month; "entradas de 10 a 20" = list_incomes com date_start/date_end. Resolva o ano pela data de hoje (mes nomeado sem ano = o mais recente que ja comecou, a nao ser que o usuario diga outro ano).
 

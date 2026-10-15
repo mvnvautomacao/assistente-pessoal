@@ -165,9 +165,11 @@ import {
   PendingEditRecurring,
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
-import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert } from "./bills/service";
+import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount } from "./bills/service";
+import { FixedMark, USER_FIXED, fixedConfirmationSuffix, markFromColumns } from "./expenses/fixedMark";
 import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply } from "./bills/checkinReply";
+import { BILL_NO_PREVIOUS_VALUE_TEXT, billValueQuestion, billValueRetry, interpretBillValueReply } from "./bills/checkinValue";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import {
   insertIncome,
@@ -1651,6 +1653,7 @@ async function finalizePendingCategorizationByTimeout(from: string, pending: Pen
       categoryName: category.name,
       paymentMethod,
       logNote: "categorizado automaticamente, sem resposta a tempo",
+      fixed: markFromColumns(pending.fixed_source, pending.fixed_ref_id),
     });
     await replyWithUndo(
       from,
@@ -1660,6 +1663,7 @@ async function finalizePendingCategorizationByTimeout(from: string, pending: Pen
         categoryName: category.name,
         date: pending.date,
         paymentMethodName: paymentMethod?.name ?? null,
+        fixed: markFromColumns(pending.fixed_source, pending.fixed_ref_id),
       })}${budgetAlert}\n\nSe não for essa a categoria certa, é só me falar pra eu corrigir.`
     );
   } catch (err) {
@@ -1679,9 +1683,10 @@ function formatExpenseConfirmation(params: {
   categoryName: string;
   date: string;
   paymentMethodName: string | null;
+  fixed?: FixedMark | null;
 }): string {
   const paymentLabel = params.paymentMethodName ?? "não definida";
-  return `R$${params.amount.toFixed(2)} — ${params.description}\nCategoria: ${params.categoryName}\nData: ${formatDateOnly(params.date)}\nForma de pagamento: ${paymentLabel}`;
+  return `R$${params.amount.toFixed(2)} — ${params.description}${fixedConfirmationSuffix(params.fixed)}\nCategoria: ${params.categoryName}\nData: ${formatDateOnly(params.date)}\nForma de pagamento: ${paymentLabel}`;
 }
 
 // Grava o gasto de verdade (categoria e forma de pagamento ja resolvidas) e os
@@ -1698,6 +1703,7 @@ function recordSimpleExpense(
     categoryName: string;
     paymentMethod: { id: number; name: string } | null;
     logNote?: string;
+    fixed?: FixedMark | null;
   }
 ) {
   const created = insertExpense({
@@ -1707,6 +1713,7 @@ function recordSimpleExpense(
     categoryId: params.categoryId,
     paymentMethodId: params.paymentMethod?.id ?? null,
     date: params.date,
+    fixed: params.fixed ?? null,
   });
   setPendingUndo(from, {
     kind: "delete_expense",
@@ -1896,7 +1903,7 @@ function askForCategory(from: string, amount: number, description: string) {
 // antes de chegar aqui, entao nao faz sentido perguntar de novo).
 async function createExpenseAndNotify(
   from: string,
-  params: { amount: number; description: string; date: string; category?: string; payment_method?: string; skipPaymentMethodPrompt?: boolean }
+  params: { amount: number; description: string; date: string; category?: string; payment_method?: string; skipPaymentMethodPrompt?: boolean; fixed?: FixedMark | null }
 ) {
   // valida ANTES de perguntar categoria/forma de pagamento -- senao um gasto de
   // R$0 passava por 2 perguntas pro usuario so pra falhar no final
@@ -1913,6 +1920,7 @@ async function createExpenseAndNotify(
         date: params.date,
         categoryId: category.id,
         categoryName: category.name,
+        fixed: params.fixed ?? null,
       });
       logActivity(from, "expense", `categoria resolvida (${category.name}), forma de pagamento pendente: R$${params.amount.toFixed(2)} — ${params.description}`);
       // se ja tem outro gasto esperando forma de pagamento (ex: lote que
@@ -1929,6 +1937,7 @@ async function createExpenseAndNotify(
       categoryId: category.id,
       categoryName: category.name,
       paymentMethod,
+      fixed: params.fixed ?? null,
     });
     await replyWithUndo(
       from,
@@ -1938,6 +1947,7 @@ async function createExpenseAndNotify(
         categoryName: category.name,
         date: params.date,
         paymentMethodName: paymentMethod?.name ?? null,
+        fixed: params.fixed ?? null,
       })}${budgetAlert}`
     );
   } else {
@@ -1951,6 +1961,7 @@ async function createExpenseAndNotify(
       date: params.date,
       suggested_category: params.category ?? null,
       suggested_payment_method: params.payment_method ?? null,
+      fixed: params.fixed ?? null,
     });
     logActivity(from, "expense", `pendente de categoria: R$${params.amount.toFixed(2)} — ${params.description}`);
     if (!alreadyWaiting) await askForCategory(from, params.amount, params.description);
@@ -1981,6 +1992,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
     date: string;
     category: { id: number; name: string };
     paymentMethod: { id: number; name: string } | null;
+    fixed: FixedMark | null;
   };
 
   const resolved: ResolvedExpense[] = [];
@@ -1999,6 +2011,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
       date: item.date || spDateString(),
       category,
       paymentMethod,
+      fixed: item.is_fixed === true ? USER_FIXED : null,
     });
   }
 
@@ -2015,13 +2028,14 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
         categoryId: r.category.id,
         paymentMethodId: r.paymentMethod?.id ?? null,
         date: r.date,
+        fixed: r.fixed,
       });
       expenseIds.push(created.id);
       const paymentSuffix = r.paymentMethod ? ` via ${r.paymentMethod.name}` : "";
       logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
       const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
       if (budgetAlert) budgetAlerts.push(budgetAlert);
-      return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description} (${formatDateOnly(r.date)}${paymentSuffix})`;
+      return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description}${fixedConfirmationSuffix(r.fixed)} (${formatDateOnly(r.date)}${paymentSuffix})`;
     })
   );
 
@@ -2137,6 +2151,7 @@ async function finalizeInstallmentExpense(
     totalAmount?: number;
     installmentAmount?: number;
     installments: number;
+    fixed?: boolean;
   },
   options?: { forceCategory?: boolean }
 ): Promise<boolean> {
@@ -2161,6 +2176,7 @@ async function finalizeInstallmentExpense(
           categoryId: category.id,
           paymentMethodId: paymentMethod?.id ?? null,
           date: addMonthsToDateString(params.date, i),
+          fixed: params.fixed ? USER_FIXED : null,
         }).id
     )
   );
@@ -2180,7 +2196,7 @@ async function finalizeInstallmentExpense(
   );
   await replyWithUndo(
     from,
-    `✅ Compra parcelada registrada: "${params.description}" — R$${total.toFixed(2)} em ${params.installments}x de R$${amounts[0].toFixed(2)}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
+    `✅ Compra parcelada registrada: "${params.description}"${fixedConfirmationSuffix(params.fixed ? USER_FIXED : null)} — R$${total.toFixed(2)} em ${params.installments}x de R$${amounts[0].toFixed(2)}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
   );
   return true;
 }
@@ -2458,13 +2474,14 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
         amount,
         description,
         category: pending.category,
+        fixed: pending.fixed,
         missing: missingExpenseParts(amount, description),
       });
       await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
       return;
     }
     clearHeadPendingCompletion(from);
-    await createExpenseAndNotify(from, { amount, description, date: spDateString(), category: pending.category });
+    await createExpenseAndNotify(from, { amount, description, date: spDateString(), category: pending.category, fixed: pending.fixed ? USER_FIXED : null });
     await askNextPendingCompletionIfAny(from);
     return;
   }
@@ -2487,6 +2504,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
           totalAmount: pending.totalAmount,
           installmentAmount: pending.installmentAmount,
           installments: pending.installments!,
+          fixed: pending.fixed,
         },
         { forceCategory: true }
       );
@@ -2520,6 +2538,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
         totalAmount,
         installmentAmount,
         installments,
+        fixed: pending.fixed,
         missing,
       });
       await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
@@ -2535,6 +2554,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
       totalAmount,
       installmentAmount,
       installments: installments!,
+      fixed: pending.fixed,
     });
     if (!created) {
       const isHead = addPendingCompletion(from, {
@@ -2546,6 +2566,7 @@ async function resolvePendingCompletion(from: string, pending: PendingCompletion
         totalAmount,
         installmentAmount,
         installments,
+        fixed: pending.fixed,
         missing: ["category"],
       });
       if (isHead) await sendText(from, pendingCompletionQuestionText(from, getNextPendingCompletion(from)!));
@@ -2642,6 +2663,7 @@ async function maybeStartPendingCompletion(from: string, interpretation: Extract
         description: interpretation.description!,
         date: spDateString(),
         category: interpretation.category,
+        fixed: interpretation.is_fixed === true ? USER_FIXED : null,
       });
       return true;
     }
@@ -2650,6 +2672,7 @@ async function maybeStartPendingCompletion(from: string, interpretation: Extract
       amount: interpretation.amount,
       description: interpretation.description,
       category: interpretation.category,
+      fixed: interpretation.is_fixed === true ? true : undefined,
       missing,
     });
     logActivity(from, "unknown", "gasto parcial -- pedindo o que falta");
@@ -2685,6 +2708,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
         date: pending.date,
         categoryId: category.id,
         categoryName: category.name,
+        fixed: markFromColumns(pending.fixed_source, pending.fixed_ref_id),
       });
       logActivity(
         from,
@@ -2703,6 +2727,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       categoryName: category.name,
       paymentMethod,
       logNote: "categorizado manualmente",
+      fixed: markFromColumns(pending.fixed_source, pending.fixed_ref_id),
     });
     await replyWithUndo(
       from,
@@ -2712,6 +2737,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
         categoryName: category.name,
         date: pending.date,
         paymentMethodName: paymentMethod.name,
+        fixed: markFromColumns(pending.fixed_source, pending.fixed_ref_id),
       })}${budgetAlert}`
     );
 
@@ -2744,6 +2770,7 @@ async function finalizePendingExpensePayment(from: string, pending: PendingExpen
     categoryId: pending.categoryId,
     categoryName: pending.categoryName,
     paymentMethod,
+    fixed: pending.fixed ?? null,
   });
   await replyWithUndo(
     from,
@@ -2753,6 +2780,7 @@ async function finalizePendingExpensePayment(from: string, pending: PendingExpen
       categoryName: pending.categoryName,
       date: pending.date,
       paymentMethodName: paymentMethod.name,
+      fixed: pending.fixed ?? null,
     })}${budgetAlert}${extraNote ?? ""}`
   );
 
@@ -2819,6 +2847,7 @@ async function finalizePendingExpensePaymentMethodByTimeout(from: string, pendin
       categoryName: pending.categoryName,
       paymentMethod: null,
       logNote: "sem resposta a tempo pra forma de pagamento, registrado sem definir",
+      fixed: pending.fixed ?? null,
     });
     await replyWithUndo(
       from,
@@ -2828,6 +2857,7 @@ async function finalizePendingExpensePaymentMethodByTimeout(from: string, pendin
         categoryName: pending.categoryName,
         date: pending.date,
         paymentMethodName: null,
+        fixed: pending.fixed ?? null,
       })}${budgetAlert}\n\nSe quiser, me diga qual foi que eu corrijo.`
     );
 
@@ -4899,33 +4929,80 @@ async function resolveRemoveBillAlertConfirmation(from: string, pending: Pending
   });
 }
 
-// Resposta ao aviso de conta fixa (disparado pelo scheduler, ver bills/scheduler.ts), Card 15. A resposta e lida
-// sobre a mensagem INTEIRA (bills/checkinReply.ts): 1 pago, 2 adiar, 3 pular, ou uma frase clara. Resposta ambigua
-// NUNCA fecha nem adia: repete a lista -- e um pedido novo e atendido normalmente enquanto o aviso continua aberto.
-// Devolve false quando a mensagem nao e pra este aviso (o fluxo normal segue).
+// Resposta ao aviso de conta fixa (disparado pelo scheduler, ver bills/scheduler.ts), Card 15. Duas etapas:
+// ask_paid -- a lista 1/2/3 (bills/checkinReply.ts): 1 pago (pergunta o valor), 2 adiar, 3 pular; e
+// ask_value -- "quanto foi?" (bills/checkinValue.ts): valor, "igual" ou "pular".
+// Resposta ambigua NUNCA fecha nem adia: repete a pergunta. Um pedido novo e atendido normalmente enquanto o aviso
+// continua aberto. Devolve false quando a mensagem nao e pra este aviso (o fluxo normal segue).
 async function resolveBillCheckinAnswer(from: string, pending: PendingBillCheckin, answerText: string): Promise<boolean> {
   // "desfaz isso" fala da ultima acao, nao do aviso
   if (isUndoText(answerText)) return false;
+  const today = spDateString(new Date(Date.now()));
+  const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
+  const passthrough = { activity: "bill_alert", label: pending.name, kind: "question" as const, keepPending: true, minWords: 1 };
 
-  const reply = classifyBillCheckinReply(answerText);
-  if (reply === "unclear") {
-    await handleNotUnderstood(from, answerText, billCheckinRepeat(pending, { mentionName: pending.queued.length > 0 }), {
-      activity: "bill_alert",
-      label: pending.name,
-      kind: "question",
-      keepPending: true,
-      minWords: 1,
-    });
+  // o alerta foi apagado no meio do caminho
+  const bill = getBillAlertById(from, pending.billAlertId);
+  if (!bill || !bill.active) {
+    logActivity(from, "bill_alert", `alerta apagado antes da resposta: ${pending.name}`);
+    await sendText(from, `O alerta de "${pending.name}" não existe mais, então deixei de lado.`);
+    await moveToNextBillCheckin(from);
     return true;
   }
 
-  const today = spDateString(new Date(Date.now()));
-  const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
-  if (reply === "paid") {
+  if (pending.step === "ask_value") {
+    const lastAmount = getLastBillAlertAmount(from, pending.billAlertId);
+    const value = interpretBillValueReply(answerText);
+    if (value.kind === "other") {
+      await handleNotUnderstood(from, answerText, billValueRetry("Não entendi o valor.", pending.name, lastAmount), passthrough);
+      return true;
+    }
+    if (value.kind === "invalid") {
+      logActivity(from, "bill_alert", `valor invalido: ${pending.name}`);
+      await sendText(from, billValueRetry(value.problem, pending.name, lastAmount));
+      return true;
+    }
+    if (value.kind === "same" && lastAmount === null) {
+      await sendText(from, `${BILL_NO_PREVIOUS_VALUE_TEXT}\n${billValueQuestion(pending.name, null)}`);
+      return true;
+    }
+    if (value.kind === "skip") {
+      confirmBillAlertPaid(from, pending.billAlertId, today);
+      logActivity(from, "bill_alert", `marcado como feito, sem gasto: ${pending.name}`);
+      await sendText(from, `Beleza, só marquei ${pending.name} como feito, sem lançar gasto. Te aviso de novo ${nextLabel}.`);
+      await moveToNextBillCheckin(from);
+      return true;
+    }
+    const amount = value.kind === "same" ? lastAmount! : value.amount;
+    // fecha o ciclo e lanca o gasto do dia (categoria e forma de pagamento como num gasto avulso), marcado como conta fixa
     confirmBillAlertPaid(from, pending.billAlertId, today);
-    logActivity(from, "bill_alert", `confirmado: ${pending.name}`);
-    await sendText(from, `👍 Show, anotado. Te aviso de novo de "${pending.name}" ${nextLabel}.`);
-  } else if (reply === "skip") {
+    logActivity(from, "bill_alert", `pago: ${pending.name} ${formatBRL(amount)}`);
+    await createExpenseAndNotify(from, {
+      amount,
+      description: pending.name,
+      date: today,
+      fixed: { source: "bill_alert", refId: pending.billAlertId },
+    });
+    await sendText(from, `📌 Fechei "${pending.name}" deste ciclo. Te aviso de novo ${nextLabel}.`);
+    await moveToNextBillCheckin(from);
+    return true;
+  }
+
+  const reply = classifyBillCheckinReply(answerText);
+  if (reply === "unclear") {
+    await handleNotUnderstood(from, answerText, billCheckinRepeat(pending, { mentionName: pending.queued.length > 0 }), passthrough);
+    return true;
+  }
+
+  if (reply === "paid") {
+    // ainda NAO fecha o ciclo: so quando o valor chegar. Se o valor nunca vier, o alerta volta a perguntar amanha.
+    snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
+    setPendingBillCheckin(from, { billAlertId: pending.billAlertId, name: pending.name, recurrenceType: pending.recurrenceType, intervalDays: pending.intervalDays, step: "ask_value", queued: pending.queued });
+    logActivity(from, "bill_alert", `pago, perguntando o valor: ${pending.name}`);
+    await sendText(from, billValueQuestion(pending.name, getLastBillAlertAmount(from, pending.billAlertId)));
+    return true;
+  }
+  if (reply === "skip") {
     confirmBillAlertPaid(from, pending.billAlertId, today);
     logActivity(from, "bill_alert", `pulado neste ciclo: ${pending.name}`);
     await sendText(from, `Beleza, pulei ${pending.name} neste ciclo. Te aviso de novo ${nextLabel}.`);
@@ -4974,6 +5051,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         date: interpretation.date || spDateString(),
         category: interpretation.category,
         payment_method: interpretation.payment_method,
+        fixed: interpretation.is_fixed === true ? USER_FIXED : null,
       });
       break;
     }
@@ -4991,6 +5069,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         date: interpretation.date || spDateString(),
         totalAmount: interpretation.total_amount,
         installmentAmount: interpretation.installment_amount,
+        fixed: interpretation.is_fixed === true ? true : undefined,
       };
       if (missing.length === 0) {
         const created = await finalizeInstallmentExpense(from, {

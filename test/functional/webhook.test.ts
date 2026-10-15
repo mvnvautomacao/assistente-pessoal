@@ -1450,7 +1450,9 @@ test("bill checkin: alerta por intervalo confirmado avisa 'daqui a N dias', nao 
 
   setPendingBillCheckin(BA13, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
   await handleIncomingMessage(evolutionMessage(BA13, "já comprei"));
-  assert.match(sent[1].text, /daqui a 45 dias/);
+  assert.match(sent[1].text, /Quanto foi \*Ração checkin\*/); // Card 15: pergunta o valor antes de fechar
+  await handleIncomingMessage(evolutionMessage(BA13, "pular"));
+  assert.match(sent[2].text, /daqui a 45 dias/);
 
   const updated = getBillAlertById(BA13, bill.id)!;
   assert.equal(updated.confirmed_month, null); // alerta por intervalo nunca usa confirmed_month
@@ -1542,7 +1544,10 @@ test("bill checkin: responder que ja pagou fecha o ciclo do mes, sem lancar gast
   setPendingBillCheckin(BA8, { billAlertId: bill.id, name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days });
 
   await handleIncomingMessage(evolutionMessage(BA8, "já paguei"));
-  assert.match(sent[0].text, /mês que vem/i);
+  assert.match(sent[0].text, /Quanto foi \*Conta de água checkin\*/); // Card 15: pergunta o valor antes de fechar
+  assert.equal(getBillAlertById(BA8, bill.id)!.confirmed_month, null, "so fecha quando o valor chega");
+  await handleIncomingMessage(evolutionMessage(BA8, "pular"));
+  assert.match(sent[1].text, /mês que vem/i);
   const updated = getBillAlertById(BA8, bill.id)!;
   assert.equal(updated.confirmed_month, today().slice(0, 7));
   assert.equal(updated.snoozed_until, null);

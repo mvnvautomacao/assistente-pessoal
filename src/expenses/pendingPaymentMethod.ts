@@ -10,12 +10,16 @@
 // respondido, perdendo o gasto silenciosamente.
 const TTL_MS = 5 * 60 * 1000;
 
+import { FixedMark } from "./fixedMark";
+
 export interface PendingExpensePaymentMethod {
   amount: number;
   description: string;
   date: string;
   categoryId: number;
   categoryName: string;
+  // marca de conta fixa (Card 15): o gasto declarado fixo nao perde a marca esperando a forma de pagamento
+  fixed?: FixedMark | null;
   createdAt: number;
 }
 

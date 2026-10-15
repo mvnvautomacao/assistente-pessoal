@@ -89,6 +89,18 @@ export function findActiveBillAlertByName(fromNumber: string, query: string): Bi
   return filterByQuery(rows, (b) => b.name, query, 1)[0] ?? null;
 }
 
+// ultimo valor lancado por este alerta (gasto com marca 'bill_alert' e fixed_ref_id = id do alerta), pro "igual" do aviso
+export function getLastBillAlertAmount(fromNumber: string, billAlertId: number): number | null {
+  const row = db
+    .prepare(
+      `SELECT amount FROM expenses
+       WHERE from_number = ? AND fixed_source = 'bill_alert' AND fixed_ref_id = ?
+       ORDER BY date DESC, id DESC LIMIT 1`
+    )
+    .get(fromNumber, billAlertId) as { amount: number } | undefined;
+  return row ? row.amount : null;
+}
+
 export function markBillAlertAsked(fromNumber: string, id: number, todayDate: string) {
   db.prepare(`UPDATE bill_alerts SET last_asked_date = ? WHERE id = ? AND from_number = ?`).run(todayDate, id, fromNumber);
 }

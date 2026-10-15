@@ -1,3 +1,4 @@
+import { FixedMark, columnsFromMark } from "./fixedMark";
 import { db } from "../db";
 import { assertValidAmount } from "../validation";
 
@@ -348,11 +349,15 @@ export function insertExpense(params: {
   categoryId: number | null;
   paymentMethodId: number | null;
   date: string;
+  // marca de conta fixa (Card 15); ausente/nulo = gasto avulso (nao fixo)
+  fixed?: FixedMark | null;
 }): ExpenseRecord {
   assertValidAmount(params.amount);
+  const fixed = columnsFromMark(params.fixed);
   const result = db
     .prepare(
-      `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO expenses (from_number, amount, description, category_id, payment_method_id, date, created_at, fixed_source, fixed_ref_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       params.fromNumber,
@@ -361,7 +366,9 @@ export function insertExpense(params: {
       params.categoryId,
       params.paymentMethodId,
       params.date,
-      new Date().toISOString()
+      new Date().toISOString(),
+      fixed.source,
+      fixed.refId
     );
   return getExpenseById(params.fromNumber, Number(result.lastInsertRowid))!;
 }
@@ -374,6 +381,8 @@ export interface ExpenseRecord {
   category_id: number | null;
   payment_method_id: number | null;
   date: string;
+  fixed_source: string | null;
+  fixed_ref_id: number | null;
 }
 
 export function getExpenseById(fromNumber: string, id: number): ExpenseRecord | null {
@@ -384,15 +393,27 @@ export function getExpenseById(fromNumber: string, id: number): ExpenseRecord | 
 export function updateExpense(
   fromNumber: string,
   id: number,
-  params: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null }
+  params: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null; fixed?: FixedMark | null }
 ): boolean {
   assertValidAmount(params.amount);
-  const result = db
-    .prepare(
-      `UPDATE expenses SET amount = ?, description = ?, date = ?, category_id = ?, payment_method_id = ?
-       WHERE id = ? AND from_number = ?`
-    )
-    .run(params.amount, params.description, params.date, params.categoryId, params.paymentMethodId, id, fromNumber);
+  const base = [params.amount, params.description, params.date, params.categoryId, params.paymentMethodId];
+  let result;
+  if (params.fixed === undefined) {
+    result = db
+      .prepare(
+        `UPDATE expenses SET amount = ?, description = ?, date = ?, category_id = ?, payment_method_id = ?
+         WHERE id = ? AND from_number = ?`
+      )
+      .run(...base, id, fromNumber);
+  } else {
+    const fixed = columnsFromMark(params.fixed);
+    result = db
+      .prepare(
+        `UPDATE expenses SET amount = ?, description = ?, date = ?, category_id = ?, payment_method_id = ?, fixed_source = ?, fixed_ref_id = ?
+         WHERE id = ? AND from_number = ?`
+      )
+      .run(...base, fixed.source, fixed.refId, id, fromNumber);
+  }
   return result.changes > 0;
 }
 
@@ -442,7 +463,7 @@ export function getRecentExpensesList(fromNumber: string, n: number, filters: Ex
   const where = expenseFilterConditions(fromNumber, filters);
   return db
     .prepare(
-      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method, e.fixed_source
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
@@ -487,6 +508,8 @@ export interface PendingCategorization {
   suggested_category: string | null;
   suggested_payment_method: string | null;
   created_at: string;
+  fixed_source: string | null;
+  fixed_ref_id: number | null;
 }
 
 export function addPendingCategorization(params: {
@@ -496,9 +519,12 @@ export function addPendingCategorization(params: {
   date: string;
   suggested_category: string | null;
   suggested_payment_method: string | null;
+  fixed?: FixedMark | null;
 }) {
+  const fixed = columnsFromMark(params.fixed);
   db.prepare(
-    `INSERT INTO pending_categorizations (from_number, amount, description, date, suggested_category, suggested_payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO pending_categorizations (from_number, amount, description, date, suggested_category, suggested_payment_method, created_at, fixed_source, fixed_ref_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     params.from_number,
     params.amount,
@@ -506,7 +532,9 @@ export function addPendingCategorization(params: {
     params.date,
     params.suggested_category,
     params.suggested_payment_method,
-    new Date().toISOString()
+    new Date().toISOString(),
+    fixed.source,
+    fixed.refId
   );
 }
 
@@ -536,6 +564,7 @@ export function backdatePendingCategorizationForTests(id: number, ageMs: number)
 export interface ExpenseQueryFilters {
   categoryId?: number;
   paymentMethodId?: number;
+  fixedOnly?: boolean; // so gastos com marca de conta fixa (qualquer origem)
   start?: string;
   end?: string;
   limit?: number;
@@ -560,6 +589,7 @@ function expenseFilterConditions(fromNumber: string, filters: ExpenseQueryFilter
     conditions.push("e.payment_method_id = ?");
     params.push(filters.paymentMethodId);
   }
+  if (filters.fixedOnly) conditions.push("e.fixed_source IS NOT NULL");
   return { sql: conditions.join(" AND "), params };
 }
 
@@ -570,6 +600,7 @@ export interface ExpenseListItem {
   date: string;
   category: string | null;
   payment_method: string | null;
+  fixed_source?: string | null; // so nas consultas (Card 15): quem tem marca ganha o 🔁
 }
 
 // start inclusivo, end exclusivo, ambos "YYYY-MM-DD" — gastos individuais (nao o
@@ -579,7 +610,7 @@ export function getExpensesBetween(fromNumber: string, start: string, end: strin
   const limit = filters.limit !== undefined ? " LIMIT ?" : "";
   return db
     .prepare(
-      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method
+      `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method, e.fixed_source
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
@@ -696,7 +727,8 @@ export function getExpenseSummaryBetween(
   end: string,
   fromNumber?: string,
   categoryId?: number,
-  paymentMethodId?: number
+  paymentMethodId?: number,
+  fixedOnly?: boolean
 ): ExpenseSummary {
   const conditions = ["e.date >= ?", "e.date < ?"];
   const params: (string | number)[] = [start, end];
@@ -712,6 +744,7 @@ export function getExpenseSummaryBetween(
     conditions.push("e.payment_method_id = ?");
     params.push(paymentMethodId);
   }
+  if (fixedOnly) conditions.push("e.fixed_source IS NOT NULL");
 
   const rows = db
     .prepare(

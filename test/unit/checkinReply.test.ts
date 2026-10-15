@@ -55,3 +55,46 @@ test("billCheckinRepeat: repete a lista; cita a conta quando ha mais de um aviso
   );
   assert.match(billCheckinRepeat({ name: "Ração", recurrenceType: "interval" }, { mentionName: true }), /^Não entendi 🤔 Sobre \*Ração\*, responde \*1\*, \*2\* ou \*3\*:\n1 ✅ Já resolvi/);
 });
+
+// ---- etapa do valor (RN01) -------------------------------------------------------------------------
+import { BILL_VALUE_POSITIVE_TEXT, billValueQuestion, billValueRetry, interpretBillValueReply, parseSpokenNumber } from "../../src/bills/checkinValue";
+
+test("interpretBillValueReply: valor (virgula, milhar, R$, reais, por extenso), 'igual', 'pular', invalido e outro", () => {
+  const amount = (text: string) => interpretBillValueReply(text);
+  for (const [text, value] of [
+    ["120", 120], ["120,50", 120.5], ["120.50", 120.5], ["R$ 1.250,90", 1250.9], ["1.250,90", 1250.9], ["R$120", 120], ["120 reais", 120], ["120 conto", 120],
+    ["cento e vinte", 120], ["cem", 100], ["duzentos e cinquenta", 250], ["dois mil", 2000], ["dois mil e quinhentos", 2500], ["mil", 1000], ["quinze", 15], ["  89,9  ", 89.9],
+    ["1", 1], ["2", 2], ["3", 3], // nesta etapa 1, 2 e 3 NAO sao opcoes: sao valores
+  ] as [string, number][]) {
+    assert.deepEqual(amount(text), { kind: "amount", amount: value }, text);
+  }
+  for (const text of ["igual", "Igual!", "o mesmo", "mesmo valor", "igual ao anterior", "IGUAL"]) assert.deepEqual(amount(text), { kind: "same" }, text);
+  for (const text of ["pular", "Pular!", "pula", "pula essa", "só marcar"]) assert.deepEqual(amount(text), { kind: "skip" }, text);
+  for (const text of ["0", "-5", "0,00", "zero"]) {
+    const reply = amount(text);
+    assert.ok(reply.kind === "invalid" || reply.kind === "other", `${text}: ${JSON.stringify(reply)}`);
+  }
+  assert.deepEqual(amount("0"), { kind: "invalid", problem: BILL_VALUE_POSITIVE_TEXT });
+  assert.deepEqual(amount("-50"), { kind: "invalid", problem: BILL_VALUE_POSITIVE_TEXT });
+  for (const text of ["", "   ", "abc", "gastei 50 no mercado", "talvez", "ajuda", "cento e abacaxi", "sei lá quanto foi"]) assert.deepEqual(amount(text), { kind: "other" }, text);
+});
+
+test("parseSpokenNumber: so numeros por extenso; qualquer outra palavra invalida", () => {
+  assert.equal(parseSpokenNumber("cento e vinte"), 120);
+  assert.equal(parseSpokenNumber("Três mil e duzentos"), 3200);
+  assert.equal(parseSpokenNumber("dezenove"), 19);
+  assert.equal(parseSpokenNumber("vinte e cinco"), 25);
+  assert.equal(parseSpokenNumber("uma mil"), 1000);
+  assert.equal(parseSpokenNumber("cem reais"), null);
+  assert.equal(parseSpokenNumber(""), null);
+  assert.equal(parseSpokenNumber("e"), null);
+});
+
+test("billValueQuestion: com e sem o valor da ultima vez", () => {
+  assert.equal(
+    billValueQuestion("Conta de água", 118),
+    "Boa! Quanto foi *Conta de água*? (ex: 120 ou 120,50)\nDa última vez: R$ 118,00 — responde *igual* pra repetir. Ou *pular* pra só marcar como feito."
+  );
+  assert.equal(billValueQuestion("Ração", null), "Boa! Quanto foi *Ração*? (ex: 120 ou 120,50)\nOu responde *pular* pra só marcar como feito.");
+  assert.equal(billValueRetry("O valor precisa ser maior que R$ 0,00.", "Ração", null), "O valor precisa ser maior que R$ 0,00.\n" + billValueQuestion("Ração", null));
+});

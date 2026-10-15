@@ -23,6 +23,7 @@ export function launchRecurringExpense(recurring: RecurringExpense, date: string
     categoryId: recurring.category_id,
     paymentMethodId: recurring.payment_method_id,
     date,
+    fixed: { source: "recurring", refId: recurring.id },
   });
   markRecurringExpenseRunForMonth(recurring.from_number, recurring.id, date.slice(0, 7));
 

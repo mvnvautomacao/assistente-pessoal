@@ -299,6 +299,25 @@ if (!expenseColumns.some((c) => c.name === "payment_method_id")) {
   db.exec(`ALTER TABLE expenses ADD COLUMN payment_method_id INTEGER REFERENCES payment_methods(id)`);
 }
 
+// Card 15: marca de "conta fixa" nos gastos. NULL = nao fixo (o padrao, tambem de todo gasto antigo); 'user' = o usuario
+// declarou; 'bill_alert' = lancado pelo aviso de conta fixa; 'recurring' = lancado pelo cron dos gastos fixos.
+// fixed_ref_id guarda o id do alerta ou do gasto fixo automatico.
+if (!expenseColumns.some((c) => c.name === "fixed_source")) {
+  db.exec(`ALTER TABLE expenses ADD COLUMN fixed_source TEXT`);
+}
+if (!expenseColumns.some((c) => c.name === "fixed_ref_id")) {
+  db.exec(`ALTER TABLE expenses ADD COLUMN fixed_ref_id INTEGER`);
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_expenses_fixed ON expenses (from_number, fixed_source, date)`);
+// a fila de categorizacao leva a marca junto (o gasto declarado fixo nao pode perder a marca esperando a categoria)
+const categorizationColumns = db.prepare(`PRAGMA table_info(pending_categorizations)`).all() as { name: string }[];
+if (!categorizationColumns.some((c) => c.name === "fixed_source")) {
+  db.exec(`ALTER TABLE pending_categorizations ADD COLUMN fixed_source TEXT`);
+}
+if (!categorizationColumns.some((c) => c.name === "fixed_ref_id")) {
+  db.exec(`ALTER TABLE pending_categorizations ADD COLUMN fixed_ref_id INTEGER`);
+}
+
 // user_settings existia antes da coluna report_day_of_week ser adicionada.
 const userSettingsColumns = db.prepare(`PRAGMA table_info(user_settings)`).all() as { name: string }[];
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "report_day_of_week")) {
