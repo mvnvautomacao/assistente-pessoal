@@ -7,6 +7,7 @@ import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import type { ExpenseEditField, RawChange } from "./editChanges";
 import { clearPending, getPending, setPending } from "../pending/store";
 import { formatBRL } from "../confirmation/preview";
+import type { FixedMark } from "./fixedMark";
 
 const TTL_MS = EDIT_PENDING_TTL_MS;
 
@@ -16,6 +17,8 @@ export interface EditExpenseParams {
   date: string;
   categoryId: number | null;
   paymentMethodId: number | null;
+  // marca de conta fixa (Card 15); ausente = nao mexe (pendencias gravadas antes desse campo)
+  fixed?: FixedMark | null;
 }
 
 // uma linha da previa: "Valor: R$ 38,00 → R$ 45,00" ("(nova)" quando a categoria

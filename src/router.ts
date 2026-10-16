@@ -4052,6 +4052,7 @@ const EXPENSE_FIELD_NOUN: Record<ExpenseEditField, string> = {
   description: "nome",
   payment_method: "forma de pagamento",
   category: "categoria",
+  fixed: "tipo (fixo ou avulso)",
 };
 
 function paymentMethodLabel(from: string, id: number | null): string {
@@ -4072,6 +4073,7 @@ function expenseParamsOf(expense: ExpenseRecord): EditExpenseParams {
     date: expense.date,
     categoryId: expense.category_id,
     paymentMethodId: expense.payment_method_id,
+    fixed: markFromColumns(expense.fixed_source, expense.fixed_ref_id),
   };
 }
 

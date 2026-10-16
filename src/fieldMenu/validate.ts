@@ -9,6 +9,7 @@ import { invalidDateMessage } from "../expenses/parseDate";
 import { findCategoryMentionedIn } from "../expenses/service";
 import { spDateString } from "../timeSP";
 import { validateAmount } from "../validation";
+import { parseFixedAnswer } from "../expenses/fixedMark";
 import { FieldDef } from "./registry";
 
 export const MAX_TEXT_LENGTH = 100;
@@ -109,6 +110,10 @@ export async function validateFieldAnswer(def: FieldDef, text: string, fromNumbe
       return validateDateTimeAnswer(text);
     case "category":
       return validateTextAnswer(await categoryNameFrom(fromNumber, text));
+    case "fixed": {
+      const fixed = parseFixedAnswer(text);
+      return fixed === null ? { ok: false, error: "Responde *fixo* (conta fixa) ou *avulso*." } : { ok: true, value: fixed ? "fixo" : "avulso" };
+    }
     default:
       return validateTextAnswer(text);
   }

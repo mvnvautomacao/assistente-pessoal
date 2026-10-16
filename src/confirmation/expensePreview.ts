@@ -45,6 +45,7 @@ const SUCCESS_PREFIX: Record<ExpenseEditField, string> = {
   description: "nome",
   payment_method: "pagamento",
   category: "categoria",
+  fixed: "tipo",
 };
 
 export function formatExpenseEditSuccess(items: ExpenseEditItem[]): string {

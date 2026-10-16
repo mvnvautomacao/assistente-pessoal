@@ -16,7 +16,7 @@ import { formatTargetList, recurringLine } from "../../src/targetChoice/format";
 
 test("registro: ordem e rotulos de cada tipo (RN02)", () => {
   const labels = (kind: MenuKind) => FIELD_REGISTRY[kind].map((f) => f.label);
-  assert.deepEqual(labels("expense"), ["Valor", "Nome", "Categoria", "Data", "Pagamento"]);
+  assert.deepEqual(labels("expense"), ["Valor", "Nome", "Categoria", "Data", "Pagamento", "Tipo"]);
   assert.deepEqual(labels("event"), ["Dia e hora", "Título", "Aviso", "Término", "Local"]);
   assert.deepEqual(labels("reminder"), ["Dia e hora", "Texto"]);
   assert.deepEqual(labels("recurring"), ["Nome", "Valor", "Categoria", "Dia do mês", "Pagamento"]);
@@ -50,7 +50,7 @@ test("parseFieldSelection: numeros, nomes e separadores (RN03)", () => {
 });
 
 test("parseFieldSelection: qualquer item invalido invalida tudo", () => {
-  for (const bad of ["1 e 9", "xyz", "", "   ", "0", "6", "tudo", "valor banana"]) {
+  for (const bad of ["1 e 9", "xyz", "", "   ", "0", "7", "tudo", "valor banana"]) {
     assert.equal(parseFieldSelection(bad, "expense").ok, false, `"${bad}"`);
   }
   assert.equal(parseFieldSelection("3", "reminder").ok, false); // lembrete so tem 2 campos
@@ -59,7 +59,7 @@ test("parseFieldSelection: qualquer item invalido invalida tudo", () => {
 test("formatFieldMenu: formato do menu de cada tipo", () => {
   assert.equal(
     formatFieldMenu("Mercado — R$ 38,00 · 07/10 · Pix", "expense"),
-    '✏️ Mercado — R$ 38,00 · 07/10 · Pix\nO que você quer mudar?\n1 Valor\n2 Nome\n3 Categoria\n4 Data\n5 Pagamento\n\nPode escolher mais de um: "1 e 5". Ou *cancelar*.'
+    '✏️ Mercado — R$ 38,00 · 07/10 · Pix\nO que você quer mudar?\n1 Valor\n2 Nome\n3 Categoria\n4 Data\n5 Pagamento\n6 Tipo\n\nPode escolher mais de um: "1 e 6". Ou *cancelar*.'
   );
   assert.match(formatFieldMenu("Consulta", "event"), /1 Dia e hora\n2 Título\n3 Aviso\n4 Término\n5 Local\n\nPode escolher mais de um: "1 e 5"/);
   assert.match(formatFieldMenu("Remédio", "reminder"), /1 Dia e hora\n2 Texto\n\nPode escolher mais de um: "1 e 2"/);

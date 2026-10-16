@@ -8,6 +8,7 @@ import { parseBrazilianAmountDetailed } from "../confirmation/parsers";
 import { validateAmount } from "../validation";
 import { spDateString } from "../timeSP";
 import { EXPENSE_FIELD_LABEL, RawChange } from "./editChanges";
+import { FIXED_LABEL, USER_FIXED, parseFixedAnswer } from "./fixedMark";
 import { parseExpenseDate, validateExpenseDate, invalidDateMessage, DateParse } from "./parseDate";
 import { EditExpenseParams, ExpenseChangeView, ExpenseEditItem } from "./pendingEditExpense";
 import { findCategoryByName, findPaymentMethodByName, getCategoryById, getPaymentMethodById } from "./service";
@@ -78,6 +79,14 @@ export async function buildExpenseEditItem(
       if (value === previous.description) continue;
       proposed.description = value;
       views.push({ field: "description", label, from: previous.description, to: value, isNew: false });
+    } else if (change.field === "fixed") {
+      const wantsFixed = parseFixedAnswer(value);
+      if (wantsFixed === null) return { error: `Não entendi o tipo "${value}". Responde *fixo* ou *avulso*.` };
+      const isFixed = Boolean(previous.fixed);
+      if (wantsFixed === isFixed) continue;
+      // marcar como fixo grava 'user' (sem id); marcar como avulso limpa a marca, qualquer que fosse a origem
+      proposed.fixed = wantsFixed ? USER_FIXED : null;
+      views.push({ field: "fixed", label, from: isFixed ? FIXED_LABEL : "avulso", to: wantsFixed ? FIXED_LABEL : "avulso", isNew: false });
     } else if (change.field === "payment_method") {
       const found = findPaymentMethodByName(from, value);
       if (found && found.id === previous.paymentMethodId) continue;

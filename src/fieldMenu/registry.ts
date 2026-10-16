@@ -6,7 +6,7 @@
 export type MenuKind = "expense" | "event" | "reminder" | "recurring" | "income";
 
 // como o valor de cada campo e perguntado e validado
-export type FieldQuestion = "amount" | "date" | "datetime" | "lead" | "day" | "text" | "category" | "payment_method" | "endtime" | "location";
+export type FieldQuestion = "amount" | "date" | "datetime" | "lead" | "day" | "text" | "category" | "payment_method" | "endtime" | "location" | "fixed";
 
 export interface FieldDef {
   key: string; // chave estavel usada em "collected" (para gasto = campo de edit_expense)
@@ -23,6 +23,7 @@ export const FIELD_REGISTRY: Record<MenuKind, FieldDef[]> = {
     { key: "category", label: "Categoria", question: "category", noun: "categoria", aliases: ["categoria"] },
     { key: "date", label: "Data", question: "date", noun: "data", aliases: ["data", "dia"] },
     { key: "payment_method", label: "Pagamento", question: "payment_method", noun: "forma de pagamento", aliases: ["pagamento", "forma de pagamento"] },
+    { key: "fixed", label: "Tipo", question: "fixed", noun: "tipo", aliases: ["tipo", "fixo", "avulso", "conta fixa", "gasto fixo"] },
   ],
   income: [
     { key: "amount", label: "Valor", question: "amount", noun: "valor", aliases: ["valor", "preco"] },

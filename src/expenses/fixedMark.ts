@@ -37,3 +37,20 @@ export function columnsFromMark(mark: FixedMark | null | undefined): { source: F
 export function fixedConfirmationSuffix(mark: FixedMark | null | undefined): string {
   return mark ? ` (${FIXED_LABEL})` : "";
 }
+
+// resposta do usuario sobre o tipo do gasto ("fixo", "conta fixa", "avulso", "nao e fixo"...) -> true (fixo), false (avulso) ou null
+const FIXED_YES = new Set(["fixo", "fixa", "conta fixa", "gasto fixo", "despesa fixa", "e fixo", "e fixa", "sim", "s", "true", "e conta fixa"]);
+const FIXED_NO = new Set(["avulso", "avulsa", "comum", "nao", "n", "false", "nao e fixo", "nao e fixa", "nao e conta fixa", "nao fixo", "nao fixa", "gasto avulso", "gasto comum", "normal"]);
+
+export function parseFixedAnswer(text: string): boolean | null {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (FIXED_YES.has(normalized)) return true;
+  if (FIXED_NO.has(normalized)) return false;
+  return null;
+}

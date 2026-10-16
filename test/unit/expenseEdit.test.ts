@@ -115,7 +115,7 @@ test("mergeRawChanges: campo repetido vale o ultimo valor, na posicao da primeir
       { field: "date", value: "ontem" },
     ]
   );
-  assert.equal(MAX_EDIT_CHANGES, 5);
+  assert.equal(MAX_EDIT_CHANGES, 6);
   assert.equal(isExpenseEditField("category"), true);
   assert.equal(isExpenseEditField("banana"), false);
   assert.equal(isExpenseEditField(3), false);

@@ -3,6 +3,7 @@
 // garante que a mensagem cabe numa mensagem do WhatsApp mesmo com descricoes longas.
 import { formatBRL } from "./preview";
 import { relativeDayLabel } from "../expenses/queryRange";
+import { FIXED_LIST_SUFFIX } from "../expenses/fixedMark";
 
 export const MAX_PERIOD_LIST = 30; // linhas numa lista de periodo
 export const MAX_RECENT_LIST = 20; // "ultimas N"
@@ -19,6 +20,7 @@ export interface ExpenseListLine {
   date: string;
   category: string | null;
   payment_method: string | null;
+  fixed_source?: string | null; // com marca de conta fixa, a linha ganha o 🔁 (Card 15)
 }
 
 const WEEKDAYS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -39,7 +41,8 @@ export function dayHeader(date: string): string {
 export function formatExpenseLine(item: ExpenseListLine, index: number, options: { today: string; withDate: boolean }): string {
   const details = [item.category ?? "sem categoria", item.payment_method].filter(Boolean).join(", ");
   const date = options.withDate ? ` — ${relativeDayLabel(item.date, options.today)}` : "";
-  return `${index}. ${formatBRL(item.amount)} — ${truncateText(item.description)} (${details})${date}`;
+  const fixed = item.fixed_source ? FIXED_LIST_SUFFIX : "";
+  return `${index}. ${formatBRL(item.amount)} — ${truncateText(item.description)} (${details})${date}${fixed}`;
 }
 
 export interface ExpenseListInput {

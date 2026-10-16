@@ -3,6 +3,7 @@
 // importa as funcoes de delete/update de cada dominio). Mesma ideia dos outros
 // caches de conversa (listCache.ts, pendingListChoice.ts, pendingDeletion.ts).
 import { clearPending, getPending, setPending } from "../pending/store";
+import type { FixedMark } from "../expenses/fixedMark";
 
 const TTL_MS = 10 * 60 * 1000;
 
@@ -25,13 +26,13 @@ export type UndoAction =
   | {
       kind: "restore_expense";
       expenseId: number;
-      previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null };
+      previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null; fixed?: FixedMark | null };
       description: string;
     }
   | {
       // editar 2+ gastos numa confirmacao so -- desfazer volta todos de uma vez
       kind: "restore_expenses_batch";
-      items: { expenseId: number; previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null }; description: string }[];
+      items: { expenseId: number; previous: { amount: number; description: string; date: string; categoryId: number | null; paymentMethodId: number | null; fixed?: FixedMark | null }; description: string }[];
       description: string;
     }
   | { kind: "restore_category"; expenseId: number; previousCategoryId: number; description: string }

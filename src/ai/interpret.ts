@@ -41,7 +41,7 @@ export type Interpretation =
   | { type: "delete_reminder"; query: string }
   | { type: "edit_reminder"; query: string; new_message?: string; new_date?: string; new_time?: string }
   | { type: "report"; days?: number; month?: string }
-  | { type: "expense_report"; period?: "week" | "month"; days?: number; category?: string; payment_method?: string; month?: string; date_start?: string; date_end?: string }
+  | { type: "expense_report"; period?: "week" | "month"; days?: number; category?: string; payment_method?: string; month?: string; date_start?: string; date_end?: string; fixed_only?: boolean }
   | { type: "correct_category"; category: string; query?: string }
   | { type: "set_default_payment"; payment_method: string }
   | { type: "set_report_day"; day_of_week?: string }
@@ -113,7 +113,7 @@ export type Interpretation =
         | "recurring_expense"
         | "income";
     }
-  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string }
+  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string; fixed_only?: boolean }
   | { type: "total_last_list" }
   | { type: "delete_expense"; list_ref?: number; query?: string }
   | {
@@ -121,9 +121,9 @@ export type Interpretation =
       list_ref?: number;
       query?: string;
       // formato novo: uma ou mais mudancas no mesmo gasto
-      changes?: { field: "amount" | "date" | "description" | "payment_method" | "category"; value: string }[];
+      changes?: { field: "amount" | "date" | "description" | "payment_method" | "category" | "fixed"; value: string }[];
       // formato antigo (uma mudanca so); normalizado junto com "changes" em expenses/editChanges.ts
-      field?: "amount" | "date" | "description" | "payment_method" | "category";
+      field?: "amount" | "date" | "description" | "payment_method" | "category" | "fixed";
       value?: string;
     }
   | {
@@ -256,6 +256,11 @@ const ACTION_SCHEMA = {
       enum: ["today", "last_n", "from_category", "period", "keyword"],
       description:
         "So para type=bulk_recategorize: qual conjunto de gastos muda de categoria. 'today' = os de hoje. 'last_n' = os N mais recentes (preencha 'n'). 'from_category' = todos os que estao numa categoria (preencha 'category'). 'period' = os de um periodo (preencha 'days', 'period', ou 'date_start'+'date_end'). 'keyword' = os que tem uma palavra na descricao (preencha 'query').",
+    },
+    fixed_only: {
+      type: "boolean",
+      description:
+        "type=list_expenses ou type=expense_report: true quando o usuario quer VER so os gastos marcados como conta fixa ('so as contas fixas', 'gastos fixos do mes', 'o que eu paguei de conta fixa em setembro'). Omitir nas demais consultas. Isto e uma CONSULTA; nao registra nada.",
     },
     payment_method: {
       type: "string",
@@ -416,14 +421,14 @@ const ACTION_SCHEMA = {
     changes: {
       type: "array",
       description:
-        "So para type=edit_expense ou type=edit_income: as mudancas pedidas, UMA por campo (gasto: ate 5; entrada: ate 3, so amount/description/date). Cada item tem 'field' e 'value'. Use sempre este campo, mesmo com uma mudanca so.",
+        "So para type=edit_expense ou type=edit_income: as mudancas pedidas, UMA por campo (gasto: ate 6; entrada: ate 3, so amount/description/date). Cada item tem 'field' e 'value'. Use sempre este campo, mesmo com uma mudanca so.",
       items: {
         type: "object",
         properties: {
           field: {
             type: "string",
-            enum: ["amount", "date", "description", "payment_method", "category"],
-            description: "Qual campo do gasto mudar.",
+            enum: ["amount", "date", "description", "payment_method", "category", "fixed"],
+            description: "Qual campo do gasto mudar. 'fixed' = o TIPO do gasto (conta fixa x avulso): value 'sim' pra marcar como conta fixa ('marca o ultimo gasto como conta fixa') ou 'nao' pra marcar como avulso ('isso nao e conta fixa').",
           },
           value: {
             type: "string",
@@ -436,7 +441,7 @@ const ACTION_SCHEMA = {
     },
     field: {
       type: "string",
-      enum: ["amount", "date", "description", "payment_method", "category"],
+      enum: ["amount", "date", "description", "payment_method", "category", "fixed"],
       description: "Formato antigo (so type=edit_expense): prefira 'changes'.",
     },
     value: {
@@ -576,6 +581,8 @@ Caso contrario, NAO forcar em "Outros" nem em nenhuma outra so por existir — d
 Formas de pagamento ja existentes: ${paymentMethodNames}. So preencha payment_method se o usuario mencionar explicitamente como pagou (ex: "no pix", "no cartao nubank") — se nao mencionar, deixe em branco, o sistema usa a forma padrao do usuario automaticamente.
 
 Se a mensagem for curta e so sinalizar a intencao, sem os dados minimos pra completar a acao (ex: "gasto", "criar gasto", "cadastrar compra", "quero add uma compra", "evento", "lembrete"), NAO tente forcar um type=expense/event/reminder incompleto. Classifique como "unknown" e preencha "likely_intent" com o tipo mais provavel, pra pedir os detalhes que faltam.
+
+Consulta so de contas fixas: "mostra so as contas fixas deste mes", "gastos fixos de setembro", "o que paguei de conta fixa" = list_expenses (ou expense_report, se pedir quanto/total) com fixed_only=true (e month/periodo quando citado). "meus gastos fixos" sozinho sem pedir lancamentos = list_recurring_expenses.
 
 Gasto "fixo": so preencha is_fixed=true em expense/installment_expense quando a mensagem de REGISTRO diz explicitamente que o gasto e fixo ("gastei 80 na luz, conta fixa", "paguei 120 de internet, gasto fixo"). Exemplos que NAO sao fixos: "gastei 80 na luz", "paguei o aluguel", "internet 100". Nunca infira.
 

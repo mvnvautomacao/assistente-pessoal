@@ -8,6 +8,8 @@ export interface ExpenseFilters {
   categoryName?: string;
   paymentMethodId?: number;
   paymentMethodName?: string;
+  // so gastos com marca de conta fixa, de qualquer origem (Card 15)
+  fixedOnly?: boolean;
 }
 
 export type FilterResult = { ok: true; filters: ExpenseFilters } | { ok: false; message: string };
@@ -21,8 +23,9 @@ export function paymentMethodNotFoundText(name: string, available: string[]): st
   return `Não achei a forma de pagamento "${name}".${options}`;
 }
 
-export function resolveExpenseFilters(fromNumber: string, request: { category?: string; payment_method?: string }): FilterResult {
+export function resolveExpenseFilters(fromNumber: string, request: { category?: string; payment_method?: string; fixed_only?: boolean }): FilterResult {
   const filters: ExpenseFilters = {};
+  if (request.fixed_only === true) filters.fixedOnly = true;
 
   const categoryName = request.category?.trim();
   if (categoryName) {
@@ -47,12 +50,12 @@ export function resolveExpenseFilters(fromNumber: string, request: { category?: 
 }
 
 export function hasAnyFilter(filters: ExpenseFilters): boolean {
-  return filters.categoryId !== undefined || filters.paymentMethodId !== undefined;
+  return filters.categoryId !== undefined || filters.paymentMethodId !== undefined || filters.fixedOnly === true;
 }
 
 // "Mercado · Pix" (titulo das ultimas N)
 export function filterLabel(filters: ExpenseFilters): string {
-  return [filters.categoryName, filters.paymentMethodName].filter(Boolean).join(" · ");
+  return [filters.fixedOnly ? "Contas fixas" : null, filters.categoryName, filters.paymentMethodName].filter(Boolean).join(" · ");
 }
 
 // "de Mercado no Pix" (frase dentro de "Nenhum gasto ... em setembro/2026" e do titulo de periodo)

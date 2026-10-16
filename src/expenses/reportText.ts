@@ -26,20 +26,21 @@ export interface ExpenseReportOptions {
   categoryName?: string;
   paymentMethodId?: number;
   paymentMethodName?: string;
+  fixedOnly?: boolean; // so contas fixas (Card 15)
 }
 
 // "💰 Mercado · Nubank — setembro/2026", "💰 Nubank — …", "💰 Gastos — …"
-export function expenseReportTitle(label: string, options: Pick<ExpenseReportOptions, "categoryName" | "paymentMethodName">): string {
-  const filters = [options.categoryName, options.paymentMethodName].filter(Boolean).join(" · ");
+export function expenseReportTitle(label: string, options: Pick<ExpenseReportOptions, "categoryName" | "paymentMethodName" | "fixedOnly">): string {
+  const filters = [options.fixedOnly ? "Contas fixas" : null, options.categoryName, options.paymentMethodName].filter(Boolean).join(" · ");
   return filters ? `💰 ${filters} — ${label}` : `💰 Gastos — ${label}`;
 }
 
 export function buildExpenseReportText(range: DateRange, options: ExpenseReportOptions = {}): string {
-  const summary = getExpenseSummaryBetween(range.start, range.end, options.fromNumber, options.categoryId, options.paymentMethodId);
+  const summary = getExpenseSummaryBetween(range.start, range.end, options.fromNumber, options.categoryId, options.paymentMethodId, options.fixedOnly);
   const title = expenseReportTitle(range.label, options);
 
   if (summary.count === 0) {
-    return `${title}\n\nNenhum gasto registrado nesse período.`;
+    return `${title}\n\n${options.fixedOnly ? "Nenhuma conta fixa lançada nesse período." : "Nenhum gasto registrado nesse período."}`;
   }
 
   let comparison = "";
@@ -50,7 +51,8 @@ export function buildExpenseReportText(range: DateRange, options: ExpenseReportO
       preceding.end,
       options.fromNumber,
       options.categoryId,
-      options.paymentMethodId
+      options.paymentMethodId,
+      options.fixedOnly
     );
     comparison = comparisonLine(summary.total, previousSummary.total);
   }

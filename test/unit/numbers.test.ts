@@ -74,7 +74,7 @@ test("interpretDeleteReply: 'um' apaga, 'tres' cancela, 'dois' so vale quando o 
   assert.equal(interpretDeleteReply("corrigir", true), "not_understood");
 });
 
-test("parseFieldSelection: usa a tabela unica ('um e dois' funciona; 'seis' fica fora do menu)", () => {
+test("parseFieldSelection: usa a tabela unica ('um e dois' funciona; 'sete' fica fora do menu)", () => {
   const keys = (text: string, kind: "expense" | "event" = "expense") => {
     const r = parseFieldSelection(text, kind);
     return r.ok ? r.keys : null;
@@ -82,7 +82,8 @@ test("parseFieldSelection: usa a tabela unica ('um e dois' funciona; 'seis' fica
   assert.deepEqual(keys("um e dois"), ["amount", "description"]);
   assert.deepEqual(keys("uma"), ["amount"]);
   assert.deepEqual(keys("cinco"), ["payment_method"]);
-  assert.equal(keys("seis"), null, "o menu de gasto so tem 5 campos");
+  assert.deepEqual(keys("seis"), ["fixed"], "seis e o campo Tipo");
+  assert.equal(keys("sete"), null, "o menu de gasto so tem 6 campos");
   assert.equal(keys("dez"), null);
   assert.equal(keys("onze"), null);
 });

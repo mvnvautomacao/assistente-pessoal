@@ -2,7 +2,7 @@
 // puras -- a IA devolve ou a lista nova "changes" ou o par antigo field/value, e
 // tudo daqui pra frente so enxerga a lista.
 
-export const EXPENSE_EDIT_FIELDS = ["amount", "date", "description", "payment_method", "category"] as const;
+export const EXPENSE_EDIT_FIELDS = ["amount", "date", "description", "payment_method", "category", "fixed"] as const;
 export type ExpenseEditField = (typeof EXPENSE_EDIT_FIELDS)[number];
 
 export interface RawChange {
@@ -10,9 +10,9 @@ export interface RawChange {
   value: string;
 }
 
-// limites (RN01 / RN07): ate 5 mudancas por gasto (so existem 5 campos) e ate 5
+// limites (RN01 / RN07): ate 6 mudancas por gasto (so existem 6 campos) e ate 5
 // gastos por confirmacao
-export const MAX_EDIT_CHANGES = 5;
+export const MAX_EDIT_CHANGES = 6;
 export const MAX_EDIT_BATCH = 5;
 
 export const EXPENSE_FIELD_LABEL: Record<ExpenseEditField, string> = {
@@ -21,6 +21,7 @@ export const EXPENSE_FIELD_LABEL: Record<ExpenseEditField, string> = {
   description: "Nome",
   payment_method: "Pagamento",
   category: "Categoria",
+  fixed: "Tipo",
 };
 
 export function isExpenseEditField(value: unknown): value is ExpenseEditField {

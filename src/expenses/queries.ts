@@ -23,6 +23,7 @@ export interface ListExpensesParams extends RangeParams {
   last_n?: number;
   category?: string;
   payment_method?: string;
+  fixed_only?: boolean;
 }
 
 export type ListExpensesOutcome =
@@ -46,6 +47,7 @@ function daysInRange(range: DateRange): number {
 }
 
 function emptyListText(filters: ExpenseFilters, label?: string): string {
+  if (filters.fixedOnly) return "Nenhuma conta fixa lançada nesse período.";
   const phrase = filterPhrase(filters);
   if (!phrase) return label ? `Nenhum gasto registrado em ${label}.` : "Você ainda não tem nenhum gasto registrado.";
   return label ? `Nenhum gasto ${phrase} em ${label}.` : `Nenhum gasto ${phrase} registrado.`;
@@ -85,13 +87,13 @@ function recentList(from: string, params: ListExpensesParams, filters: ExpenseFi
 
 // lista detalhada de um periodo (com filtros opcionais), com teto de linhas e total do conjunto completo (RN10)
 export function periodExpenseList(from: string, range: DateRange, filters: ExpenseFilters = {}, today: string = nowToday()): ListExpensesOutcome {
-  const summary = getExpenseSummaryBetween(range.start, range.end, from, filters.categoryId, filters.paymentMethodId);
+  const summary = getExpenseSummaryBetween(range.start, range.end, from, filters.categoryId, filters.paymentMethodId, filters.fixedOnly);
   if (summary.count === 0) {
     return { type: "reply", text: emptyListText(filters, range.label), log: `nenhum gasto em ${range.label}` };
   }
   const items = getExpensesBetween(from, range.start, range.end, { ...filters, limit: MAX_PERIOD_LIST });
   const phrase = filterPhrase(filters);
-  const title = `Gastos${phrase ? ` ${phrase}` : ""} — ${range.label}`;
+  const title = `${filters.fixedOnly ? "Contas fixas" : "Gastos"}${phrase ? ` ${phrase}` : ""} — ${range.label}`;
   const grouped = daysInRange(range) > 1;
   const out = formatExpenseList({ title, items, total: summary.total, totalCount: summary.count, today, grouped, dashboardUrl: config.dashboardUrl });
   return {
@@ -136,6 +138,7 @@ export function runListExpenses(from: string, params: ListExpensesParams, today:
 export interface ExpenseReportParams extends RangeParams {
   category?: string;
   payment_method?: string;
+  fixed_only?: boolean;
 }
 
 export function runExpenseReport(from: string, params: ExpenseReportParams, today: string = nowToday()): { text: string; log: string } {
@@ -152,6 +155,7 @@ export function runExpenseReport(from: string, params: ExpenseReportParams, toda
     categoryName: filters.categoryName,
     paymentMethodId: filters.paymentMethodId,
     paymentMethodName: filters.paymentMethodName,
+    fixedOnly: filters.fixedOnly,
   });
   const filterNote = filterLabel(filters);
   return { text, log: `${range.label}${filterNote ? ` (${filterNote})` : ""}` };
