@@ -19,7 +19,7 @@ export function isChoiceQuestion(question: FieldQuestion): boolean {
   return question === "category" || question === "payment_method";
 }
 
-const CORRECTION_KIND: Record<Exclude<FieldQuestion, "category" | "payment_method" | "fixed">, CorrectionKind> = {
+const CORRECTION_KIND: Record<Exclude<FieldQuestion, "category" | "payment_method" | "fixed" | "interval">, CorrectionKind> = {
   amount: "amount",
   date: "date",
   datetime: "datetime",
@@ -42,6 +42,8 @@ export function formatFieldQuestion(params: { def: FieldDef; step: number; total
     return `${prefix}${title}\n${list}${how} (se não existir, eu só crio depois que você confirmar). Ou *cancelar*.`;
   }
   if (def.question === "fixed") return `${prefix}Esse gasto é *fixo* (conta fixa) ou *avulso*? Responde fixo ou avulso. Ou *cancelar*.`;
+  if (def.question === "interval") return `${prefix}De quantos em quantos dias devo te avisar? (ex: 45) Ou responde *cancelar*.`;
+  if (def.key === "next_due") return `${prefix}Quando é o próximo aviso? (ex: 15/11 ou dia 20) Ou responde *cancelar*.`;
   return `${prefix}${correctionQuestion(CORRECTION_KIND[def.question as keyof typeof CORRECTION_KIND], def.noun)}`;
 }
 

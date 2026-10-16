@@ -3,10 +3,11 @@
 // apelidos aceitos na selecao -- acrescentar um campo no futuro (ex: "Local")
 // e so uma linha aqui.
 
-export type MenuKind = "expense" | "event" | "reminder" | "recurring" | "income";
+// bill_alert = alerta de conta por dia do mes; bill_alert_interval = por intervalo (ganha "Proximo aviso")
+export type MenuKind = "expense" | "event" | "reminder" | "recurring" | "income" | "bill_alert" | "bill_alert_interval";
 
 // como o valor de cada campo e perguntado e validado
-export type FieldQuestion = "amount" | "date" | "datetime" | "lead" | "day" | "text" | "category" | "payment_method" | "endtime" | "location" | "fixed";
+export type FieldQuestion = "amount" | "date" | "datetime" | "lead" | "day" | "text" | "category" | "payment_method" | "endtime" | "location" | "fixed" | "interval";
 
 export interface FieldDef {
   key: string; // chave estavel usada em "collected" (para gasto = campo de edit_expense)
@@ -40,6 +41,17 @@ export const FIELD_REGISTRY: Record<MenuKind, FieldDef[]> = {
   reminder: [
     { key: "datetime", label: "Dia e hora", question: "datetime", noun: "data e hora", aliases: ["dia e hora", "dia", "hora", "horario", "data", "quando"] },
     { key: "message", label: "Texto", question: "text", noun: "texto", aliases: ["texto", "mensagem", "nome"] },
+  ],
+  bill_alert: [
+    { key: "name", label: "Nome", question: "text", noun: "nome", aliases: ["nome"] },
+    { key: "day", label: "Dia do mês", question: "day", noun: "dia do mês", aliases: ["dia do mes", "dia", "vencimento"] },
+    { key: "interval", label: "Intervalo", question: "interval", noun: "intervalo", aliases: ["intervalo", "dias", "a cada"] },
+  ],
+  bill_alert_interval: [
+    { key: "name", label: "Nome", question: "text", noun: "nome", aliases: ["nome"] },
+    { key: "day", label: "Dia do mês", question: "day", noun: "dia do mês", aliases: ["dia do mes", "dia", "vencimento"] },
+    { key: "interval", label: "Intervalo", question: "interval", noun: "intervalo", aliases: ["intervalo", "dias", "a cada"] },
+    { key: "next_due", label: "Próximo aviso", question: "date", noun: "próximo aviso", aliases: ["proximo aviso", "proximo", "data", "quando"] },
   ],
   recurring: [
     { key: "description", label: "Nome", question: "text", noun: "nome", aliases: ["nome", "descricao"] },

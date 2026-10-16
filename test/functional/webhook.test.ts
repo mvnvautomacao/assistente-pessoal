@@ -2183,7 +2183,7 @@ test("total_last_list sem nenhuma lista recente orienta em vez de inventar um va
 });
 
 // Pedido do usuario: editar alerta de conta fixa tambem pelo WhatsApp.
-test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia; alerta inexistente avisa", async (t) => {
+test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia (agora com previa 1/2/3); alerta inexistente avisa", async (t) => {
   const EB = "551100090820";
   seed(EB);
   const bill = createBillAlert({ fromNumber: EB, name: "Agua editar wpp", dayOfMonth: 5 });
@@ -2191,11 +2191,15 @@ test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia; alerta i
 
   queueReply([{ type: "edit_bill_alert", query: "agua editar", day_of_month: 8 }]);
   await handleIncomingMessage(evolutionMessage(EB, "muda o alerta da agua pro dia 8"));
-  assert.match(sent[0].text, /todo dia 8/);
+  assert.match(sent[0].text, /Recorrência: todo dia 5 → todo dia 8/);
+  assert.equal(getBillAlertById(EB, bill.id)!.day_of_month, 5, "nada gravado antes do 1");
+  await handleIncomingMessage(evolutionMessage(EB, "1"));
+  assert.match(sent[1].text, /todo dia 8/);
   assert.equal(getBillAlertById(EB, bill.id)!.day_of_month, 8);
 
   queueReply([{ type: "edit_bill_alert", query: "agua editar", interval_days: 30, new_name: "Agua a cada 30" }]);
   await handleIncomingMessage(evolutionMessage(EB, "o alerta da agua agora e a cada 30 dias e renomeia"));
+  await handleIncomingMessage(evolutionMessage(EB, "1"));
   const updated = getBillAlertById(EB, bill.id)!;
   assert.equal(updated.recurrence_type, "interval");
   assert.equal(updated.interval_days, 30);
@@ -2203,11 +2207,11 @@ test("edit_bill_alert: muda dia do mes, troca pra intervalo e renomeia; alerta i
 
   queueReply([{ type: "edit_bill_alert", query: "alerta que nao existe zzz", day_of_month: 3 }]);
   await handleIncomingMessage(evolutionMessage(EB, "muda o alerta zzz pro dia 3"));
-  assert.match(sent[2].text, /Não achei/);
+  assert.match(sent[sent.length - 1].text, /Não achei/);
 
   queueReply([{ type: "edit_bill_alert", query: "Agua a cada 30", day_of_month: 40 }]);
   await handleIncomingMessage(evolutionMessage(EB, "muda pro dia 40"));
-  assert.match(sent[3].text, /1 a 31/);
+  assert.match(sent[sent.length - 1].text, /1 a 31/);
 });
 
 test("balance: cartao nao abate do saldo, so mostra o gasto no cartao e o limite disponivel quando informado", async (t) => {
@@ -3172,7 +3176,7 @@ test("palavra solta de edicao: resposta que nao e nenhuma opcao pergunta de novo
   const cases: [string, RegExp][] = [
     ["2", /Suas categorias/],
     ["5", /Você não tem nenhum lembrete pendente pra editar\./],
-    ["6", /Seus alertas de conta \(vencimento\)/],
+    ["6", /Você não tem nenhuma conta fixa cadastrada pra editar\./],
     ["7", /Você não tem nenhum gasto fixo pra editar\./],
     ["gasto fixo", /Você não tem nenhum gasto fixo pra editar\./],
   ];

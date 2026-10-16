@@ -165,7 +165,10 @@ import {
   PendingEditRecurring,
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
-import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount } from "./bills/service";
+import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount, restoreBillAlertFields } from "./bills/service";
+import { BILL_DUPLICATE_WARNING, BillChangeKey, BillChangeRequest, BillParams, applyBillChanges, billAlertLine, billChanges, hasBillChangeRequest, nextOccurrenceDate, recurrenceText } from "./bills/editPlan";
+import { PendingEditBillAlert, clearPendingEditBillAlert, getPendingEditBillAlert, setPendingEditBillAlert } from "./bills/pendingEdit";
+import { resolveDate } from "./expenses/editItem";
 import { FixedMark, USER_FIXED, fixedConfirmationSuffix, markFromColumns } from "./expenses/fixedMark";
 import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply } from "./bills/checkinReply";
@@ -280,7 +283,7 @@ import {
   setPendingCreateRecurrence,
 } from "./recurrence/pending";
 import { launchRecurringExpense } from "./expenses/recurringLaunch";
-import { normalizeSearch } from "./text/search";
+import { filterByQuery, normalizeSearch } from "./text/search";
 import { DeleteSpec, deleteNotUnderstood, formatDeleteConfirmation, interpretDeleteReply } from "./confirmation/deletePreview";
 import { setPendingTargetChoice, getPendingTargetChoice, clearPendingTargetChoice, PendingTargetChoice, TargetKind } from "./targetChoice/pending";
 import { interpretTargetReply } from "./targetChoice/reply";
@@ -468,6 +471,10 @@ Exemplo: "todo dia 10 pago 50 reais de internet" — ou só "cadastrar gasto fix
 Antes de gravar eu mostro um resumo: *1* confirma, *2* corrige, *3* cancela. Se você já tem um com nome parecido, eu aviso e deixo atualizar o que existe. Se o dia já passou neste mês, pergunto se lanço o deste mês agora.
 
 A partir daí, todo mês eu lanço esse gasto sozinho, no dia certo, sem você precisar mandar mensagem de novo. Se for só pra ser avisado (sem lançar), diga "me lembra da luz todo dia 5" ou "me lembra da ração a cada 45 dias" — isso cria um alerta, que só pergunta "já fez?".
+
+Quando o aviso chegar, responde *1* (já paguei — eu pergunto o valor e lanço como gasto do mês, marcado como conta fixa), *2* (me lembra amanhã) ou *3* (pular este mês). Na pergunta do valor, "igual" repete o do mês passado e "pular" fecha sem lançar nada. Um gasto só vira conta fixa quando você diz "conta fixa" ou "gasto fixo"; senão é avulso.
+
+Pra ver só as contas fixas: "gastos fixos do mês". Pra mudar um alerta (nome, dia, intervalo, próximo aviso): "editar conta fixa". Pra mudar um gasto avulso para fixo (ou o contrário): "editar" e escolher o campo *Tipo*.
 
 Pra ver quais você já tem: "quais gastos fixos eu tenho"
 
@@ -929,6 +936,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     const pendingEditRecurring = getPendingEditRecurring(from);
     if (pendingEditRecurring) {
       await resolveEditRecurringConfirmation(from, pendingEditRecurring, text);
+      return;
+    }
+
+    const pendingEditBill = getPendingEditBillAlert(from);
+    if (pendingEditBill) {
+      await resolveEditBillConfirmation(from, pendingEditBill, text);
       return;
     }
 
@@ -1532,6 +1545,7 @@ const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>([
   "edit_event",
   "edit_reminder",
   "edit_recurring_expense",
+  "edit_bill_alert",
   "edit_expense",
   "correct_category",
   "edit_income",
@@ -1782,9 +1796,9 @@ function parseEditTarget(answer: string): EditTarget | null {
   return null;
 }
 
-// resposta ao "o que voce quer editar?": gasto, evento, lembrete e gasto fixo
+// resposta ao "o que voce quer editar?": gasto, evento, lembrete, gasto fixo e alerta de conta
 // mostram a lista numerada (escolha do item -> menu de campos); categoria, forma
-// de pagamento e alerta de conta continuam mostrando o que existe + frase de exemplo.
+// de pagamento continuam mostrando o que existe + frase de exemplo.
 async function resolveEditTargetChoice(from: string, answerText: string) {
   const target = parseEditTarget(answerText);
   if (!target) {
@@ -1794,7 +1808,7 @@ async function resolveEditTargetChoice(from: string, answerText: string) {
   clearPendingEditTarget(from);
   logActivity(from, "help", `escolheu editar: ${target}`);
 
-  if (target === "expense" || target === "event" || target === "reminder" || target === "recurring" || target === "income") {
+  if (target === "expense" || target === "event" || target === "reminder" || target === "recurring" || target === "income" || target === "bill_alert") {
     await offerBrowseList(from, target);
     return;
   }
@@ -1816,14 +1830,7 @@ async function resolveEditTargetChoice(from: string, answerText: string) {
     );
     return;
   }
-  const bills = listBillAlerts(from);
-  const lines = bills.length
-    ? bills.map((b) => `• ${b.name} — ${b.recurrence_type === "interval" ? `a cada ${b.interval_days} dias` : `todo dia ${b.day_of_month}`}`).join("\n")
-    : "(nenhuma conta fixa cadastrada)";
-  await sendText(
-    from,
-    `Seus alertas de conta (vencimento):\n\n${lines}\n\nEx: "muda o alerta da água pro dia 8" ou "renomeia o alerta da luz pra Energia". Pra gastos fixos lançados sozinhos, escolha a opção 7 do menu "editar".`
-  );
+  await offerBrowseList(from, "bill_alert");
 }
 
 function looksLikeExplicitDifferentRequest(message: string): boolean {
@@ -1868,6 +1875,7 @@ function cancelAllPendings(from: string): number {
     [getPendingRemoveBudget(from), () => clearPendingRemoveBudget(from)],
     [getPendingRemoveRecurring(from), () => clearPendingRemoveRecurring(from)],
     [getPendingEditRecurring(from), () => clearPendingEditRecurring(from)],
+    [getPendingEditBillAlert(from), () => clearPendingEditBillAlert(from)],
     [getPendingEditTarget(from) || null, () => clearPendingEditTarget(from)],
     [getPendingTargetChoice(from), () => clearPendingTargetChoice(from)],
     [getPendingFieldMenu(from), () => clearPendingFieldMenu(from)],
@@ -3269,6 +3277,7 @@ const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
   recurring: "Você não tem nenhum gasto fixo pra editar.",
   income: "Você ainda não tem nenhuma entrada registrada pra editar.",
   reminder_sent: SNOOZE_NOT_FOUND_TEXT,
+  bill_alert: "Você não tem nenhuma conta fixa cadastrada pra editar.",
 };
 
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
@@ -3282,6 +3291,7 @@ function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: st
   if (kind === "reminder") return query ? `Não encontrei nenhum lembrete parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.reminder;
   if (kind === "recurring") return query ? `Não achei nenhum gasto fixo parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.recurring;
   if (kind === "reminder_sent") return SNOOZE_NOT_FOUND_TEXT;
+  if (kind === "bill_alert") return query ? `Não achei nenhum alerta parecido com "${query}".` : NOTHING_TO_EDIT_TEXT.bill_alert;
   if (kind === "income") {
     if (query) return `Não achei nenhuma entrada parecida com "${query}".`;
     return action.type === "delete_income" ? "Você ainda não tem nenhuma entrada registrada pra apagar." : NOTHING_TO_EDIT_TEXT.income;
@@ -3319,6 +3329,8 @@ function searchTargets(from: string, kind: TargetKind, query: string, eventScope
     entries = findActiveRecurringCandidates(from, query).map((r) => ({ id: r.id, line: recurringLine(r) }));
   } else if (kind === "income") {
     entries = findIncomeCandidates(from, query).map((i) => ({ id: i.id, line: incomeLine(i) }));
+  } else if (kind === "bill_alert") {
+    entries = filterByQuery(listBillAlerts(from), (b) => b.name, query, MAX_TARGET_CANDIDATES * 4).map((b) => ({ id: b.id, line: billAlertLine(billParamsOfRow(b)) }));
   } else if (kind === "reminder_sent") {
     entries = findRecentSentReminders(from, query, 24).map((r) => ({ id: r.id, line: reminderLine(r) }));
   } else {
@@ -3341,6 +3353,7 @@ function browseTargets(from: string, kind: TargetKind, eventScope: EventScope = 
   else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
   else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: incomeLine(i) }));
+  else if (kind === "bill_alert") entries = listBillAlerts(from).map((b) => ({ id: b.id, line: billAlertLine(billParamsOfRow(b)) }));
   else if (kind === "reminder_sent") entries = findRecentSentReminders(from, undefined, 2).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
   const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
@@ -3353,6 +3366,7 @@ function emptyEditAction(kind: TargetKind): Interpretation {
   if (kind === "reminder") return { type: "edit_reminder", query: "" };
   if (kind === "recurring") return { type: "edit_recurring_expense", query: "" };
   if (kind === "income") return { type: "edit_income" };
+  if (kind === "bill_alert") return { type: "edit_bill_alert", query: "" };
   return { type: "edit_expense" };
 }
 
@@ -3361,6 +3375,11 @@ async function offerBrowseList(from: string, kind: TargetKind) {
   const found = browseTargets(from, kind);
   if (found.total === 0) {
     await sendText(from, NOTHING_TO_EDIT_TEXT[kind]);
+    return;
+  }
+  // um alerta so: direto pro menu de campos, sem lista de um item
+  if (kind === "bill_alert" && found.total === 1) {
+    await openFieldMenu(from, billMenuKind(getBillAlertById(from, found.ids[0])!), found.ids[0]);
     return;
   }
   // continua valendo "muda o valor do 2 pra 45" em cima dessa lista (RN10)
@@ -3374,6 +3393,7 @@ function targetExists(from: string, kind: TargetKind, id: number): boolean {
   if (kind === "recurring") return Boolean(getRecurringExpenseById(from, id)?.active);
   if (kind === "income") return Boolean(getIncomeById(from, id));
   if (kind === "reminder_sent") return Boolean(getReminderById(from, id));
+  if (kind === "bill_alert") return Boolean(getBillAlertById(from, id)?.active);
   return Boolean(getExpenseById(from, id));
 }
 
@@ -3530,6 +3550,11 @@ function describeActiveEditConfirmation(from: string): { label: string; awaiting
   if (event) return { label: event.title, awaitingCorrection: event.awaitingCorrection, kind: eventEditKind(event) };
   const reminder = getPendingEditReminder(from);
   if (reminder) return { label: reminder.message, awaitingCorrection: reminder.awaitingCorrection, kind: reminderCorrectionKind(reminder) };
+  const bill = getPendingEditBillAlert(from);
+  if (bill) {
+    const key = bill.correctionStage === "value" ? bill.correctionTarget : null;
+    return { label: bill.previous.name, awaitingCorrection: bill.awaitingCorrection, kind: key === "next_due" ? "date" : "text" };
+  }
   const recurring = getPendingEditRecurring(from);
   if (recurring) {
     return { label: recurring.previous.description, awaitingCorrection: recurring.awaitingCorrection, kind: recurringCorrectionTarget(recurring).kind };
@@ -3546,6 +3571,7 @@ function clearEditConfirmations(from: string) {
   clearPendingEditEvent(from);
   clearPendingEditReminder(from);
   clearPendingEditRecurring(from);
+  clearPendingEditBillAlert(from);
 }
 
 type CorrectionValue =
@@ -3617,6 +3643,8 @@ const MENU_ACTIVITY: Record<MenuKind, string> = {
   event: "edit_event",
   reminder: "edit_reminder",
   recurring: "edit_recurring_expense",
+  bill_alert: "edit_bill_alert",
+  bill_alert_interval: "edit_bill_alert",
 };
 
 // cabecalho do item (1a linha do menu); null quando o item nao existe mais
@@ -3636,6 +3664,10 @@ function fieldMenuHeader(from: string, kind: MenuKind, itemId: number): { header
   if (kind === "reminder") {
     const reminder = getReminderById(from, itemId);
     return reminder ? { header: reminderLine(reminder), label: reminder.message } : null;
+  }
+  if (kind === "bill_alert" || kind === "bill_alert_interval") {
+    const bill = getBillAlertById(from, itemId);
+    return bill && bill.active ? { header: billAlertLine(billParamsOfRow(bill)), label: bill.name } : null;
   }
   const recurring = getRecurringExpenseById(from, itemId);
   if (!recurring || !recurring.active) return null;
@@ -3699,6 +3731,15 @@ async function dispatchFieldMenuEdit(from: string, pending: PendingFieldMenu) {
     };
   } else if (pending.kind === "reminder") {
     action = { type: "edit_reminder", query: "", new_message: c.message as string | undefined, new_date: dateTime?.newDate, new_time: dateTime?.newTime };
+  } else if (pending.kind === "bill_alert" || pending.kind === "bill_alert_interval") {
+    action = {
+      type: "edit_bill_alert",
+      query: "",
+      new_name: c.name as string | undefined,
+      day_of_month: c.day as number | undefined,
+      interval_days: c.interval as number | undefined,
+      next_due_date: c.next_due as string | undefined,
+    };
   } else {
     action = {
       type: "edit_recurring_expense",
@@ -4906,6 +4947,180 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
   await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_recurring_expense", label: pending.previous.description });
 }
 
+// ---- edicao guiada de conta fixa / alerta de conta (Card 15) ------------------------------------------------
+// "editar conta fixa" -> lista numerada -> menu de campos (Nome, Dia do mes, Intervalo, Proximo aviso) -> previa 1/2/3
+// com "antes → depois". A edicao por frase livre ("muda o alerta da agua pro dia 8") termina na mesma previa. Regras
+// puras em bills/editPlan.ts.
+
+function billParamsOfRow(bill: BillAlert): BillParams {
+  return {
+    name: bill.name,
+    recurrenceType: bill.recurrence_type,
+    dayOfMonth: bill.recurrence_type === "interval" ? null : bill.day_of_month,
+    intervalDays: bill.recurrence_type === "interval" ? bill.interval_days : null,
+    nextDueDate: bill.recurrence_type === "interval" ? bill.next_due_date : null,
+  };
+}
+
+// o menu do alerta por intervalo tem tambem o "Proximo aviso"
+function billMenuKind(bill: BillAlert): MenuKind {
+  return bill.recurrence_type === "interval" ? "bill_alert_interval" : "bill_alert";
+}
+
+function billEditPreviewText(pending: Omit<PendingEditBillAlert, "createdAt">): string {
+  const changes = billChanges(pending.previous, pending.proposed).map((c) => ({ label: c.label, from: c.from, to: c.to }));
+  return formatEditPreview(pending.previous.name, changes, pending.duplicateName ? BILL_DUPLICATE_WARNING : undefined);
+}
+
+// Monta a previa de uma edicao de alerta. Nada e gravado aqui.
+async function startBillAlertEdit(from: string, bill: BillAlert, request: BillChangeRequest) {
+  const today = spDateString(new Date(Date.now()));
+  const previous = billParamsOfRow(bill);
+  const applied = applyBillChanges(previous, request, today);
+  if (!applied.ok) {
+    logActivity(from, "edit_bill_alert", `pedido invalido em "${bill.name}": ${applied.error}`);
+    await sendText(from, applied.error);
+    return;
+  }
+  if (billChanges(previous, applied.proposed).length === 0) {
+    logActivity(from, "edit_bill_alert", `pedido sem mudanca real em "${bill.name}"`);
+    await sendText(from, NO_CHANGE_TEXT);
+    return;
+  }
+  const duplicateName =
+    applied.proposed.name !== previous.name &&
+    listBillAlerts(from).some((other) => other.id !== bill.id && normalizeSearch(other.name) === normalizeSearch(applied.proposed.name));
+  const pending = { billAlertId: bill.id, previous, proposed: applied.proposed, duplicateName, awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
+  clearEditConfirmations(from);
+  setPendingEditBillAlert(from, pending);
+  logActivity(from, "edit_bill_alert", `pediu confirmacao: "${bill.name}": ${billChanges(previous, applied.proposed).map((c) => `${c.label} ${c.from} -> ${c.to}`).join(", ")}`);
+  await sendText(from, billEditPreviewText(pending));
+}
+
+const BILL_CORRECTION_KIND: Record<BillChangeKey, CorrectionKind> = { name: "text", recurrence: "text", next_due: "date" };
+const BILL_CORRECTION_NOUN: Record<BillChangeKey, string> = { name: "nome", recurrence: "recorrência", next_due: "data" };
+
+function billCorrectionQuestion(key: BillChangeKey): string {
+  if (key === "recurrence") return "Quando devo te avisar? (ex: *dia 10* ou *a cada 45 dias*) Ou responde *cancelar*.";
+  return correctionQuestion(BILL_CORRECTION_KIND[key], BILL_CORRECTION_NOUN[key]);
+}
+
+async function resolveEditBillConfirmation(from: string, pending: PendingEditBillAlert, answerText: string) {
+  const label = pending.previous.name;
+  const today = spDateString(new Date(Date.now()));
+  const changes = billChanges(pending.previous, pending.proposed);
+
+  const cancel = async (why: string) => {
+    clearPendingEditBillAlert(from);
+    logActivity(from, "edit_bill_alert", `${why}: "${label}"`);
+    await sendText(from, "Beleza, não mexi em nada.");
+  };
+
+  // aplica o novo valor de UM campo na proposta e mostra a previa de novo
+  const applyCorrection = async (key: BillChangeKey, text: string): Promise<boolean> => {
+    const retry = async (reason: string) => {
+      await sendText(from, `${reason}\n${billCorrectionQuestion(key)}`);
+      return false;
+    };
+    let proposed: BillParams;
+    if (key === "name") {
+      const name = text.trim();
+      if (!name) return retry("Não recebi nada.");
+      const applied = applyBillChanges(pending.proposed, { name }, today);
+      if (!applied.ok) return retry(applied.error);
+      proposed = applied.proposed;
+    } else if (key === "recurrence") {
+      const parsed = parseFillAnswer("schedule", text);
+      if (parsed.problem) return retry(parsed.problem);
+      if (parsed.patch.dayOfMonth === undefined && parsed.patch.intervalDays === undefined) return retry("Não entendi quando devo te avisar.");
+      const applied = applyBillChanges(pending.previous, { dayOfMonth: parsed.patch.dayOfMonth, intervalDays: parsed.patch.intervalDays }, today);
+      if (!applied.ok) return retry(applied.error);
+      proposed = { ...applied.proposed, name: pending.proposed.name };
+    } else {
+      let nextDueDate = nextOccurrenceDate(text, today);
+      if (!nextDueDate) {
+        const date = await resolveDate(text.trim(), today);
+        if (!date.ok) return retry(`Não entendi a data "${text.trim()}". Me manda o dia, ex: 15/11.`);
+        nextDueDate = date.date;
+      }
+      const applied = applyBillChanges(pending.proposed, { nextDueDate }, today);
+      if (!applied.ok) return retry(applied.error);
+      proposed = applied.proposed;
+    }
+    if (billChanges(pending.previous, proposed).length === 0) {
+      clearPendingEditBillAlert(from);
+      await sendText(from, NO_CHANGE_TEXT);
+      return true;
+    }
+    const duplicateName =
+      proposed.name !== pending.previous.name &&
+      listBillAlerts(from).some((other) => other.id !== pending.billAlertId && normalizeSearch(other.name) === normalizeSearch(proposed.name));
+    const next = { ...pending, proposed, duplicateName, awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
+    setPendingEditBillAlert(from, next);
+    logActivity(from, "edit_bill_alert", `correcao: "${label}"`);
+    await sendText(from, billEditPreviewText(next));
+    return true;
+  };
+
+  if (pending.awaitingCorrection) {
+    if (isCancelWord(answerText)) return cancel("correcao cancelada");
+    if (pending.correctionStage === "pick") {
+      const number = parseChoiceNumber(answerText);
+      const picked = number !== null ? changes[number - 1] : undefined;
+      if (!picked) {
+        await sendText(from, `Não entendi 🤔\n${formatCorrectionLabels(changes.map((c) => c.label))}`);
+        return;
+      }
+      setPendingEditBillAlert(from, { ...pending, correctionStage: "value", correctionTarget: picked.key });
+      await sendText(from, billCorrectionQuestion(picked.key));
+      return;
+    }
+    await applyCorrection(pending.correctionTarget!, answerText);
+    return;
+  }
+
+  const reply = classifyConfirmationReply(answerText);
+  if (reply === "cancel") return cancel("alteracao nao confirmada");
+  if (reply === "correct") {
+    if (changes.length === 1) {
+      setPendingEditBillAlert(from, { ...pending, awaitingCorrection: true, correctionStage: "value", correctionTarget: changes[0].key });
+      await sendText(from, billCorrectionQuestion(changes[0].key));
+    } else {
+      setPendingEditBillAlert(from, { ...pending, awaitingCorrection: true, correctionStage: "pick", correctionTarget: null });
+      await sendText(from, formatCorrectionLabels(changes.map((c) => c.label)));
+    }
+    logActivity(from, "edit_bill_alert", `pediu pra corrigir "${label}"`);
+    return;
+  }
+  if (reply === "confirm") {
+    clearPendingEditBillAlert(from);
+    const current = getBillAlertById(from, pending.billAlertId);
+    if (!current || !current.active) {
+      await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    const prev = pending.previous;
+    const next = pending.proposed;
+    const update: { name?: string; dayOfMonth?: number; intervalDays?: number; nextDueDate?: string } = {};
+    if (next.name !== prev.name) update.name = next.name;
+    if (recurrenceText(prev) !== recurrenceText(next)) {
+      if (next.recurrenceType === "interval") update.intervalDays = next.intervalDays!;
+      else update.dayOfMonth = next.dayOfMonth!;
+    }
+    if (next.recurrenceType === "interval" && next.nextDueDate && next.nextDueDate !== prev.nextDueDate) update.nextDueDate = next.nextDueDate;
+    const updated = updateBillAlert(from, pending.billAlertId, update);
+    if (!updated) {
+      await sendText(from, `Não consegui editar "${label}".`);
+      return;
+    }
+    setPendingUndo(from, { kind: "restore_bill_alert_fields", billAlertId: pending.billAlertId, previous: prev, description: prev.name });
+    logActivity(from, "edit_bill_alert", `confirmado: "${prev.name}" -> "${updated.name}", ${recurrenceText(billParamsOfRow(updated))}`);
+    await replyWithUndo(from, `✏️ Alerta atualizado: "${updated.name}" — ${recurrenceText(billParamsOfRow(updated))}.`);
+    return;
+  }
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_bill_alert", label });
+}
+
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
 async function resolveRemoveBillAlertConfirmation(from: string, pending: PendingRemoveBillAlert, answerText: string) {
   await handleDeleteReply(from, { flow: "bill_alert" }, answerText, "remove_bill_alert", {
@@ -5925,35 +6140,21 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "edit_bill_alert": {
-      const bill = findActiveBillAlertByName(from, interpretation.query);
-      if (!bill) {
-        logActivity(from, "edit_bill_alert", `nenhum alerta encontrado para "${interpretation.query}"`);
-        await sendText(from, `Não achei nenhum alerta parecido com "${interpretation.query}".`);
+      const request: BillChangeRequest = {
+        name: interpretation.new_name,
+        dayOfMonth: interpretation.day_of_month,
+        intervalDays: interpretation.interval_days,
+        nextDueDate: interpretation.next_due_date,
+      };
+      const billId = await chooseTarget(from, "bill_alert", interpretation, interpretation.query?.trim() || undefined, resolvedTargetId);
+      if (billId === null) break;
+      const bill = getBillAlertById(from, billId)!;
+      // sem mudanca explicita abre o menu de campos (Card 15, RN07)
+      if (!hasBillChangeRequest(request)) {
+        await openFieldMenu(from, billMenuKind(bill), bill.id);
         break;
       }
-      const newName = interpretation.new_name?.trim() || undefined;
-      const dayOfMonth = interpretation.day_of_month;
-      const intervalDays = interpretation.interval_days;
-      if (dayOfMonth !== undefined && (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31)) {
-        await sendText(from, "O dia do mês precisa ser um número de 1 a 31.");
-        break;
-      }
-      if (intervalDays !== undefined && (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 3650)) {
-        await sendText(from, "O intervalo precisa ser um número de dias entre 1 e 3650.");
-        break;
-      }
-      if (!newName && dayOfMonth === undefined && intervalDays === undefined) {
-        await sendText(from, `O que você quer mudar em "${bill.name}"? Pode ser o nome, o dia do mês ou o intervalo de dias, ex: "muda o alerta da água pro dia 8".`);
-        break;
-      }
-      const updated = updateBillAlert(from, bill.id, { name: newName, dayOfMonth, intervalDays });
-      if (!updated) {
-        await sendText(from, `Não consegui editar "${bill.name}".`);
-        break;
-      }
-      const recurrenceLabel = updated.recurrence_type === "interval" ? `a cada ${updated.interval_days} dias` : `todo dia ${updated.day_of_month}`;
-      logActivity(from, "edit_bill_alert", `"${bill.name}" -> "${updated.name}", ${recurrenceLabel}`);
-      await sendText(from, `✏️ Alerta atualizado: "${updated.name}" — ${recurrenceLabel}.`);
+      await startBillAlertEdit(from, bill, request);
       break;
     }
     case "remove_bill_alert": {
@@ -6191,6 +6392,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           createBillAlert(undo.params);
           logActivity(from, "undo", `alerta de conta fixa recriado: ${undo.description}`);
           await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" voltou a ser perguntado todo mês.`);
+          break;
+        case "restore_bill_alert_fields":
+          restoreBillAlertFields(from, undo.billAlertId, undo.previous);
+          logActivity(from, "undo", `edicao de alerta desfeita: ${undo.description}`);
+          await sendText(from, `↩️ Prontinho, o alerta de "${undo.description}" voltou como estava antes.`);
           break;
         case "deactivate_recurring_expense":
           deactivateRecurringExpense(from, undo.recurringId);

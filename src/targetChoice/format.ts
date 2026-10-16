@@ -7,7 +7,7 @@ import type { TargetKind } from "./pending";
 // no maximo isso de candidatos por lista (RN02)
 export const MAX_TARGET_CANDIDATES = 8;
 
-const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos", income: "entradas", reminder_sent: "lembretes" };
+const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos", income: "entradas", reminder_sent: "lembretes", bill_alert: "contas fixas" };
 
 // titulo da lista "navegar" (usuario escolheu editar um tipo, sem citar nenhum item)
 const BROWSE_TITLE: Record<TargetKind, string> = {
@@ -17,7 +17,11 @@ const BROWSE_TITLE: Record<TargetKind, string> = {
   recurring: "Seus gastos fixos:",
   income: "Suas últimas entradas:",
   reminder_sent: "Esses lembretes tocaram há pouco:",
+  bill_alert: "Suas contas fixas (avisos):",
 };
+
+// rodape da lista de contas fixas (alertas): lembra onde editar o gasto fixo que lanca sozinho
+export const BILL_LIST_FOOTER = 'Pra gastos fixos lançados sozinhos, diga "editar gasto fixo".';
 
 export function eventLine(event: { title: string; start: string; end?: string | null }, now: Date = new Date(Date.now())): string {
   return `${event.title} — ${formatWhen(event.start)}${eventStatusSuffix(event, now)}`;
@@ -58,7 +62,8 @@ export function formatTargetList(params: { kind: TargetKind; header: TargetListH
         : `Achei ${total} ${NOUN_PLURAL[kind]} com "${header.query}":`;
   const numbered = lines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
   const more = total > lines.length ? "\nTem mais opções. Diga o nome mais específico ou *cancelar*." : "";
-  return `${title}\n${numbered}${more}\n\nQual deles você quer ${verb}? Responde com o número ou *cancelar*.`;
+  const footer = kind === "bill_alert" && header.type === "browse" ? `\n\n${BILL_LIST_FOOTER}` : "";
+  return `${title}\n${numbered}${more}\n\nQual deles você quer ${verb}? Responde com o número ou *cancelar*.${footer}`;
 }
 
 export function targetNotUnderstoodText(candidateCount: number): string {

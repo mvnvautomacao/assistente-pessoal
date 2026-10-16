@@ -4,6 +4,7 @@
 // caches de conversa (listCache.ts, pendingListChoice.ts, pendingDeletion.ts).
 import { clearPending, getPending, setPending } from "../pending/store";
 import type { FixedMark } from "../expenses/fixedMark";
+import type { BillParams } from "../bills/editPlan";
 
 const TTL_MS = 10 * 60 * 1000;
 
@@ -113,6 +114,7 @@ export type UndoAction =
       params: { fromNumber: string; name: string } & ({ dayOfMonth: number } | { intervalDays: number });
       description: string;
     }
+  | { kind: "restore_bill_alert_fields"; billAlertId: number; previous: BillParams; description: string } // desfazer a edicao de um alerta
   | { kind: "deactivate_recurring_expense"; recurringId: number; description: string } // desfazer o cadastro de um gasto fixo
   | { kind: "deactivate_bill_alert"; billAlertId: number; description: string } // desfazer o cadastro de um alerta
   | {

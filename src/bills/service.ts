@@ -63,7 +63,7 @@ export function deactivateBillAlert(fromNumber: string, id: number): boolean {
 export function updateBillAlert(
   fromNumber: string,
   id: number,
-  changes: { name?: string; dayOfMonth?: number; intervalDays?: number }
+  changes: { name?: string; dayOfMonth?: number; intervalDays?: number; nextDueDate?: string }
 ): BillAlert | null {
   const bill = getBillAlertById(fromNumber, id);
   if (!bill || !bill.active) return null;
@@ -73,13 +73,34 @@ export function updateBillAlert(
   if (changes.intervalDays !== undefined) {
     db.prepare(
       `UPDATE bill_alerts SET recurrence_type = 'interval', interval_days = ?, next_due_date = ?, snoozed_until = NULL, last_asked_date = NULL WHERE id = ? AND from_number = ?`
-    ).run(changes.intervalDays, addDaysToDateString(spDateString(), changes.intervalDays), id, fromNumber);
+    ).run(changes.intervalDays, changes.nextDueDate ?? addDaysToDateString(spDateString(), changes.intervalDays), id, fromNumber);
+  } else if (changes.nextDueDate !== undefined && bill.recurrence_type === "interval") {
+    db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL, last_asked_date = NULL WHERE id = ? AND from_number = ?`).run(
+      changes.nextDueDate,
+      id,
+      fromNumber
+    );
   } else if (changes.dayOfMonth !== undefined) {
     db.prepare(
       `UPDATE bill_alerts SET recurrence_type = 'day_of_month', day_of_month = ?, interval_days = NULL, next_due_date = NULL, snoozed_until = NULL, last_asked_date = NULL, confirmed_month = NULL WHERE id = ? AND from_number = ?`
     ).run(changes.dayOfMonth, id, fromNumber);
   }
   return getBillAlertById(fromNumber, id);
+}
+
+// desfazer da edicao: devolve nome, recorrencia e proximo aviso de antes (o dia 1 e o placeholder de quem e por intervalo)
+export function restoreBillAlertFields(
+  fromNumber: string,
+  id: number,
+  previous: { name: string; recurrenceType: "day_of_month" | "interval"; dayOfMonth: number | null; intervalDays: number | null; nextDueDate: string | null }
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE bill_alerts SET name = ?, recurrence_type = ?, day_of_month = ?, interval_days = ?, next_due_date = ?, snoozed_until = NULL, last_asked_date = NULL
+       WHERE id = ? AND from_number = ? AND active = 1`
+    )
+    .run(previous.name, previous.recurrenceType, previous.dayOfMonth ?? 1, previous.intervalDays, previous.nextDueDate, id, fromNumber);
+  return result.changes > 0;
 }
 
 export function findActiveBillAlertByName(fromNumber: string, query: string): BillAlert | null {

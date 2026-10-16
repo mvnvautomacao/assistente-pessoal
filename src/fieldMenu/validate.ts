@@ -10,6 +10,8 @@ import { findCategoryMentionedIn } from "../expenses/service";
 import { spDateString } from "../timeSP";
 import { validateAmount } from "../validation";
 import { parseFixedAnswer } from "../expenses/fixedMark";
+import { BILL_INTERVAL_RANGE_TEXT, MAX_BILL_INTERVAL_DAYS, nextOccurrenceDate } from "../bills/editPlan";
+import { parseSpokenNumber } from "../bills/checkinValue";
 import { FieldDef } from "./registry";
 
 export const MAX_TEXT_LENGTH = 100;
@@ -38,6 +40,22 @@ export function validateAmountAnswer(text: string): FieldAnswer {
 export function validateDayAnswer(text: string): FieldAnswer {
   const day = parseDayOfMonthAnswer(text);
   return day === null ? { ok: false, error: "O dia do mês precisa ser de 1 a 31." } : { ok: true, value: day };
+}
+
+// intervalo do alerta: "45", "45 dias", "a cada 45 dias", "quarenta e cinco"
+export function validateIntervalAnswer(text: string): FieldAnswer {
+  const cleaned = text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/g, "")
+    .replace(/^a\s+cada\s+/, "")
+    .replace(/\s*dias?$/, "")
+    .trim();
+  const days = /^\d+$/.test(cleaned) ? Number(cleaned) : parseSpokenNumber(cleaned);
+  if (days === null || !Number.isInteger(days) || days < 1 || days > MAX_BILL_INTERVAL_DAYS) return { ok: false, error: BILL_INTERVAL_RANGE_TEXT };
+  return { ok: true, value: days };
 }
 
 export function validateLeadAnswer(text: string): FieldAnswer {
@@ -104,8 +122,15 @@ export async function validateFieldAnswer(def: FieldDef, text: string, fromNumbe
       return validateDayAnswer(text);
     case "lead":
       return validateLeadAnswer(text);
-    case "date":
+    case "date": {
+      if (def.key === "next_due") {
+        const near = nextOccurrenceDate(text, spDateString());
+        if (near) return { ok: true, value: near };
+      }
       return validateDateAnswer(text);
+    }
+    case "interval":
+      return validateIntervalAnswer(text);
     case "datetime":
       return validateDateTimeAnswer(text);
     case "category":

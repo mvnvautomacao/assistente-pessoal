@@ -24,6 +24,7 @@ export type PendingKind =
   | "create_recurrence"
   // aviso "ja pagou a conta X?" com lista 1/2/3 e pergunta do valor (Card 15)
   | "bill_checkin"
+  | "edit_bill_alert"
   | "undo"
   // exclusoes e remocoes com confirmacao 1/3 (Card 9)
   | "delete_event"
