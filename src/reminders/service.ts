@@ -49,6 +49,38 @@ export function getRemindersForMonth(toNumber: string, yearMonth: string): Remin
     .all(toNumber, start, nextMonthStart) as unknown as Reminder[];
 }
 
+// Agenda por periodo (Card 16, RF04): lembretes com due_at em [startIso, endIso); includeSent traz tambem os que ja tocaram.
+// SEGURANCA: sempre filtrado por to_number. Instantes comparados pelo datetime() do SQLite.
+export function listRemindersBetween(toNumber: string, startIso: string, endIso: string, options: { includeSent?: boolean; limit?: number } = {}): Reminder[] {
+  return db
+    .prepare(
+      `SELECT id, to_number, message, due_at, sent FROM reminders
+       WHERE to_number = ? AND datetime(due_at) >= datetime(?) AND datetime(due_at) < datetime(?) AND (? = 1 OR sent = 0)
+       ORDER BY datetime(due_at) ASC, id ASC
+       LIMIT ?`
+    )
+    .all(toNumber, startIso, endIso, options.includeSent ? 1 : 0, options.limit ?? 500) as unknown as Reminder[];
+}
+
+// os proximos lembretes pendentes a partir de "agora" (sem limite de dias), em ordem de horario
+export function listNextPendingReminders(toNumber: string, limit: number, offset = 0, now: Date = new Date(Date.now())): Reminder[] {
+  return db
+    .prepare(
+      `SELECT id, to_number, message, due_at, sent FROM reminders
+       WHERE to_number = ? AND sent = 0 AND datetime(due_at) >= datetime(?)
+       ORDER BY datetime(due_at) ASC, id ASC
+       LIMIT ? OFFSET ?`
+    )
+    .all(toNumber, now.toISOString(), limit, offset) as unknown as Reminder[];
+}
+
+export function countPendingReminders(toNumber: string, now: Date = new Date(Date.now())): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM reminders WHERE to_number = ? AND sent = 0 AND datetime(due_at) >= datetime(?)`)
+    .get(toNumber, now.toISOString()) as { n: number };
+  return row.n;
+}
+
 export interface Reminder {
   id: number;
   to_number: string;

@@ -22,6 +22,7 @@ const QUERY_TYPES = [
   "list_incomes",
   "balance",
   "report",
+  "list_reminders",
   "total_last_list",
   "list_budgets",
   "list_categories",

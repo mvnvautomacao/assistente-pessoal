@@ -13,7 +13,7 @@ export function startRecurringExpenseScheduler() {
       const due = getDueRecurringExpenses(today);
       for (const recurring of due) {
         try {
-          const launched = launchRecurringExpense(recurring, today);
+          const launched = launchRecurringExpense(recurring, today, { announceMonthEnd: true });
           await sendText(recurring.from_number, launched.text);
         } catch (err) {
           console.error(`Erro ao lancar gasto fixo ${recurring.id}:`, err);

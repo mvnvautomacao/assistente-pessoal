@@ -198,6 +198,27 @@ export function getSkippedEventReminders(now: Date = nowDate()): EventRow[] {
 // termino efetivo do evento no SQL: sem "end" gravado, usa a duracao padrao de 1 h
 const EFFECTIVE_END_SQL = `datetime(COALESCE(NULLIF(end, ''), datetime(start, '+60 minutes')))`;
 
+// Agenda por periodo (Card 16, RN08): eventos que se SOBREPOEM ao intervalo [startIso, endIso) -- comecam antes do fim e
+// terminam (termino efetivo, 1 h sem "end") depois do inicio. Instantes comparados pelo datetime() do SQLite, entao
+// vale tanto "…-03:00" quanto "…Z". onlyNotEnded: so os que ainda nao terminaram (os em andamento ficam).
+export function listEventsBetween(
+  fromNumber: string,
+  startIso: string,
+  endIso: string,
+  options: { onlyNotEnded?: boolean; now?: Date; limit?: number } = {}
+): EventRow[] {
+  const now = options.now ?? nowDate();
+  return db
+    .prepare(
+      `SELECT * FROM events
+       WHERE from_number = ? AND datetime(start) < datetime(?) AND ${EFFECTIVE_END_SQL} > datetime(?)
+         AND (? = 0 OR ${EFFECTIVE_END_SQL} > datetime(?))
+       ORDER BY datetime(start) ASC, id ASC
+       LIMIT ?`
+    )
+    .all(fromNumber, endIso, startIso, options.onlyNotEnded ? 1 : 0, now.toISOString(), options.limit ?? 500) as unknown as EventRow[];
+}
+
 // Eventos que o usuario pode editar/cancelar (RN06): termino >= agora - 2 h (futuro, em andamento ou
 // terminado ha pouco), por texto no titulo. Mais cedo primeiro (os em andamento aparecem antes).
 // findUpcomingEvents (so futuros) continua como estava -- o painel e os avisos extras dependem dele.

@@ -45,6 +45,7 @@ test("isSafeNewRequest: cada tipo da lista segura (completo) vale", () => {
     { type: "list_incomes", period: "month" },
     { type: "balance", period: "month" },
     { type: "report", days: 1 },
+    { type: "list_reminders" },
     { type: "total_last_list" },
     { type: "list_budgets" },
     { type: "list_categories" },
@@ -55,7 +56,6 @@ test("isSafeNewRequest: cada tipo da lista segura (completo) vale", () => {
   for (const interpretation of safe) assert.equal(isSafeNewRequest([interpretation], TEXT), true, interpretation.type);
   // a lista segura e exatamente essa (so tipos que existem em Interpretation)
   assert.deepEqual([...SAFE_NEW_REQUEST_TYPES].sort(), safe.map((i) => i.type).sort());
-  assert.ok(!SAFE_NEW_REQUEST_TYPES.has("list_reminders"));
 });
 
 test("isSafeNewRequest: tipos fora da lista nunca trocam a confirmacao", () => {

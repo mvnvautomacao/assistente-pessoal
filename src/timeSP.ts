@@ -74,6 +74,12 @@ export function effectiveDayOfMonth(dayOfMonth: number, yearMonth: string): numb
   return Math.min(dayOfMonth, daysInMonth(year, month));
 }
 
+// o cadastro dizia dia N e o disparo caiu antes (hoje e o ultimo dia de um mes mais curto)? Devolve N, senao null (RN17).
+export function monthEndShiftFrom(dayOfMonth: number, todayDate: string): number | null {
+  const [year, month, day] = todayDate.split("-").map(Number);
+  return dayOfMonth > day && day === daysInMonth(year, month) ? dayOfMonth : null;
+}
+
 const MONTH_NAMES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
 
 export function monthNamePt(month: number): string {

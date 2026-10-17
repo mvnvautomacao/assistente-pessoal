@@ -166,6 +166,7 @@ import {
   PendingEditRecurring,
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
+import { runAgendaReport, runListReminders } from "./agenda/queries";
 import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount, restoreBillAlertFields } from "./bills/service";
 import { BILL_DUPLICATE_WARNING, BillChangeKey, BillChangeRequest, BillParams, applyBillChanges, billAlertLine, billChanges, hasBillChangeRequest, nextOccurrenceDate, recurrenceText } from "./bills/editPlan";
 import { PendingEditBillAlert, clearPendingEditBillAlert, getPendingEditBillAlert, setPendingEditBillAlert } from "./bills/pendingEdit";
@@ -509,7 +510,11 @@ Diga o que é, o dia e a hora, tudo numa mensagem só.
 
 Exemplo: "marca consulta no médico dia 15 às 14h"
 
-Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Compromisso que já começou ainda dá pra mexer: "a reunião vai durar 3 horas" estica o término (a lista mostra "em andamento"). Eu aviso só dos compromissos que ainda não começaram — se você remarcar pra um horário que já passou, a prévia avisa que não vou mandar aviso. Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15" — eu mostro o compromisso e pergunto: *1* cancela, *3* mantém (qualquer outra resposta eu não considero, pra não apagar sem querer).`;
+Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra não esquecer. Dá pra mudar a antecedência ("me avisa 2 horas antes em vez de 60 minutos"), o nome ou a data/hora: "remarca a consulta pra sexta às 16h" — eu confirmo antes de aplicar. Também dá pra ter até 3 avisos pro mesmo compromisso: "quero ser avisado também 1 dia antes da consulta" adiciona outro, sem tirar o que já existe; "tira o aviso de 1 dia antes" remove só esse. Também dá pra dizer onde é e até que horas vai: "a consulta é na Clínica Sorriso", "a reunião vai até as 17h" ou "a reunião dura 2 horas" (e "tira o local da consulta" pra remover). Compromisso que já começou ainda dá pra mexer: "a reunião vai durar 3 horas" estica o término (a lista mostra "em andamento"). Eu aviso só dos compromissos que ainda não começaram — se você remarcar pra um horário que já passou, a prévia avisa que não vou mandar aviso. Pra cancelar o compromisso inteiro, é só dizer, tipo "cancela a consulta do dia 15" — eu mostro o compromisso e pergunto: *1* cancela, *3* mantém (qualquer outra resposta eu não considero, pra não apagar sem querer).
+
+Pra ver a agenda: "o que tenho hoje", "e amanhã?", "agenda da sexta", "agenda do dia 20", "agenda da semana", "semana que vem", "próximos 15 dias" ou "agenda de novembro" — eu mostro eventos e lembretes juntos, por dia e em ordem de horário (com término e local). Dá pra filtrar: "eventos da semana", "lembretes de amanhã". "Meus lembretes" mostra os próximos 10 e "todos os meus lembretes" mostra tudo.
+
+Se você pedir um dia que o mês não tem (ex: dia 31 em abril, dia 30 em fevereiro), eu uso o último dia do mês e te aviso.`;
     case "reminder":
       return `⏰ Como criar um lembrete:
 
@@ -519,7 +524,9 @@ Exemplo: "me lembra de tomar remédio às 20h"
 
 Na hora certa eu mando uma mensagem avisando. Pra mudar o horário de um lembrete já criado: "muda o lembrete do remédio pra amanhã às 21h" — eu confirmo antes de aplicar.
 
-Quando um lembrete tocar e você não puder fazer na hora, é só responder "adia 30 min" ou "adia pra amanhã 9h" — adio na hora, e se foi sem querer: "desfaz isso".`;
+Quando um lembrete tocar e você não puder fazer na hora, é só responder "adia 30 min" ou "adia pra amanhã 9h" — adio na hora, e se foi sem querer: "desfaz isso".
+
+Pra ver o que vem aí: "meus lembretes" (os próximos 10) ou "todos os meus lembretes". Se o dia pedido não existe no mês (ex: dia 31 em abril), eu marco no último dia do mês e te aviso.`;
     case "budget":
       return `🎯 Como definir um limite de gastos (orçamento):
 
@@ -5629,21 +5636,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "report": {
-      const events = interpretation.month ? getEventsForMonth(from, interpretation.month) : listUpcomingEvents(from, interpretation.days ?? 7);
-      const reminders = interpretation.month
-        ? getRemindersForMonth(from, interpretation.month)
-        : getRemindersWithinDays(from, interpretation.days ?? 7);
-
-      const eventsText = events.length
-        ? events.map((e) => `• ${e.title} — ${formatDateTime(e.start)}`).join("\n")
-        : "Nenhum evento agendado.";
-      const remindersText = reminders.length
-        ? reminders.map((r) => `• ${r.message} — ${formatDateTime(r.due_at)}`).join("\n")
-        : "Nenhum lembrete agendado.";
-
-      const label = interpretation.month ? monthLabelPt(interpretation.month) : `próximos ${interpretation.days ?? 7} dias`;
-      logActivity(from, "report", `${label}: ${events.length} eventos, ${reminders.length} lembretes`);
-      await sendText(from, `📊 Agenda — ${label}\n\n📅 Eventos:\n${eventsText}\n\n⏰ Lembretes:\n${remindersText}`);
+      const agenda = runAgendaReport(from, interpretation, new Date(Date.now()));
+      logActivity(from, "report", agenda.log);
+      await sendText(from, agenda.text);
+      break;
+    }
+    case "list_reminders": {
+      const reminders = runListReminders(from, interpretation.all === true, new Date(Date.now()));
+      logActivity(from, "list_reminders", reminders.log);
+      await sendText(from, reminders.text);
       break;
     }
     case "expense_report": {
@@ -6473,7 +6474,7 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 "Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).
 
 📅 *Agenda e lembretes*
-"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento.
+"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento. Pra ver o dia: "o que tenho hoje", "agenda da semana", "meus lembretes".
 
 🎯 *Orçamento*
 "Me avisa se eu passar de R$300 em mercado" — eu aviso quando chegar perto ou passar.

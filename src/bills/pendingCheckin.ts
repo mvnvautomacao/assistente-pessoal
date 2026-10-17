@@ -15,6 +15,7 @@ export interface BillCheckinItem {
   name: string;
   recurrenceType: BillRecurrence;
   intervalDays: number | null;
+  monthEndFromDay?: number | null; // aviso antecipado pro ultimo dia do mes (Card 16, RN17)
 }
 
 export interface PendingBillCheckin extends BillCheckinItem {

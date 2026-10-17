@@ -4,7 +4,7 @@ import { getDueBillAlerts, markBillAlertAsked, snoozeBillAlert } from "./service
 import { enqueueBillCheckin } from "./pendingCheckin";
 import { buildBillAlertQuestion } from "./checkinReply";
 import { logActivity } from "../activity/service";
-import { addDaysToDateString, spDateString } from "../timeSP";
+import { addDaysToDateString, monthEndShiftFrom, spDateString } from "../timeSP";
 
 export function startBillAlertScheduler() {
   // roda todo dia as 8h: pergunta "ja fez?" pros alertas cujo dia do mes bate
@@ -21,13 +21,15 @@ export function startBillAlertScheduler() {
           // Na ordem antiga, uma falha aqui deixava o sistema achando que
           // perguntou (e esperando a resposta) sem o cliente nunca ter visto
           // a pergunta -- a proxima mensagem dele recebia "ja resolveu X?" do nada.
-          await sendText(bill.from_number, buildBillAlertQuestion({ name: bill.name, recurrenceType: bill.recurrence_type }));
+          const monthEndFromDay = bill.recurrence_type === "day_of_month" ? monthEndShiftFrom(bill.day_of_month, today) : null;
+          await sendText(bill.from_number, buildBillAlertQuestion({ name: bill.name, recurrenceType: bill.recurrence_type, monthEndFromDay }));
           markBillAlertAsked(bill.from_number, bill.id, today);
           const position = enqueueBillCheckin(bill.from_number, {
             billAlertId: bill.id,
             name: bill.name,
             recurrenceType: bill.recurrence_type,
             intervalDays: bill.interval_days,
+            monthEndFromDay,
           });
           // varios avisos no mesmo dia: o que espera na fila volta a perguntar amanha se a fila se perder
           // (ex: o da vez vence esperando o valor)

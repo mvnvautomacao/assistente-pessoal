@@ -12,6 +12,8 @@ export type BillRecurrence = "day_of_month" | "interval";
 export interface BillQuestionInfo {
   name: string;
   recurrenceType: BillRecurrence;
+  // dia cadastrado quando o aviso veio antecipado pro ultimo dia de um mes curto (Card 16, RN17)
+  monthEndFromDay?: number | null;
 }
 
 // frases CLARAS (ja normalizadas: sem acento, minusculas, sem pontuacao; "ta"/"esta" valem os dois)
@@ -59,7 +61,12 @@ export function billCheckinOptions(recurrenceType: BillRecurrence): string {
 
 // o aviso enviado pelo scheduler
 export function buildBillAlertQuestion(bill: BillQuestionInfo): string {
-  const head = bill.recurrenceType === "interval" ? `📌 Hora de: ${bill.name}.` : `📌 Hoje é dia de pagar: ${bill.name}.`;
+  const head =
+    bill.recurrenceType === "interval"
+      ? `📌 Hora de: ${bill.name}.`
+      : bill.monthEndFromDay
+        ? `📌 Hoje é o último dia do mês (vence todo dia ${bill.monthEndFromDay}): ${bill.name}.`
+        : `📌 Hoje é dia de pagar: ${bill.name}.`;
   return `${head}\n${billCheckinOptions(bill.recurrenceType)}`;
 }
 
