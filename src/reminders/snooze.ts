@@ -2,7 +2,7 @@
 // mensagem de confirmacao. Funcoes puras (recebem "agora" por parametro).
 import { formatWhen } from "../confirmation/preview";
 import { formatMinutesBefore } from "../events/service";
-import { addDaysToDateString, spDateString, spTimeString } from "../timeSP";
+import { addDaysToDateString, clampToMonthEnd, spDateString, spTimeString } from "../timeSP";
 
 export const MAX_SNOOZE_MINUTES = 43200; // 30 dias
 const MIN_AHEAD_MS = 60 * 1000; // o novo horario precisa estar pelo menos 1 minuto a frente
@@ -25,6 +25,19 @@ export type SnoozeResult = { ok: true; dueAt: string } | { ok: false; error: str
 // ISO com offset -03:00 no relogio de Sao Paulo (mesmo formato dos lembretes criados)
 function toSpIso(date: string, time: string): string {
   return `${date}T${time}:00-03:00`;
+}
+
+// "adia pro dia 31" num mes de 30 dias: o dia inexistente vira o ultimo dia do mes (ou o proximo mes, se o horario
+// ja passou) e o usuario e avisado (Card 16, RN13/RN14). Sem data (so minutos ou so hora) nao mexe em nada.
+export function adjustSnoozeDate(
+  originalDueAt: string,
+  request: { newDate?: string; newTime?: string },
+  now: Date = new Date()
+): { newDate?: string; warning?: string } {
+  if (!request.newDate) return { newDate: request.newDate };
+  const timeOfDay = request.newTime ?? spTimeString(new Date(originalDueAt));
+  const adjusted = clampToMonthEnd(`${request.newDate.slice(0, 10)}T${timeOfDay}:00`, now);
+  return adjusted.adjusted ? { newDate: adjusted.iso.slice(0, 10), warning: adjusted.warning } : { newDate: request.newDate };
 }
 
 export function computeSnoozeDue(originalDueAt: string, request: SnoozeRequest, now: Date = new Date()): SnoozeResult {

@@ -100,3 +100,19 @@ test("alerta de conta: dia 31 dispara so no ultimo dia do mes curto e no maximo 
   assert.deepEqual(due("2026-04-30").sort(), [bill.id, trinta.id].sort());
   assert.deepEqual(due("2028-02-29").sort(), [bill.id, trinta.id].sort(), "fevereiro bissexto: 30 cai no 29");
 });
+
+import { adjustSnoozeDate } from "../../src/reminders/snooze";
+
+test("adiar pra 'dia 31' em abril: vira 30/04 com aviso; sem data ou com data normal nao mexe; passado vai pro proximo mes", () => {
+  const now = new Date("2026-04-10T12:00:00-03:00");
+  const original = "2026-04-10T11:30:00-03:00";
+  assert.deepEqual(adjustSnoozeDate(original, { newDate: "2026-04-31" }, now), {
+    newDate: "2026-04-30",
+    warning: "Abril só tem 30 dias, então marquei pro dia 30/04.",
+  });
+  assert.deepEqual(adjustSnoozeDate(original, { newDate: "2026-04-20" }, now), { newDate: "2026-04-20" });
+  assert.deepEqual(adjustSnoozeDate(original, {}, now), { newDate: undefined });
+  const late = new Date("2026-04-30T15:00:00-03:00");
+  assert.equal(adjustSnoozeDate(original, { newDate: "2026-04-31", newTime: "09:00" }, late).newDate, "2026-05-31");
+  assert.equal(adjustSnoozeDate(original, { newDate: "2026-04-31", newTime: "20:00" }, late).newDate, "2026-04-30");
+});

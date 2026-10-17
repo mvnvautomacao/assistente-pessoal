@@ -20,6 +20,7 @@ export interface PendingEditReminder {
   correctionStage: "pick" | "value";
   correctionTarget: "datetime" | "text" | null;
   headerText: string; // 1a linha da previa (ex: "Mercado — R$ 38,00 · 07/10 · Pix"), fixa durante a confirmacao
+  dateWarning?: string; // dia inexistente no mes ajustado pro ultimo dia (Card 16, RN13)
   createdAt: number;
 }
 

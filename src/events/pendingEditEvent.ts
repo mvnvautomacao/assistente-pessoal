@@ -22,6 +22,7 @@ export interface PendingEditEvent {
   correctionStage: "pick" | "value";
   correctionTarget: EventChangeKey | null;
   headerText: string; // 1a linha da previa, fixa durante a confirmacao
+  dateWarning?: string; // dia inexistente no mes ajustado pro ultimo dia (Card 16, RN13)
   createdAt: number;
 }
 

@@ -74,6 +74,7 @@ import {
 import {
   SNOOZE_NOT_FOUND_TEXT,
   computeSnoozeDue,
+  adjustSnoozeDate,
   formatAlreadyPlayed,
   formatNotPlayedYet,
   formatSnoozeConfirmation,
@@ -317,7 +318,7 @@ import {
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
-import { spDateString, spTimeString, ensureBrazilOffset, addDaysToDateString } from "./timeSP";
+import { spDateString, spTimeString, ensureBrazilOffset, addDaysToDateString, clampToMonthEnd } from "./timeSP";
 import {
   ensureUserSeeded,
   findCategoryByName,
@@ -412,6 +413,16 @@ function mergeDateTime(existingIso: string, newDate?: string, newTime?: string):
   const date = newDate ?? existingIso.slice(0, 10);
   const time = newTime ?? existingIso.slice(11, 16);
   return ensureBrazilOffset(`${date}T${time}:00`);
+}
+
+// Card 16 (RN13/RN14): data inexistente no mes (31/04, 30/02...) vira o ultimo dia do mes -- o aviso vai junto
+function clampDateTime(iso: string): { iso: string; warning?: string } {
+  const result = clampToMonthEnd(iso, new Date(Date.now()));
+  return { iso: result.iso, warning: result.warning };
+}
+
+function mergeDateTimeClamped(existingIso: string, newDate?: string, newTime?: string): { iso: string; warning?: string } {
+  return clampDateTime(mergeDateTime(existingIso, newDate, newTime));
 }
 
 // mensagem curta ("gasto", "criar evento"...) sinaliza a intencao mas falta
@@ -2071,8 +2082,11 @@ async function createEventAndNotify(
   // a IA/o merge devolve o horario em hora local de Brasilia mas nem sempre
   // com o offset explicito -03:00; sem isso, o resto do sistema pode tratar
   // como UTC e adiantar o evento em 3h (ver ensureBrazilOffset em timeSP.ts)
-  const start = ensureBrazilOffset(params.start);
-  const end = params.end ? ensureBrazilOffset(params.end) : undefined;
+  const startAdjusted = clampToMonthEnd(params.start, new Date(Date.now()));
+  const start = ensureBrazilOffset(startAdjusted.iso);
+  // o termino acompanha o mesmo dia ajustado
+  const endRaw = params.end ? (startAdjusted.adjusted && params.end.slice(0, 10) === startAdjusted.from ? `${start.slice(0, 10)}${params.end.slice(10)}` : clampToMonthEnd(params.end, new Date(0)).iso) : undefined;
+  const end = endRaw ? ensureBrazilOffset(endRaw) : undefined;
   const created = createEvent({
     fromNumber: from,
     title: params.title,
@@ -2083,17 +2097,18 @@ async function createEventAndNotify(
   });
   setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: params.title });
   logActivity(from, "event", `${params.title} — ${start}`);
-  await replyWithUndo(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)`);
+  await replyWithUndo(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)${startAdjusted.warning ? `\n${startAdjusted.warning}` : ""}`);
 }
 
 // Cria o lembrete de verdade. Extraido do case "reminder" pra ser reaproveitado
 // tambem quando um lembrete parcial termina de ser completado.
 async function createReminderAndNotify(from: string, params: { message: string; due_at: string }) {
-  const dueAt = ensureBrazilOffset(params.due_at);
+  const adjusted = clampToMonthEnd(params.due_at, new Date(Date.now()));
+  const dueAt = ensureBrazilOffset(adjusted.iso);
   const reminderId = createReminder(from, params.message, dueAt);
   setPendingUndo(from, { kind: "delete_reminder", reminderId, description: params.message });
   logActivity(from, "reminder", `${params.message} — ${dueAt}`);
-  await replyWithUndo(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}`);
+  await replyWithUndo(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}${adjusted.warning ? `\n${adjusted.warning}` : ""}`);
 }
 
 function missingDateTimeParts(date?: string, time?: string): Array<"date" | "time"> {
@@ -3810,7 +3825,7 @@ async function resolveFieldMenuReply(from: string, pending: PendingFieldMenu, an
   if (pending.kind === "event") {
     const event = getEventById(from, pending.itemId);
     const dateTime = pending.collected.datetime as DateTimeAnswer | undefined;
-    if (event) startIso = dateTime ? mergeDateTime(event.start, dateTime.newDate, dateTime.newTime) : event.start;
+    if (event) startIso = dateTime ? mergeDateTimeClamped(event.start, dateTime.newDate, dateTime.newTime).iso : event.start;
   }
   const answer = await validateFieldAnswer(def, raw, from, { startIso });
   if (!answer.ok) {
@@ -4480,7 +4495,8 @@ function buildEventPreview(pending: Omit<PendingEditEvent, "createdAt">): string
   const changes = currentEventChanges(pending);
   // remarcar pro passado e permitido (pode ser correcao de registro), mas o usuario fica sabendo que nao ha aviso
   const startMoved = changes.some((c) => c.key === "datetime");
-  const warning = startMoved && new Date(pending.proposed.start).getTime() < Date.now() ? PAST_EVENT_WARNING : undefined;
+  const pastWarning = startMoved && new Date(pending.proposed.start).getTime() < Date.now() ? PAST_EVENT_WARNING : undefined;
+  const warning = [pending.dateWarning, pastWarning].filter(Boolean).join("\n") || undefined;
   return formatEditPreview(pending.headerText, changes, warning);
 }
 
@@ -4489,10 +4505,13 @@ function buildEventPreview(pending: Omit<PendingEditEvent, "createdAt">): string
 async function applyEventCorrection(from: string, pending: PendingEditEvent, key: EventChangeKey, value: CorrectionValue): Promise<boolean> {
   const proposed = { ...pending.proposed };
   let endSpec = pending.endSpec;
+  let dateWarning = pending.dateWarning;
   if (value.kind === "datetime") {
     // mescla com o valor JA PROPOSTO (nao o original do evento) -- se a correcao so
     // mencionar o dia, mantem a hora que ja tinha sido proposta antes
-    proposed.start = mergeDateTime(pending.proposed.start, value.newDate, value.newTime);
+    const merged = mergeDateTimeClamped(pending.proposed.start, value.newDate, value.newTime);
+    proposed.start = merged.iso;
+    dateWarning = merged.warning;
   } else if (value.kind === "endtime") {
     endSpec = value.spec;
   } else if (value.kind === "text") {
@@ -4638,7 +4657,7 @@ function buildReminderPreview(pending: Omit<PendingEditReminder, "createdAt">): 
   const changes: PreviewChange[] = [];
   if (pending.isDateTimeChange) changes.push({ label: "Quando", from: formatWhen(pending.previousDueAt), to: formatWhen(pending.proposedDueAt) });
   if (pending.proposedMessage !== pending.message) changes.push({ label: "Texto", from: pending.message, to: pending.proposedMessage });
-  return formatEditPreview(pending.headerText, changes);
+  return formatEditPreview(pending.headerText, changes, pending.dateWarning);
 }
 
 function buildReminderChangeText(pending: Pick<PendingEditReminder, "isDateTimeChange" | "previousDueAt" | "proposedDueAt" | "message" | "proposedMessage">): string {
@@ -4653,8 +4672,11 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
 
   const applyCorrection = async (value: CorrectionValue) => {
     const next = { ...pending, awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
-    if (value.kind === "datetime") next.proposedDueAt = mergeDateTime(pending.proposedDueAt, value.newDate, value.newTime);
-    else if (value.kind === "text") next.proposedMessage = value.text;
+    if (value.kind === "datetime") {
+      const merged = mergeDateTimeClamped(pending.proposedDueAt, value.newDate, value.newTime);
+      next.proposedDueAt = merged.iso;
+      next.dateWarning = merged.warning;
+    } else if (value.kind === "text") next.proposedMessage = value.text;
     next.changeText = buildReminderChangeText(next);
     setPendingEditReminder(from, next);
     logActivity(from, "edit_reminder", `correcao: "${pending.message}": ${next.changeText}`);
@@ -5386,7 +5408,12 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       // "muda so o horario" mantem a data original (ver mergeDateTime). Se nem envolve
       // data/hora, NAO chama mergeDateTime -- ele reconstroi a string via Date, o que
       // reformataria um horario que o usuario nem pediu pra mudar.
-      if (hasDateTimeChange) proposed.start = mergeDateTime(event.start, interpretation.new_date, interpretation.new_time);
+      let dateWarning: string | undefined;
+      if (hasDateTimeChange) {
+        const merged = mergeDateTimeClamped(event.start, interpretation.new_date, interpretation.new_time);
+        proposed.start = merged.iso;
+        dateWarning = merged.warning;
+      }
       if (interpretation.new_title) proposed.title = interpretation.new_title;
       if (interpretation.new_reminder_minutes !== undefined) proposed.reminderMinutes = interpretation.new_reminder_minutes;
       if (interpretation.clear_location) proposed.location = null;
@@ -5419,6 +5446,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         correctionStage: "pick" as const,
         correctionTarget: null,
         headerText: eventHeader(event),
+        dateWarning,
       };
       clearEditConfirmations(from);
       setPendingEditEvent(from, pendingEvent);
@@ -5480,7 +5508,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         break;
       }
       if (interpretation.advance_minutes) {
-        const dueAt = ensureBrazilOffset(interpretation.due_at);
+        const adjustedDue = clampDateTime(interpretation.due_at);
+        const dueAt = ensureBrazilOffset(adjustedDue.iso);
         setPendingReminderAdvanceChoice(from, {
           message: interpretation.message,
           dueAt,
@@ -5489,7 +5518,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         logActivity(from, "reminder", `pediu aviso antecipado (${interpretation.advance_minutes} min) pra "${interpretation.message}" -- lembrete simples nao suporta, perguntando`);
         await sendText(
           from,
-          `⏰ Lembrete avisa exatamente na hora marcada, sem antecedência — não dá pra avisar ${interpretation.advance_minutes} min antes de um lembrete simples.\n\nQuer que eu crie "${interpretation.message}" como um EVENTO na agenda em vez disso (aí sim funciona o aviso antecipado), ou prefere que eu explique como fazer isso você mesmo? Responde "evento" ou "explica".`
+          `${adjustedDue.warning ? `${adjustedDue.warning}\n\n` : ""}⏰ Lembrete avisa exatamente na hora marcada, sem antecedência — não dá pra avisar ${interpretation.advance_minutes} min antes de um lembrete simples.\n\nQuer que eu crie "${interpretation.message}" como um EVENTO na agenda em vez disso (aí sim funciona o aviso antecipado), ou prefere que eu explique como fazer isso você mesmo? Responde "evento" ou "explica".`
         );
         break;
       }
@@ -5528,7 +5557,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       // so chama mergeDateTime quando a edicao realmente envolve data/hora --
       // ele reconstroi a string via Date, o que reformataria um horario que o
       // usuario nem pediu pra mudar (mesmo cuidado do edit_event acima).
-      const newDueAt = hasDateTimeChange ? mergeDateTime(reminder.due_at, interpretation.new_date, interpretation.new_time) : reminder.due_at;
+      const mergedDue = hasDateTimeChange ? mergeDateTimeClamped(reminder.due_at, interpretation.new_date, interpretation.new_time) : { iso: reminder.due_at, warning: undefined };
+      const newDueAt = mergedDue.iso;
       const proposedMessage = interpretation.new_message ?? reminder.message;
 
       const dueChanged = hasDateTimeChange && new Date(newDueAt).getTime() !== new Date(reminder.due_at).getTime();
@@ -5556,6 +5586,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         correctionStage: "pick" as const,
         correctionTarget: null,
         headerText: reminder.message,
+        dateWarning: mergedDue.warning,
       };
       clearEditConfirmations(from);
       setPendingEditReminder(from, pendingReminder);
@@ -5576,7 +5607,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       if (reminderId === null) break;
       const reminder = getReminderById(from, reminderId)!;
       const now = new Date();
-      const due = computeSnoozeDue(reminder.due_at, { minutes: interpretation.minutes, newDate: interpretation.new_date, newTime: interpretation.new_time }, now);
+      const { newDate: snoozeDate, warning: snoozeWarning } = adjustSnoozeDate(reminder.due_at, { newDate: interpretation.new_date, newTime: interpretation.new_time }, now);
+      const due = computeSnoozeDue(reminder.due_at, { minutes: interpretation.minutes, newDate: snoozeDate, newTime: interpretation.new_time }, now);
       if (!due.ok) {
         logActivity(from, "snooze_reminder", due.error);
         await sendText(from, due.error);
@@ -5593,7 +5625,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       });
       const usesMinutes = !interpretation.new_date && !interpretation.new_time;
       logActivity(from, "snooze_reminder", `"${reminder.message}" adiado pra ${due.dueAt}`);
-      await replyWithUndo(from, formatSnoozeConfirmation(reminder.message, due.dueAt, usesMinutes ? interpretation.minutes : undefined, now));
+      await replyWithUndo(from, `${formatSnoozeConfirmation(reminder.message, due.dueAt, usesMinutes ? interpretation.minutes : undefined, now)}${snoozeWarning ? `\n${snoozeWarning}` : ""}`);
       break;
     }
     case "report": {
