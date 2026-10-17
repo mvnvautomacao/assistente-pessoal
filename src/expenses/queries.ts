@@ -24,6 +24,7 @@ export interface ListExpensesParams extends RangeParams {
   category?: string;
   payment_method?: string;
   fixed_only?: boolean;
+  include_future?: boolean; // pedido explicito: tambem as parcelas de meses futuros (Card 17, RN01)
 }
 
 export type ListExpensesOutcome =
@@ -65,7 +66,7 @@ function recentList(from: string, params: ListExpensesParams, filters: ExpenseFi
       note = MAX_RECENT_NOTE;
     }
   }
-  const items = getRecentExpensesList(from, n, { ...filters, start: range?.start, end: range?.end });
+  const items = getRecentExpensesList(from, n, { ...filters, start: range?.start, end: range?.end }, { includeFuture: params.include_future === true, today });
   if (!items.length) {
     return { type: "reply", text: emptyListText(filters, range?.label), log: `nenhum gasto (ultimas ${n}${range ? `, ${range.label}` : ""})` };
   }
@@ -73,7 +74,7 @@ function recentList(from: string, params: ListExpensesParams, filters: ExpenseFi
   const noun = count === 1 ? "último gasto" : `últimos ${count} gastos`;
   const label = filterLabel(filters);
   const base = label ? `${label} — ${noun}` : `${count === 1 ? "Último gasto" : `Últimos ${count} gastos`}`;
-  const title = range ? `${base} (${range.label})` : base;
+  const title = range ? `${base} (${range.label})` : params.include_future ? `${base} (com parcelas futuras)` : base;
   const total = items.reduce((sum, i) => sum + i.amount, 0);
   const out = formatExpenseList({ title, items, total, totalCount: count, today, grouped: false, dashboardUrl: config.dashboardUrl, note });
   return {
@@ -115,7 +116,7 @@ export function runListExpenses(from: string, params: ListExpensesParams, today:
   const range = resolved.range;
 
   // "ultimas N" (ou so um filtro, sem periodo): RN01 e RN02
-  if (params.last_n !== undefined || (filtered && !range)) return recentList(from, params, filters, range, today);
+  if (params.last_n !== undefined || params.include_future === true || (filtered && !range)) return recentList(from, params, filters, range, today);
 
   // pedido vago ("editar compras"): avisa qual dia foi assumido e mostra hoje
   if (!range) {

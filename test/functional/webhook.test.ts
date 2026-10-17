@@ -3697,10 +3697,10 @@ test("escolha de alvo: os outros fluxos do escopo (lembrete apagar, aviso extra,
   assert.equal(getReminderById(TC10, rem), undefined);
 });
 
-test("escolha de alvo: mais de 8 correspondencias mostra 8 e avisa que tem mais; gasto sem texto de busca usa o mais recente sem lista", async (t) => {
+test("escolha de alvo: mais de 10 correspondencias mostra 10; gasto sem texto de busca usa o mais recente sem lista", async (t) => {
   const TC11 = "551100091111";
   seed(TC11);
-  for (let i = 1; i <= 10; i++) createEvent({ fromNumber: TC11, title: `Aula ${i}`, start: futureAt(i, 10) });
+  for (let i = 1; i <= 12; i++) createEvent({ fromNumber: TC11, title: `Aula ${i}`, start: futureAt(i, 10) });
   const cat = getOrCreateCategory(TC11, "Mercado");
   insertExpense({ fromNumber: TC11, amount: 1, description: "Primeiro gasto", categoryId: cat.id, paymentMethodId: null, date: today() });
   insertExpense({ fromNumber: TC11, amount: 2, description: "Ultimo gasto", categoryId: cat.id, paymentMethodId: null, date: today() });
@@ -3709,10 +3709,10 @@ test("escolha de alvo: mais de 8 correspondencias mostra 8 e avisa que tem mais;
   queueReply([{ type: "delete_event", query: "aula" }]);
   await handleIncomingMessage(evolutionMessage(TC11, "cancela a aula"));
   const list = sent[0].text;
+  // a busca por texto devolve no maximo 10 (MAX_SEARCH_RESULTS), entao 12 acertos viram 10 na lista
   assert.match(list, /Achei 10 eventos com "aula":/);
-  assert.match(list, /8\. Aula 8/);
-  assert.doesNotMatch(list, /9\. Aula 9/);
-  assert.match(list, /Tem mais opções\. Diga o nome mais específico ou \*cancelar\*\./);
+  assert.match(list, /10\. Aula 10/);
+  assert.doesNotMatch(list, /11\. Aula 11/);
   await handleIncomingMessage(evolutionMessage(TC11, "cancelar"));
 
   queueReply([{ type: "edit_expense", field: "amount", value: "9" }]); // "muda o ultimo gasto pra 9": sem query nem list_ref
@@ -4233,11 +4233,11 @@ test("card 4: pedido novo e longo com verbo de edicao descarta o menu com aviso 
   await handleIncomingMessage(evolutionMessage(D1, "3"));
 });
 
-test("card 4: 'editar' sem nada cadastrado, e mais de 8 itens mostra 8 e avisa que tem mais", async (t) => {
+test("card 4: 'editar' sem nada cadastrado, e mais de 10 itens mostra 10 e avisa que tem mais", async (t) => {
   const N1 = "551100091311";
   const N2 = "551100091312";
   seed(N1, N2);
-  for (let i = 1; i <= 10; i++) createEvent({ fromNumber: N2, title: `Aula menu ${i}`, start: futureAt(i, 10) });
+  for (let i = 1; i <= 12; i++) createEvent({ fromNumber: N2, title: `Aula menu ${i}`, start: futureAt(i, 10) });
 
   const { sent } = withMocks(t);
   for (const [option, text] of [
@@ -4254,8 +4254,8 @@ test("card 4: 'editar' sem nada cadastrado, e mais de 8 itens mostra 8 e avisa q
   await handleIncomingMessage(evolutionMessage(N2, "editar"));
   await handleIncomingMessage(evolutionMessage(N2, "4"));
   const list = sent[sent.length - 1].text;
-  assert.match(list, /8\. Aula menu 8/);
-  assert.doesNotMatch(list, /9\. Aula menu 9/);
+  assert.match(list, /10\. Aula menu 10/);
+  assert.doesNotMatch(list, /11\. Aula menu 11/);
   assert.match(list, /Tem mais opções\. Diga o nome mais específico ou \*cancelar\*\./);
   await handleIncomingMessage(evolutionMessage(N2, "cancelar"));
 });

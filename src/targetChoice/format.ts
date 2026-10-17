@@ -5,7 +5,7 @@ import { eventStatusSuffix } from "../events/status";
 import type { TargetKind } from "./pending";
 
 // no maximo isso de candidatos por lista (RN02)
-export const MAX_TARGET_CANDIDATES = 8;
+export const MAX_TARGET_CANDIDATES = 10;
 
 const NOUN_PLURAL: Record<TargetKind, string> = { event: "eventos", reminder: "lembretes", expense: "gastos", recurring: "gastos fixos", income: "entradas", reminder_sent: "lembretes", bill_alert: "contas fixas" };
 
@@ -61,7 +61,13 @@ export function formatTargetList(params: { kind: TargetKind; header: TargetListH
         ? `Ainda tenho ${lines.length} opções com "${header.query}":`
         : `Achei ${total} ${NOUN_PLURAL[kind]} com "${header.query}":`;
   const numbered = lines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
-  const more = total > lines.length ? "\nTem mais opções. Diga o nome mais específico ou *cancelar*." : "";
+  const recentKind = kind === "expense" || kind === "income";
+  const more =
+    total > lines.length
+      ? recentKind && header.type === "browse"
+        ? `\nMostrei os ${lines.length} mais recentes. Pra achar outro, diga o nome (ex: "muda o mercado").`
+        : "\nTem mais opções. Diga o nome mais específico ou *cancelar*."
+      : "";
   const footer = kind === "bill_alert" && header.type === "browse" ? `\n\n${BILL_LIST_FOOTER}` : "";
   return `${title}\n${numbered}${more}\n\nQual deles você quer ${verb}? Responde com o número ou *cancelar*.${footer}`;
 }

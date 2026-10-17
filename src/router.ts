@@ -3161,7 +3161,7 @@ async function performDeleteExpense(
 
 // mostra os ultimos gastos numerados pra o usuario escolher qual apagar
 async function offerDeleteChoices(from: string) {
-  const items = getRecentExpensesList(from, 8);
+  const items = getRecentExpensesList(from, MAX_TARGET_CANDIDATES);
   if (!items.length) {
     await sendText(from, "Você não tem nenhum gasto registrado pra apagar.");
     return;
@@ -3374,10 +3374,10 @@ function browseTargets(from: string, kind: TargetKind, eventScope: EventScope = 
   }
   else if (kind === "reminder") entries = getRemindersWithinDays(from, 365).map((r) => ({ id: r.id, line: reminderLine(r) }));
   else if (kind === "recurring") entries = listRecurringExpenses(from).map((r) => ({ id: r.id, line: recurringLine(r) }));
-  else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: incomeLine(i) }));
+  else if (kind === "income") entries = getRecentIncomesList(from, MAX_TARGET_CANDIDATES + 1).map((i) => ({ id: i.id, line: incomeLine(i) }));
   else if (kind === "bill_alert") entries = listBillAlerts(from).map((b) => ({ id: b.id, line: billAlertLine(billParamsOfRow(b)) }));
   else if (kind === "reminder_sent") entries = findRecentSentReminders(from, undefined, 2).map((r) => ({ id: r.id, line: reminderLine(r) }));
-  else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
+  else entries = getRecentExpensesList(from, MAX_TARGET_CANDIDATES + 1).map((i) => ({ id: i.id, line: expenseLine(i, i.payment_method) }));
   const shown = entries.slice(0, MAX_TARGET_CANDIDATES);
   return { ids: shown.map((e) => e.id), lines: shown.map((e) => e.line), total: entries.length };
 }

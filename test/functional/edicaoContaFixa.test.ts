@@ -243,11 +243,11 @@ test("Card 15: com varios alertas parecidos a frase livre lista os candidatos", 
   assert.match(await say(app, n, "2"), /^✏️ Conta de luz\nRecorrência: todo dia 7 → todo dia 9/);
 });
 
-test("Card 15: lista com mais de 8 alertas mostra 8 e avisa que tem mais", async (t) => {
+test("Card 15: lista com mais de 10 alertas mostra 10 e avisa que tem mais", async (t) => {
   const app = bootApp(t, NOW);
   const n = user();
-  for (let i = 1; i <= 10; i++) createBillAlert({ fromNumber: n, name: `Conta ${i}`, dayOfMonth: i });
+  for (let i = 1; i <= 12; i++) createBillAlert({ fromNumber: n, name: `Conta ${i}`, dayOfMonth: i });
   const list = await say(app, n, "editar conta fixa", editBill());
-  assert.match(list, /8\. Conta 8 — todo dia 8\nTem mais opções\./);
-  assert.ok(!list.includes("9. Conta 9"));
+  assert.match(list, /10\. Conta 10 — todo dia 10\nTem mais opções\./);
+  assert.ok(!list.includes("11. Conta 11"));
 });

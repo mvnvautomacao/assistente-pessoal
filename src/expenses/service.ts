@@ -1,6 +1,7 @@
 import { FixedMark, columnsFromMark } from "./fixedMark";
 import { db } from "../db";
 import { assertValidAmount } from "../validation";
+import { effectiveDayOfMonth, spDateString } from "../timeSP";
 
 export interface Category {
   id: number;
@@ -457,21 +458,35 @@ export function updateExpenseCategory(fromNumber: string, expenseId: number, cat
   db.prepare(`UPDATE expenses SET category_id = ? WHERE id = ? AND from_number = ?`).run(categoryId, expenseId, fromNumber);
 }
 
-// os N gastos mais recentes de um numero, pra recategorizacao em lote ("muda os
-// ultimos 5 gastos pra mercado")
-export function getRecentExpensesList(fromNumber: string, n: number, filters: ExpenseQueryFilters = {}): ExpenseListItem[] {
+// os N gastos mais recentes de um numero (lista de edicao, "ultimas compras", recategorizacao em lote).
+// Card 17 (RN01): por padrao so entram gastos com data ate o ULTIMO DIA DO MES ATUAL (fuso de Sao Paulo) -- as parcelas
+// de meses futuros de uma compra parcelada ficam de fora ate o mes delas (a regra e pela data, nao pela marca "parcelada").
+// Quem passa um periodo (filters.end) ve tudo do recorte; includeFuture traz tambem as parcelas futuras (pedido explicito).
+// Ordem: o que ja aconteceu primeiro (mais novo antes), depois o que ainda vai vencer neste mes, o mais proximo antes --
+// assim o gasto registrado agora fica sempre em primeiro.
+export function getRecentExpensesList(
+  fromNumber: string,
+  n: number,
+  filters: ExpenseQueryFilters = {},
+  options: { includeFuture?: boolean; today?: string } = {}
+): ExpenseListItem[] {
+  const today = options.today ?? spDateString(new Date(Date.now()));
+  const yearMonth = today.slice(0, 7);
+  const cutoff = options.includeFuture || filters.end !== undefined ? null : `${yearMonth}-${String(effectiveDayOfMonth(31, yearMonth)).padStart(2, "0")}`;
   const where = expenseFilterConditions(fromNumber, filters);
+  const conditions = cutoff ? `${where.sql} AND e.date <= ?` : where.sql;
+  const params = cutoff ? [...where.params, cutoff] : where.params;
   return db
     .prepare(
       `SELECT e.id, e.amount, e.description, e.date, c.name AS category, p.name AS payment_method, e.fixed_source
        FROM expenses e
        LEFT JOIN categories c ON c.id = e.category_id
        LEFT JOIN payment_methods p ON p.id = e.payment_method_id
-       WHERE ${where.sql}
-       ORDER BY e.date DESC, e.id DESC
+       WHERE ${conditions}
+       ORDER BY (e.date > ?) ASC, CASE WHEN e.date > ? THEN e.date END ASC, e.date DESC, e.id DESC
        LIMIT ?`
     )
-    .all(...where.params, n) as unknown as ExpenseListItem[];
+    .all(...params, today, today, n) as unknown as ExpenseListItem[];
 }
 
 // todos os gastos de uma categoria especifica, pra recategorizacao em lote

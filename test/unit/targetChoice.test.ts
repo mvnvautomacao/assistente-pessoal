@@ -86,7 +86,7 @@ test("linhas de item e mensagens de erro", () => {
   assert.equal(expenseLine({ description: "Mercado", amount: 112.4, date: "2026-10-05" }, null), "Mercado — R$ 112,40 · 05/10");
   assert.equal(targetNotUnderstoodText(3), "Não entendi 🤔 Responde com um número de 1 a 3, ou *cancelar*.");
   assert.equal(TARGET_GONE_TEXT, "Esse item não existe mais.");
-  assert.equal(MAX_TARGET_CANDIDATES, 8);
+  assert.equal(MAX_TARGET_CANDIDATES, 10);
 });
 
 test("findExpenseCandidates: 0, 1 e varios candidatos, mais recente primeiro, so desse numero", () => {

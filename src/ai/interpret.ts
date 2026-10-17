@@ -114,7 +114,7 @@ export type Interpretation =
         | "recurring_expense"
         | "income";
     }
-  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string; fixed_only?: boolean }
+  | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string; fixed_only?: boolean; include_future?: boolean }
   | { type: "total_last_list" }
   | { type: "delete_expense"; list_ref?: number; query?: string }
   | {
@@ -267,6 +267,11 @@ const ACTION_SCHEMA = {
     all: {
       type: "boolean",
       description: "So para type=list_reminders: true quando o usuario pediu TODOS os lembretes (senao, vazio: so os proximos 10).",
+    },
+    include_future: {
+      type: "boolean",
+      description:
+        "type=list_expenses: true SOMENTE se o usuario pediu explicitamente para ver as parcelas futuras ou todas as parcelas ('mostra as parcelas futuras', 'ultimas compras com as parcelas que faltam', 'todas as parcelas do tenis', 'inclui as parcelas'). Sem esse pedido, deixe vazio (a lista mostra so os gastos ate o mes atual).",
     },
     fixed_only: {
       type: "boolean",
