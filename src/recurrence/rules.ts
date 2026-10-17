@@ -3,6 +3,7 @@
 // tipo, o que ainda falta, se e duplicata e se o dia deste mes ja passou.
 import { parseBrazilianAmountDetailed } from "../confirmation/parsers";
 import { normalizeSearch } from "../text/search";
+import { daysInMonth, effectiveDayOfMonth } from "../timeSP";
 
 export type RecurrenceKind = "recurring_expense" | "bill_alert";
 // "unclear" = ainda nao da pra dizer se e gasto fixo ou so um aviso (RN04)
@@ -278,12 +279,12 @@ export function findDuplicate<T extends NamedItem>(items: T[], name: string): T 
 
 export function daysInMonthOf(dateStr: string): number {
   const [year, month] = dateStr.split("-").map(Number);
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return daysInMonth(year, month);
 }
 
 // dia do mes em que o gasto cai neste mes (dia 31 num mes de 30 dias cai no ultimo dia)
 export function effectiveDay(dayOfMonth: number, todayDate: string): number {
-  return Math.min(dayOfMonth, daysInMonthOf(todayDate));
+  return effectiveDayOfMonth(dayOfMonth, todayDate.slice(0, 7));
 }
 
 // o dia deste mes ja passou? (anterior a hoje, ou hoje e o cron das 7h ja rodou)

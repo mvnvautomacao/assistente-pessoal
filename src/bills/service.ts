@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { filterByQuery, SEARCH_SCAN_LIMIT } from "../text/search";
-import { spDateString, addDaysToDateString } from "../timeSP";
+import { spDateString, addDaysToDateString, effectiveDayOfMonth } from "../timeSP";
 
 export interface BillAlert {
   id: number;
@@ -158,10 +158,8 @@ export function snoozeBillAlert(fromNumber: string, id: number, untilDate: strin
 // intervalo, a data calculada (next_due_date) ja chegou. Nas duas, uma soneca
 // de "lembra amanha" ainda pendente manda (ou nao) direto, sem olhar o resto.
 export function getDueBillAlerts(todayDate: string): BillAlert[] {
-  const [year, month, day] = todayDate.split("-").map(Number);
+  const day = Number(todayDate.slice(8, 10));
   const yearMonth = todayDate.slice(0, 7);
-  const daysInThisMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const isLastDayOfMonth = day === daysInThisMonth;
 
   const candidates = db
     .prepare(`SELECT * FROM bill_alerts WHERE active = 1 AND (last_asked_date IS NULL OR last_asked_date != ?)`)
@@ -175,6 +173,6 @@ export function getDueBillAlerts(todayDate: string): BillAlert[] {
     }
 
     if (b.confirmed_month === yearMonth) return false;
-    return b.day_of_month === day || (isLastDayOfMonth && b.day_of_month > daysInThisMonth);
+    return effectiveDayOfMonth(b.day_of_month, yearMonth) === day;
   });
 }

@@ -1,5 +1,6 @@
 import { db } from "../db";
 import { filterByQuery, SEARCH_SCAN_LIMIT } from "../text/search";
+import { effectiveDayOfMonth } from "../timeSP";
 
 export interface RecurringExpense {
   id: number;
@@ -99,14 +100,12 @@ export function markRecurringExpenseRunForMonth(fromNumber: string, id: number, 
 // nesse mes. day_of_month maior que a quantidade de dias do mes atual (ex: 31 num
 // mes de 30 dias) cai automaticamente no ultimo dia do mes, pra nao pular o lancamento.
 export function getDueRecurringExpenses(todayDate: string): RecurringExpense[] {
-  const [year, month, day] = todayDate.split("-").map(Number);
+  const day = Number(todayDate.slice(8, 10));
   const yearMonth = todayDate.slice(0, 7);
-  const daysInThisMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const isLastDayOfMonth = day === daysInThisMonth;
 
   const candidates = db
     .prepare(`SELECT * FROM recurring_expenses WHERE active = 1 AND (last_run_month IS NULL OR last_run_month != ?)`)
     .all(yearMonth) as unknown as RecurringExpense[];
 
-  return candidates.filter((r) => r.day_of_month === day || (isLastDayOfMonth && r.day_of_month > daysInThisMonth));
+  return candidates.filter((r) => effectiveDayOfMonth(r.day_of_month, yearMonth) === day);
 }
