@@ -1,6 +1,6 @@
 // Card 13: cadastro de gasto fixo e alerta de conta pelo WhatsApp -- mensagens completas, incompletas e
 // ambiguas, previa 1/2/3, duplicata, mes corrente, reinicio, expiracao e desfazer. Nada e gravado antes do "1".
-import { test, TestContext } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import cron from "node-cron";
 import * as whatsappClient from "../../src/whatsapp/client";

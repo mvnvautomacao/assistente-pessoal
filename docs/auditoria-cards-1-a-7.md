@@ -27,11 +27,11 @@ Máquina: Windows 11, Node `v24.19.0`, TypeScript 5.9.3.
 | `npm test` (antes desta auditoria) | **537 testes, 537 passam, 0 falham** (131 s com cobertura ligada) |
 | `npm test` (depois, com os testes novos) | **568 testes · 561 passam · 0 falham · 7 todo**, ~76 s, exit 0 |
 | Cobertura | `node --require ./dist/test/setup.js --test --experimental-test-coverage "dist/test/**/*.test.js"` funciona no Node 24.19; "all files" linhas **89,31 % → 90,60 %** |
-| Script `lint` | **não existe** (`package.json` só tem `dev`, `build`, `test`, `start`, `deploy`, `sprint`...) |
-| Script `coverage` | **não existe** (o comando acima foi usado direto) |
-| `scratch_audit_report.html` | untracked na raiz; **não usado nem commitado** |
+| Script `lint` | **não existia** na auditoria; criado no Card 18: `npm run lint` (`tsc -p tsconfig.lint.json`, `noUnusedLocals` e `noUnusedParameters`, sem dependência nova) |
+| Script `coverage` | **não existia** na auditoria; criado no Card 18: `npm run coverage` (cobertura nativa do Node, sem os arquivos de teste); `npm run check` = lint + testes |
+| `scratch_audit_report.html` | untracked na raiz; **não usado nem commitado**; no Card 18 entrou no `.gitignore` (`scratch_*.html`) e continua no disco |
 
-Os 7 testes `todo` eram: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. **D-02 e D-05 foram corrigidos no Card 10 e D-04 e D-06 no Card 11**; seus testes viraram testes normais (restam 3 `todo`: D-01, D-01b e D-03). Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
+Os 7 testes `todo` eram: D-01, D-01b, D-02, D-03, D-04, D-05, D-06. **D-02 e D-05 foram corrigidos no Card 10 e D-04 e D-06 no Card 11**; seus testes viraram testes normais e o **D-03 no Card 18** (restam 2 `todo`: D-01 e D-01b). Um `todo` que falha não derruba a suíte (exit 0) e passa a contar como falha real assim que o `todo` for removido.
 
 Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobertura da tabela.
 
@@ -63,7 +63,7 @@ Para reproduzir: `npm install && npm run build && npm test`, e o comando de cobe
 | C1-09 | Sem mudança real → "Já está assim, não mexi em nada." | Atendido (era sem teste efetivo para lembrete, gasto fixo e entrada) | gasto W:3874; evento W:4088; lembrete A:599; gasto fixo A:558; entrada A (último bloco) |
 | C1-10 | Pendência vence em 10 min | Atendido | constants.ts; U:confirmation 161; W:4901 |
 | C1-11 | Resposta fora de 1/2/3 recebe "Não entendi 🤔" com as opções | Atendido | `NOT_UNDERSTOOD_TEXT`; W:3238; A:266; ver D-07 (efeito colateral) |
-| C1-12 | "cancelar" durante a prévia é tratado pelo resolvedor da edição | **Parcial** | com espaços (" cancelar ") cai no cancelamento geral: **D-03**; A:493 (todo) |
+| C1-12 | "cancelar" durante a prévia é tratado pelo resolvedor da edição | Atendido (D-03 corrigido no Card 18) | com espaços (" cancelar ") responde "Beleza, não mexi em nada." (era **D-03**); A:493 |
 
 ### Card 2 — Escolha do item por número (`8c33a4f`)
 
@@ -164,7 +164,7 @@ Todas executadas por teste funcional. Os testes de reinício **descartam todos o
 | (a3) pendência recém-criada × quase vencida, com reinício | A:213 | **Passa** (9m59s aplica, 10m01s avisa a expiração) |
 | (b) pendência ativa + mensagem que dispara outro tipo | A:266 | **Passa** para pedido longo com verbo de edição (descarta com aviso) e edição+edição (adia). **Falha** (D-01) para `delete_*` + `edit_*`. Mensagem nova **curta** durante a prévia não é processada (D-07). |
 | (c) dois números ao mesmo tempo | A:284 | **Passa**, sem vazamento |
-| (d) "cancelar" com pendência persistida | A:310 | **Passa** em 5 tipos; variante com espaços falha (D-03) |
+| (d) "cancelar" com pendência persistida | A:310 | **Passa** em 5 tipos; variante com espaços passa desde o Card 18 (D-03) |
 | (e) evento com vários campos + correção + local/término + desfazer | A:340 | **Passa** |
 | (f) lista de gastos antiga após reinício | A:243 | **Passa** como limitação documentada: "edita o 2" cai em "lista expirada" e oferece os recentes |
 | (g) duas edições seguidas, desfazer | A:387 | **Passa**: só a última volta; um 2º "desfaz" responde "Não tem nada recente" |
@@ -191,11 +191,11 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** exigir `datetime('now') < datetime(start)` em `getDueEventReminders`/`getDueExtraEventReminders` (sugestão já registrada no Card 6, seção 14).
 - **Evidência:** A:481 (`todo`).
 
-### D-03 · Baixo · `" cancelar "` com espaço cai no cancelamento geral
+### D-03 · Baixo · `" cancelar "` com espaço cai no cancelamento geral — **corrigido no Card 18**
 - **Onde:** router.ts:677, `/^s*cancel(a|ar)s*[.!]*s*$/i` — as barras invertidas se perderam: `s*` (letra "s" repetida) no lugar de `\s*`. Também casa "cancelass".
 - **Reproduzir:** durante uma prévia, enviar `" cancelar "` (com espaço antes/depois, comum em colagem/áudio): resposta `Beleza, cancelei o que estava pendente — nada disso foi registrado...` em vez de `Beleza, não mexi em nada.`. O efeito prático é só o texto (a pendência é cancelada nos dois caminhos).
-- **Correção sugerida:** restaurar `\s` no regex.
-- **Evidência:** A:493 (`todo`).
+- **Correção (Card 18):** nova constante `CANCEL_ONLY_REPLY` (com `\s`) ao lado de `CANCEL_COMMAND`; varredura de todos os regex de `src/` e `scripts/` (161) sem outro caso; o teste virou normal (A:493) e ganhou variantes (`Cancelar.`, `cancela!`, espaços, tab) e negativos (`cancelass`, `scancelar`). Antes (sugestão original): restaurar `\s` no regex.
+- **Evidência:** A:493 (teste normal desde o Card 18).
 
 ### D-04 · Médio · Números por extenso não respondem à prévia 1/2/3 — ✅ CORRIGIDO no Card 11
 - **Correção (Card 11):** `normalizeReply` foi para `confirmation/normalize.ts` e `NUMBER_WORDS`/`parseChoiceNumber`/`looksLikeMultipleNumbers` para `confirmation/numbers.ts` (tabela única de um a dez, usada também pelo menu de campos); `classifyConfirmationReply` lê o número por `parseChoiceNumber` ("Um.", "opção um", "três" valem; "um pouco" continua texto livre). As etapas "qual corrigir" e a escolha de opção do menu de edição passaram a usar a mesma leitura. O teste A:505 deixou de ser `todo`.
@@ -246,7 +246,8 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 ### D-12 · Baixo · Retenção de dados no log de atividade
 - `logActivity` grava descrições, valores e títulos em texto (por exemplo `pediu confirmacao: #5 Mercado: Valor R$ 38,00 -> R$ 45,00`) sem prazo de retenção. `pending_state` guarda no máximo 70 min, mas o `activity_log` não tem limpeza.
 
-### D-13 · Baixo · Higiene do repositório e ferramentas
+### D-13 · Baixo · Higiene do repositório e ferramentas — **corrigido no Card 18**
+- **Corrigido no Card 18:** `npm run lint` (código morto; os 26 avisos foram zerados), `npm run coverage`, `npm run check`, `tsconfig.lint.json` e `scratch_*.html` no `.gitignore`. O `tsconfig.json` principal (e o build do Docker) não mudou.
 - Não há `lint` nem `coverage` no `package.json`; o `tsconfig` não usa `noUnusedLocals` (imports mortos não são detectados). Arquivo solto `scratch_audit_report.html` na raiz.
 
 ---
@@ -334,7 +335,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 | `catch` vazios | Só `dashboard/layout.ts:442,447` (script do navegador, fora do escopo). |
 | Promessas sem `await` | Nenhuma `sendText` sem `await`/`return` encontrada; os `.catch(...)` explícitos do alerta ao dono em `handleIncomingMessage` são intencionais. |
 | Ajuda e README | README atualizado a cada card; boas-vindas defasada (D-10). |
-| Lint e cobertura | Não existem scripts (D-13). Propostas: `npm run coverage` = o comando da seção 2; lint = `tsc --noEmit` com `noUnusedLocals`/`noUnusedParameters` (zero dependência nova) ou ESLint + typescript-eslint se preferirem. |
+| Lint e cobertura | **Criados no Card 18:** `npm run lint`, `npm run coverage` e `npm run check` (ver README). |
 | Volume persistente do SQLite | O README já documenta `/app/data` no Coolify e o `.env.example` aponta `DB_PATH=./data/data.sqlite`; o `Dockerfile` não define volume (é configurado no Coolify). Sem o volume, o `pending_state` (e tudo mais) some no deploy. **Confirmar no Coolify** que o volume está montado. |
 
 ---
@@ -345,7 +346,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 2. ~~**D-02** + **D-05** (Médio, ambos de agenda)~~ — feito no Card 10.
 3. ~~**D-06** + **D-04** (Médio)~~ — feito no Card 11.
 4. ~~**D-07** (Médio)~~ — feito no Card 12.
-5. **D-03** (Baixo, uma linha) junto de **D-13** (script de cobertura/lint e `noUnusedLocals`).
+5. ~~**D-03** (Baixo, uma linha) junto de **D-13** (script de cobertura/lint e `noUnusedLocals`)~~ — feito no Card 18.
 6. **D-08**, **D-09**, **D-10** (consistência de produto), **D-12** (retenção do log) e **D-11** (refatoração do `router.ts`, fazer por último e com os testes desta auditoria como rede de segurança).
 
 ---

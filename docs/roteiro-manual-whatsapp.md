@@ -221,7 +221,7 @@ Faça 2.1 até a lista, **reinicie**, `2`, **reinicie**, `1`, **reinicie**, `45`
 - Com dois celulares, abra uma prévia em cada um e responda `1` num e `3` no outro quase juntos. **Cada resposta vale só para a prévia do próprio número.**
 
 ### I-d "cancelar" com pendência
-- Para cada pendência (prévia, menu, lista, "editar"): → `cancelar` ← **`Beleza, não mexi em nada.`** (ou `Beleza, cancelei o que estava pendente...`). Nenhuma alteração. ⚠️ `" cancelar "` com espaços dá a segunda frase (D-03, só o texto).
+- Para cada pendência (prévia, menu, lista, "editar"): → `cancelar` ← **`Beleza, não mexi em nada.`** (ou `Beleza, cancelei o que estava pendente...`). Nenhuma alteração. `" cancelar "` com espaços ou pontuação (`Cancelar.`, `cancela!`) dá a mesma resposta (D-03 corrigido no Card 18).
 
 ### I-e Evento com vários campos + correção
 - → `remarca a consulta pra daqui 5 dias, vai até as 17h, na Clínica B e renomeia pra Dentista` ← **prévia com `Quando`, `Término`, `Nome`, `Local`.** → `2` ← **`Qual você quer corrigir?` com 4 opções.** → `1` → `daqui a 6 dias` ← **só o dia muda; término 17:00, nome e local continuam.** → `1` → `desfaz isso` ← **tudo volta.**

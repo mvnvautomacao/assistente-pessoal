@@ -5,7 +5,6 @@
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import type { EndSpec, EventChangeKey, EventSnapshot } from "./editPlan";
 import { clearPending, getPending, setPending } from "../pending/store";
-const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditEvent {
   eventId: number;

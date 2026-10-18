@@ -231,7 +231,7 @@ test("expense: falha no meio da criacao do lote nao deixa gasto nenhum gravado (
 test("expense: lote permite editar so um dos gastos, sem mexer no outro", async (t) => {
   const BE2 = "551100090702";
   seed(BE2);
-  const { sent, queueReply } = withMocks(t);
+  const { queueReply } = withMocks(t);
   queueReply([
     { type: "expense", amount: 50, category: "Mercado", description: "mercado lote edit", date: "2026-01-10" },
     { type: "expense", amount: 30, category: "Transporte", description: "uber lote edit", date: "2026-01-10" },
@@ -867,7 +867,7 @@ test("compra parcelada: categoria desconhecida pergunta antes de criar, so cria 
 test("compra parcelada: valor de CADA parcela informado direto (nao o total) -- cada parcela sai exatamente com esse valor", async (t) => {
   const IN4 = "551100090304";
   seed(IN4);
-  const { sent, queueReply } = withMocks(t);
+  const { queueReply } = withMocks(t);
   queueReply([{ type: "installment_expense", description: "Notebook", category: "Compras", installment_amount: 250, installments: 4 }]);
   await handleIncomingMessage(evolutionMessage(IN4, "notebook em 4x de 250"));
   const items = searchExpenses(IN4, "Notebook");
@@ -1857,7 +1857,7 @@ test("bulk_recategorize: responder 'nao' nao muda nada", async (t) => {
   const BR4 = "551100090083";
   seed(BR4);
   const origem = getOrCreateCategory(BR4, "Origem-nao");
-  const destino = getOrCreateCategory(BR4, "Destino-nao");
+  getOrCreateCategory(BR4, "Destino-nao"); // existe, mas o teste so move gastos pra origem
   const e1 = insertExpense({ fromNumber: BR4, amount: 10, description: "fica igual", categoryId: origem.id, paymentMethodId: null, date: today() });
 
   const { sent, queueReply } = withMocks(t);
@@ -1957,7 +1957,7 @@ test("merge_categories: undo recria a categoria de origem e devolve os gastos pr
   const MC2 = "551100090091";
   seed(MC2);
   const origem = getOrCreateCategory(MC2, "Lazer-merge-undo");
-  const destino = getOrCreateCategory(MC2, "Diversao-merge-undo");
+  getOrCreateCategory(MC2, "Diversao-merge-undo"); // categoria de destino existe; a previa do merge a recria pelo nome
   const e1 = insertExpense({ fromNumber: MC2, amount: 10, description: "merge undo 1", categoryId: origem.id, paymentMethodId: null, date: "2026-01-01" });
 
   const { queueReply } = withMocks(t);

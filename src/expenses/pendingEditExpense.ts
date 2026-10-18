@@ -9,7 +9,6 @@ import { clearPending, getPending, setPending } from "../pending/store";
 import { formatBRL } from "../confirmation/preview";
 import type { FixedMark } from "./fixedMark";
 
-const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface EditExpenseParams {
   amount: number;

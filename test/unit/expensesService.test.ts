@@ -174,7 +174,7 @@ test("findCategoryByName ignora acento/maiuscula e nao encontra categoria de out
   ensureUserSeeded(A);
   assert.ok(findCategoryByName(A, "mercado"));
   assert.ok(findCategoryByName(A, "MERCADO"));
-  const onlyInA = getOrCreateCategory(A, "ExclusivaDoA");
+  getOrCreateCategory(A, "ExclusivaDoA");
   assert.equal(findCategoryByName(B, "ExclusivaDoA"), null);
 });
 

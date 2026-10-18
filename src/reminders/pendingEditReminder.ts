@@ -3,7 +3,6 @@
 // ideia dos outros caches de conversa (pendingDeletion.ts etc).
 import { EDIT_PENDING_TTL_MS } from "../confirmation/constants";
 import { clearPending, getPending, setPending } from "../pending/store";
-const TTL_MS = EDIT_PENDING_TTL_MS;
 
 export interface PendingEditReminder {
   reminderId: number;

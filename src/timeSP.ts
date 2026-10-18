@@ -94,7 +94,7 @@ export interface ClampResult {
 }
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
-const shortDate = (year: number, month: number, day: number) => `${pad2(day)}/${pad2(month)}`;
+const shortDate = (month: number, day: number) => `${pad2(day)}/${pad2(month)}`;
 
 // Data unica inexistente no mes (31/04, 30/02, 29/02 fora de ano bissexto) vira o ULTIMO dia desse mes, com o mesmo
 // horario (RN13). Se o momento ajustado ja passou, vale o ultimo dia do PROXIMO mes que tenha o dia pedido (RN14).
@@ -127,8 +127,8 @@ export function clampToMonthEnd(isoLocal: string, now: Date = new Date()): Clamp
       iso,
       adjusted: true,
       from,
-      warning: `${head}, e o dia ${shortDate(year, month, last)} já passou, então marquei pro dia ${shortDate(nextYear, nextMonth, nextDay)}.`,
+      warning: `${head}, e o dia ${shortDate(month, last)} já passou, então marquei pro dia ${shortDate(nextMonth, nextDay)}.`,
     };
   }
-  return { iso, adjusted: true, from, warning: `${head}, então marquei pro dia ${shortDate(year, month, last)}.` };
+  return { iso, adjusted: true, from, warning: `${head}, então marquei pro dia ${shortDate(month, last)}.` };
 }

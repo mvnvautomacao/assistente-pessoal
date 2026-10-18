@@ -29,7 +29,6 @@ import {
   extractInstallmentInfoFromAnswer,
   extractReceiptCorrectionFromAnswer,
   Interpretation,
-  ReceiptReading,
 } from "./ai/interpret";
 import {
   createEvent,
@@ -40,7 +39,6 @@ import {
   updateEvent,
   listUpcomingEvents,
   getEventById,
-  getEventsForMonth,
   formatMinutesBefore,
   listEventReminderMinutes,
   addEventExtraReminder,
@@ -51,7 +49,6 @@ import {
 import {
   createReminder,
   getRemindersWithinDays,
-  getRemindersForMonth,
   deleteReminder,
   updateReminder,
   findPendingRemindersByText,
@@ -184,7 +181,7 @@ import { BILL_DUPLICATE_WARNING, BillChangeKey, BillChangeRequest, BillParams, a
 import { PendingEditBillAlert, clearPendingEditBillAlert, getPendingEditBillAlert, setPendingEditBillAlert } from "./bills/pendingEdit";
 import { resolveDate } from "./expenses/editItem";
 import { FixedMark, USER_FIXED, fixedConfirmationSuffix, markFromColumns } from "./expenses/fixedMark";
-import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, clearPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
+import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
 import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply } from "./bills/checkinReply";
 import { BILL_NO_PREVIOUS_VALUE_TEXT, billValueQuestion, billValueRetry, interpretBillValueReply } from "./bills/checkinValue";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
@@ -196,8 +193,6 @@ import {
   findRecentIncome,
   findIncomeCandidates,
   getRecentIncomesList,
-  listIncomesBetween,
-  getIncomeSummaryBetween,
   IncomeRecord,
 } from "./incomes/service";
 import { setLastShownIncomes, getLastShownIncomes, clearLastShownIncomes } from "./incomes/listCache";
@@ -216,17 +211,14 @@ import { buildIncomeEditItem, incomeHeader } from "./incomes/editItem";
 import {
   INCOME_DELETE_NOT_UNDERSTOOD,
   INCOME_GONE_TEXT,
-  MAX_INCOME_LIST,
   formatIncomeDeletePrompt,
   formatIncomeEditPreview,
   formatIncomeEditSuccess,
-  formatIncomeList,
   incomeChangedText,
   incomeCorrectionOptions,
   incomeDeletedText,
   incomeLine,
 } from "./confirmation/incomePreview";
-import { getRangeBalance } from "./expenses/balance";
 import { periodExpenseList, runBalance, runExpenseReport, runIncomeReport, runListExpenses, runListIncomes } from "./expenses/queries";
 import { setPendingEventDeletion, getPendingEventDeletion, clearPendingEventDeletion } from "./events/pendingDeletion";
 import { setPendingUndo, getPendingUndo, clearPendingUndo } from "./undo/pendingUndo";
@@ -322,7 +314,6 @@ import {
   formatShortDate,
   formatWhen,
   formatEditPreview,
-  expenseHeader,
   recurringHeader,
   correctionQuestion,
   correctionRetry,
@@ -407,13 +398,6 @@ function addMonthsToDateString(dateStr: string, months: number): string {
   const lastDayOfTargetMonth = new Date(Date.UTC(y, targetMonthIndex + 1, 0)).getUTCDate();
   const day = Math.min(d, lastDayOfTargetMonth);
   return new Date(Date.UTC(y, targetMonthIndex, day)).toISOString().slice(0, 10);
-}
-
-// "2026-11" -> "novembro de 2026", pro relatorio de agenda de um mes especifico.
-// Date.UTC + timeZone:"UTC" evita reprojecao de fuso (o mes/ano nao dependem de hora).
-function monthLabelPt(yearMonth: string): string {
-  const [year, month] = yearMonth.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
 // Combina uma nova data e/ou hora com uma string ISO existente, mantendo a
@@ -4611,7 +4595,7 @@ async function applyEventCorrection(from: string, pending: PendingEditEvent, key
     await sendText(from, NO_CHANGE_TEXT);
     return true;
   }
-  const next = { ...pending, proposed, endSpec, changeText: eventChangeText(changes), awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
+  const next = { ...pending, proposed, endSpec, dateWarning, changeText: eventChangeText(changes), awaitingCorrection: false, correctionStage: "pick" as const, correctionTarget: null };
   setPendingEditEvent(from, next);
   logActivity(from, "edit_event", `correcao: "${pending.title}": ${next.changeText}`);
   await sendText(from, buildEventPreview(next));

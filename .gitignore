@@ -5,3 +5,5 @@ dist/
 *.sqlite
 *.sqlite-journal
 .DS_Store
+# relatorios e rascunhos locais (nao commitar)
+scratch_*.html

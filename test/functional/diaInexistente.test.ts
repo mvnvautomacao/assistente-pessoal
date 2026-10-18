@@ -139,3 +139,25 @@ test("Card 16: menu de campos 'Dia e hora' do lembrete com dia inexistente cai n
   await say(app, n, "1");
   assert.equal(getReminderById(n, id)?.due_at, "2026-04-30T09:00:00-03:00");
 });
+
+// Card 18 (RF05): `let dateWarning` em applyEventCorrection era gravada e nunca lida -- o aviso do evento ficava velho depois da correcao
+test("Card 18: corrigir (opcao 2) a data da previa de EVENTO atualiza o aviso de dia ajustado (some com data normal, volta com dia inexistente)", async (t) => {
+  const app = bootApp(t, at("2026-04-10T12:00:00-03:00"));
+  const n = user();
+  const created = createEvent({ fromNumber: n, title: "Dentista", start: "2026-04-20T10:00:00-03:00", end: "2026-04-20T11:00:00-03:00" });
+  const preview = await say(app, n, "remarca o dentista pro dia 31", { type: "edit_event", query: "dentista", new_date: "2026-04-31" });
+  assert.match(preview, /Abril só tem 30 dias, então marquei pro dia 30\/04\./);
+
+  const ai = require("../../src/ai/interpret");
+  t.mock.method(ai, "extractDateTimeFromAnswer", async (text: string) => ({ newDate: text.includes("31") ? "2026-04-31" : "2026-04-25" }));
+  await say(app, n, "2");
+  const normal = await say(app, n, "dia 25");
+  assert.match(normal, /→ .*25\/04/s);
+  assert.ok(!normal.includes("Abril só tem"), `o aviso antigo nao pode ficar na previa: ${normal}`);
+
+  await say(app, n, "2");
+  const again = await say(app, n, "dia 31");
+  assert.match(again, /Abril só tem 30 dias, então marquei pro dia 30\/04\./);
+  await say(app, n, "1");
+  assert.equal(new Date(getEventById(n, created.id)!.start).getTime(), at("2026-04-30T10:00:00-03:00"));
+});

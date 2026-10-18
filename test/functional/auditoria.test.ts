@@ -314,7 +314,7 @@ test("RF09(d): 'cancelar' (e variantes de uma palavra) com pendencia persistida 
   const exp = insertExpense({ fromNumber: N, amount: 10, description: "Item cancelar", categoryId: cat.id, paymentMethodId: null, date: today() });
   insertExpense({ fromNumber: N, amount: 11, description: "Aula cancelar 1", categoryId: cat.id, paymentMethodId: null, date: today() });
   insertExpense({ fromNumber: N, amount: 12, description: "Aula cancelar 2", categoryId: cat.id, paymentMethodId: null, date: today() });
-  const { sent, queueReply } = withMocks(t);
+  const { queueReply } = withMocks(t);
 
   const casos: [Interpretation | null, string, string, string][] = [
     [{ type: "edit_expense", query: "item cancelar", changes: [{ field: "amount", value: "40" }] }, "muda o item", "edit_expense", "cancelar"],

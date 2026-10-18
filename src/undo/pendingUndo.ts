@@ -127,11 +127,6 @@ export type UndoAction =
       description: string;
     };
 
-interface PendingUndo {
-  action: UndoAction;
-  createdAt: number;
-}
-
 const KIND = "undo";
 const VERSION = 1;
 

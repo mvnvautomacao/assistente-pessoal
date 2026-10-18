@@ -206,3 +206,13 @@ temporário — nunca toca no `data.sqlite` de verdade. Cobre isolamento entre
 números (multi-tenant), os fluxos de conversa com estado (categorização
 pendente, editar gasto por número da lista, resumo x detalhado) e checagens de
 segurança (um número não conseguir editar dado de outro, escapamento de HTML).
+
+Antes de commitar, rode `npm run check` (lint + testes). Os três scripts de apoio:
+
+```bash
+npm run lint      # tsc -p tsconfig.lint.json: código morto (imports, variáveis e parâmetros sem uso); não gera arquivos
+npm run coverage  # compila, roda a suíte com a cobertura nativa do Node e imprime a tabela por arquivo (sem os testes)
+npm run check     # lint + testes
+```
+
+O lint fica fora do `npm run build` (e do `tsconfig.json`) de propósito: um import esquecido nunca derruba o deploy. Parâmetro ignorado de propósito leva prefixo `_`. A cobertura só mede e imprime (sem mínimo que quebre o comando); linha de base no Node 24.19: 93,4 % das linhas, 92,2 % dos ramos e 94,8 % das funções.
