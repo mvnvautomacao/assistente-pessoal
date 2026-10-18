@@ -29,7 +29,7 @@ export function replyShape(text: string): ReplyShape | null {
   return null;
 }
 
-const LIST_KINDS = new Set(["target_choice", "edit_target"]);
+const LIST_KINDS = new Set(["target_choice", "edit_target", "loose_suggest"]);
 
 export function expiredNoticeText(expired: Pick<ExpiredPending, "kind" | "label">): string {
   if (expired.kind === "undo") {

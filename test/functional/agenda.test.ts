@@ -163,6 +163,6 @@ test("Card 16: 'a agenda' sem recorte assume os proximos 7 dias", async (t) => {
   const n = user();
   createReminder(n, "Em 3 dias", "2026-10-18T09:00:00-03:00");
   createReminder(n, "Em 10 dias", "2026-10-25T09:00:00-03:00");
-  const text = await say(app, n, "a agenda", { type: "report" });
+  const text = await say(app, n, "a agenda");
   assert.match(text, /^📅 Agenda — próximos 7 dias\n\nDom 18\/10\n• ⏰ 09:00 Em 3 dias$/);
 });

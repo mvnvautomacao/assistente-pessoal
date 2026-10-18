@@ -127,8 +127,7 @@ test("Card 17: 'apagar gasto' lista os gastos mais recentes (parcelas futuras de
   const n = user();
   parcelado(n, "Tênis", TODAY, 3);
   add(n, "Padaria", "2026-10-16");
-  await say(app, n, "apagar gasto", { type: "delete_expense" });
-  const text = await say(app, n, "2"); // "Não é esse, ver os últimos"
+  const text = await say(app, n, "apagar gasto");
   assert.match(text, /1\. Tênis \(parcela 1\/3\)/);
   assert.ok(!text.includes("parcela 2/3"), text);
 });

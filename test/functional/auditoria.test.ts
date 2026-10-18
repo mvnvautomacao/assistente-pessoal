@@ -186,11 +186,11 @@ test("RF08/RF09: cada tipo de pendencia sobrevive a reinicio (edicao de evento, 
     return app.sent;
   };
 
-  let sent = await run({ type: "edit_event", query: "evento reinicio", new_title: "Evento reiniciado" }, "muda o evento", "edit_event", "1");
+  let sent = await run({ type: "edit_event", query: "evento reinicio", new_title: "Evento reiniciado" }, "muda o evento reinicio", "edit_event", "1");
   assert.match(last(sent), /^✏️ "Evento reinicio" alterado/);
   assert.equal(eventsService.getEventById(N, eventsService.findUpcomingEvents(N, "reiniciado")[0].id)?.title, "Evento reiniciado");
 
-  sent = await run({ type: "edit_reminder", query: "lembrete reinicio", new_message: "Lembrete reiniciado" }, "muda o lembrete", "edit_reminder", "1");
+  sent = await run({ type: "edit_reminder", query: "lembrete reinicio", new_message: "Lembrete reiniciado" }, "muda o lembrete reinicio", "edit_reminder", "1");
   assert.match(last(sent), /^✏️ Lembrete "Lembrete reinicio" alterado/);
   assert.equal(remindersService.getReminderById(N, rem)?.message, "Lembrete reiniciado");
 
@@ -198,11 +198,11 @@ test("RF08/RF09: cada tipo de pendencia sobrevive a reinicio (edicao de evento, 
   assert.match(last(sent), /^✏️ Gasto fixo "Fixo reinicio" alterado/);
   assert.equal(getRecurringExpenseById(N, rec.id)?.amount, 60);
 
-  sent = await run({ type: "edit_income", query: "entrada reinicio", changes: [{ field: "amount", value: "200" }] }, "muda a entrada", "edit_income", "1");
+  sent = await run({ type: "edit_income", query: "entrada reinicio", changes: [{ field: "amount", value: "200" }] }, "muda a entrada reinicio", "edit_income", "1");
   assert.match(last(sent), /^✏️ Entrada "Entrada reinicio" atualizada/);
   assert.equal(incomesService.getIncomeById(N, inc.id)?.amount, 200);
 
-  sent = await run({ type: "delete_income", query: "entrada apagar reinicio" }, "apaga a entrada", "delete_income", "1");
+  sent = await run({ type: "delete_income", query: "entrada apagar reinicio" }, "apaga a entrada reinicio", "delete_income", "1");
   assert.match(last(sent), /^🗑️ Entrada "Entrada apagar reinicio" apagada/);
   assert.equal(incomesService.getIncomeById(N, incDel.id), null);
 
@@ -629,7 +629,7 @@ test("Card 1/6: evento -- corrige antecedencia, titulo e local pela opcao 2; mud
   const ev = eventsService.createEvent({ fromNumber: N, title: "Evento correcao aud", start: futureAt(3, 14), end: futureAt(3, 15) });
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "edit_event", query: "evento correcao aud", new_title: "Titulo novo", new_reminder_minutes: 120, new_location: "Sala 1" }]);
-  await handleIncomingMessage(evolutionMessage(N, "muda o evento"));
+  await handleIncomingMessage(evolutionMessage(N, "muda o evento correcao aud"));
   assert.match(last(sent), /Nome: Evento correcao aud → Titulo novo\nLocal: sem local → Sala 1\nAviso: 1 hora antes → 2 horas antes/);
 
   await handleIncomingMessage(evolutionMessage(N, "2"));
@@ -783,7 +783,7 @@ test("Card 5: o desfazer devolve a entrada com os MESMOS valores, descricao e da
   assert.deepEqual([restored.amount, restored.description, restored.date], [3000.55, "Salário original", date]);
 
   queueReply([{ type: "delete_income", query: "salario original" }]);
-  await handleIncomingMessage(evolutionMessage(N, "apaga a entrada"));
+  await handleIncomingMessage(evolutionMessage(N, "apaga a entrada do aud"));
   await handleIncomingMessage(evolutionMessage(N, "1"));
   assert.equal(incomesService.getIncomeById(N, e.id), null);
   queueReply([{ type: "undo" }]);

@@ -408,7 +408,7 @@ test("card 9: o aviso de expiracao reconhece os kinds novos com o rotulo certo (
   insertExpense({ fromNumber: n, amount: 12, description: "lista exp c9", categoryId: null, paymentMethodId: null, date: today() });
   const app = restartApp(t);
   app.queueReply([{ type: "delete_expense" }]);
-  await app.handle(msg(n, "apaga um gasto"));
+  await app.handle(msg(n, "apaga um gasto qualquer"));
   await app.handle(msg(n, "2")); // abre a lista de escolha (kind delete_expense, modo choices)
   app.setNow(11 * MIN);
   await app.handle(msg(n, "1"));

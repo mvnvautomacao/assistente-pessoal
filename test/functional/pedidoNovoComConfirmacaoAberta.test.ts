@@ -230,7 +230,7 @@ test("Card 12: pedido que abre outra confirmacao ou muda config nao troca nada (
   createEvent({ fromNumber: N, title: "Reuniao c12g", start: futureAt(3, 14), end: futureAt(3, 15) });
   const unsafe: [string, Interpretation][] = [
     ["apaga o evento reunião", { type: "delete_event", query: "reuniao c12g" }],
-    ["muda a reunião", { type: "edit_event", query: "reuniao c12g", new_date: today() }],
+    ["muda a reunião c12g", { type: "edit_event", query: "reuniao c12g", new_date: today() }],
     ["define orçamento de lazer", { type: "set_budget", category: "Lazer", amount: 300 }],
     ["adia o lembrete 30 min", { type: "snooze_reminder", minutes: 30 }],
     ["não entendi nada", { type: "unknown", description: "x" }],

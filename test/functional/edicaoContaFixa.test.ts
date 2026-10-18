@@ -36,7 +36,7 @@ test("Card 15: 'editar conta fixa' lista os alertas numerados com o rodape e o n
   createBillAlert({ fromNumber: n, name: "Água", dayOfMonth: 5 });
   const racao = createBillAlert({ fromNumber: n, name: "Ração", intervalDays: 45 });
 
-  const list = await say(app, n, "editar conta fixa", editBill());
+  const list = await say(app, n, "editar conta fixa");
   assert.equal(
     list,
     `Suas contas fixas (avisos):\n1. Água — todo dia 5\n2. Ração — a cada 45 dias · próximo aviso ${shortDate(racao.next_due_date!)}\n\nQual deles você quer editar? Responde com o número ou *cancelar*.\n\nPra gastos fixos lançados sozinhos, diga "editar gasto fixo".`
@@ -46,7 +46,7 @@ test("Card 15: 'editar conta fixa' lista os alertas numerados com o rodape e o n
 
   // alerta por intervalo: menu com o 4o campo
   await say(app, n, "cancelar");
-  await say(app, n, "editar conta fixa", editBill());
+  await say(app, n, "editar conta fixa");
   const intervalMenu = await say(app, n, "2");
   assert.match(intervalMenu, /^✏️ Ração — a cada 45 dias · próximo aviso \d\d\/\d\d\nO que você quer mudar\?\n1 Nome\n2 Dia do mês\n3 Intervalo\n4 Próximo aviso\n\nPode escolher mais de um: "1 e 4"\./);
   assert.equal(getBillAlertById(n, racao.id)?.name, "Ração");
@@ -55,16 +55,16 @@ test("Card 15: 'editar conta fixa' lista os alertas numerados com o rodape e o n
 test("Card 15: so um alerta -- 'editar conta fixa' vai direto pro menu; nenhum alerta avisa que nao ha o que editar", async (t) => {
   const app = bootApp(t, NOW);
   const n = user();
-  assert.equal(await say(app, n, "editar conta fixa", editBill()), "Você não tem nenhuma conta fixa cadastrada pra editar.");
+  assert.equal(await say(app, n, "editar conta fixa"), "Você não tem nenhuma conta fixa cadastrada pra editar.");
   createBillAlert({ fromNumber: n, name: "Água", dayOfMonth: 5 });
-  assert.match(await say(app, n, "editar conta fixa", editBill()), /^✏️ Água — todo dia 5\nO que você quer mudar\?/);
+  assert.match(await say(app, n, "editar conta fixa"), /^✏️ Água — todo dia 5\nO que você quer mudar\?/);
 });
 
 test("Card 15: menu -> 'Dia do mes' -> previa 'antes -> depois'; nada grava antes do 1; confirmar grava e desfazer restaura", async (t) => {
   const app = bootApp(t, NOW);
   const n = user();
   const bill = createBillAlert({ fromNumber: n, name: "Água", dayOfMonth: 5 });
-  await say(app, n, "editar conta fixa", editBill());
+  await say(app, n, "editar conta fixa");
   assert.equal(await say(app, n, "2"), "Qual é o dia do mês certo? (1 a 31) Ou responde *cancelar*.");
   assert.equal(await say(app, n, "40"), "O dia do mês precisa ser de 1 a 31.\nQual é o dia do mês certo? (1 a 31) Ou responde *cancelar*.");
   const preview = await say(app, n, "8");
@@ -83,7 +83,7 @@ test("Card 15: troca de dia do mes pra intervalo (Intervalo) e de volta; desfaze
   const app = bootApp(t, NOW);
   const n = user();
   const bill = createBillAlert({ fromNumber: n, name: "Filtro", dayOfMonth: 10 });
-  await say(app, n, "editar conta fixa", editBill());
+  await say(app, n, "editar conta fixa");
   assert.match(await say(app, n, "3"), /^De quantos em quantos dias devo te avisar\? \(ex: 45\)/);
   assert.match(await say(app, n, "zero"), /^O intervalo precisa ser um número de dias entre 1 e 3650\.\nDe quantos em quantos dias/);
   const preview = await say(app, n, "a cada 30 dias");
@@ -101,7 +101,7 @@ test("Card 15: 'Proximo aviso' de alerta por intervalo aceita 'dia 20' como a pr
   const app = bootApp(t, NOW);
   const n = user();
   const bill = createBillAlert({ fromNumber: n, name: "Ração", intervalDays: 45 });
-  await say(app, n, "editar conta fixa", editBill());
+  await say(app, n, "editar conta fixa");
   assert.equal(await say(app, n, "4"), "Quando é o próximo aviso? (ex: 15/11 ou dia 20) Ou responde *cancelar*.");
   const preview = await say(app, n, "dia 20");
   assert.match(preview, /^✏️ Ração\nPróximo aviso: \d\d\/\d\d → 20\/10\n\n1 ✅/);
@@ -247,7 +247,7 @@ test("Card 15: lista com mais de 10 alertas mostra 10 e avisa que tem mais", asy
   const app = bootApp(t, NOW);
   const n = user();
   for (let i = 1; i <= 12; i++) createBillAlert({ fromNumber: n, name: `Conta ${i}`, dayOfMonth: i });
-  const list = await say(app, n, "editar conta fixa", editBill());
+  const list = await say(app, n, "editar conta fixa");
   assert.match(list, /10\. Conta 10 — todo dia 10\nTem mais opções\./);
   assert.ok(!list.includes("11. Conta 11"));
 });

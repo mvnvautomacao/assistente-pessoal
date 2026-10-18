@@ -582,7 +582,7 @@ test("referencia por numero expira depois de outra acao no meio", async (t) => {
 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "list_expenses" }]);
-  await handleIncomingMessage(evolutionMessage(A, "editar compras"));
+  await handleIncomingMessage(evolutionMessage(A, "editar compras de ontem"));
 
   queueReply([{ type: "list_categories" }]); // acao no meio, nao relacionada
   await handleIncomingMessage(evolutionMessage(A, "quais categorias eu tenho"));
@@ -2322,7 +2322,7 @@ test("delete_expense: 'nao' cancela, por texto acha o gasto certo, e sem gasto n
   assert.equal(searchExpenses(DE2, "padaria apagar texto").length, 1);
 });
 
-// Relato do usuario: "excluir um gasto" (sem dizer qual) nao mostrava opcao
+// Relato do usuario: "excluir um gasto qualquer" (sem dizer qual) nao mostrava opcao
 // nenhuma, e "cancelar" sem nada pendente caia no "e gasto, evento ou lembrete?".
 test("delete_expense sem dizer qual: confirma o ultimo e, se for 'nao', lista os ultimos pra escolher pelo numero", async (t) => {
   const DE3 = "551100090844";
@@ -2333,7 +2333,7 @@ test("delete_expense sem dizer qual: confirma o ultimo e, se for 'nao', lista os
   const { sent, queueReply } = withMocks(t);
 
   queueReply([{ type: "delete_expense" }]);
-  await handleIncomingMessage(evolutionMessage(DE3, "excluir um gasto"));
+  await handleIncomingMessage(evolutionMessage(DE3, "excluir um gasto qualquer"));
   assert.match(sent[0].text, /escolher tres/); // sugere o mais recente
   assert.match(sent[0].text, /2 🔎 Não é esse, ver os últimos/);
 
@@ -2355,7 +2355,7 @@ test("delete_expense: numero invalido na escolha pergunta de novo, e 'cancelar' 
   insertExpense({ fromNumber: DE4, amount: 1, description: "escolha invalida", categoryId: null, paymentMethodId: null, date: today() });
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "delete_expense" }]);
-  await handleIncomingMessage(evolutionMessage(DE4, "apagar um gasto"));
+  await handleIncomingMessage(evolutionMessage(DE4, "apagar um gasto qualquer"));
   await handleIncomingMessage(evolutionMessage(DE4, "2"));
   await handleIncomingMessage(evolutionMessage(DE4, "9"));
   assert.match(sent[2].text, /Não entendi/);
@@ -4898,11 +4898,11 @@ test("card 7: cada fluxo grava seu estado no SQLite (sobrevive a reinicio) e lim
 
   await step({ type: "edit_expense", query: "item persist", changes: [{ field: "amount", value: "20" }] }, "muda o item persist", ["edit_expense"], "3");
   assert.deepEqual(pendingKinds(P), []);
-  await step({ type: "edit_event", query: "evento persist", new_title: "Evento persist novo" }, "muda o evento", ["edit_event"], "3");
-  await step({ type: "edit_reminder", query: "lembrete persist", new_message: "Lembrete persist novo" }, "muda o lembrete", ["edit_reminder"], "3");
+  await step({ type: "edit_event", query: "evento persist", new_title: "Evento persist novo" }, "muda o evento persist", ["edit_event"], "3");
+  await step({ type: "edit_reminder", query: "lembrete persist", new_message: "Lembrete persist novo" }, "muda o lembrete persist", ["edit_reminder"], "3");
   await step({ type: "edit_recurring_expense", query: "fixo persist", new_amount: 60 }, "muda o fixo", ["edit_recurring"], "3");
-  await step({ type: "edit_income", query: "entrada persist", changes: [{ field: "amount", value: "200" }] }, "muda a entrada", ["edit_income"], "3");
-  await step({ type: "delete_income", query: "entrada persist" }, "apaga a entrada", ["delete_income"], "3");
+  await step({ type: "edit_income", query: "entrada persist", changes: [{ field: "amount", value: "200" }] }, "muda a entrada persist", ["edit_income"], "3");
+  await step({ type: "delete_income", query: "entrada persist" }, "apaga a entrada persist", ["delete_income"], "3");
   await step({ type: "edit_expense", query: "item persist" }, "edita o item persist", ["field_menu"], "cancelar");
   await step({ type: "edit_expense", query: "aula persist", changes: [{ field: "amount", value: "30" }] }, "muda a aula", ["target_choice"], "cancelar");
   await step(null, "editar", ["edit_target"], "cancelar");
@@ -4911,7 +4911,7 @@ test("card 7: cada fluxo grava seu estado no SQLite (sobrevive a reinicio) e lim
   // confirmar grava o desfazer (e some a confirmacao); "desfaz" apaga o desfazer
   resetRateLimitForTests();
   queueReply([{ type: "edit_income", query: "entrada persist", changes: [{ field: "amount", value: "200" }] }]);
-  await handleIncomingMessage(evolutionMessage(P, "muda a entrada"));
+  await handleIncomingMessage(evolutionMessage(P, "muda a entrada persist"));
   await handleIncomingMessage(evolutionMessage(P, "1"));
   assert.deepEqual(pendingKinds(P), ["undo"]);
   queueReply([{ type: "undo" }]);
@@ -5084,7 +5084,7 @@ test("card 7: toda acao que registra desfazer termina com a dica (exatamente uma
     [{ type: "edit_event", query: "evento dica", new_title: "Evento dica 2" }, "evento"],
     [{ type: "edit_reminder", query: "lembrete dica", new_message: "Lembrete dica 2" }, "lembrete"],
     [{ type: "edit_income", query: "entrada dica", changes: [{ field: "amount", value: "200" }] }, "entrada"],
-    [{ type: "delete_income", query: "entrada dica" }, "apagar entrada"],
+    [{ type: "delete_income", query: "entrada dica" }, "apagar entrada dica"],
   ] as [Interpretation, string][]) {
     const reply = await confirm(action, text);
     assert.equal(countHint(reply), 1, text);

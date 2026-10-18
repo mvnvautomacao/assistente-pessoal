@@ -126,6 +126,8 @@ export type Interpretation =
       // formato antigo (uma mudanca so); normalizado junto com "changes" em expenses/editChanges.ts
       field?: "amount" | "date" | "description" | "payment_method" | "category" | "fixed";
       value?: string;
+      // uso interno (frase solta "trocar categoria", Card 17): depois de escolher o gasto, pergunta direto este campo
+      ask_field?: "amount" | "date" | "payment_method" | "category";
     }
   | {
       type: "unknown";
@@ -596,6 +598,8 @@ Sempre chame a ferramenta record_actions com o resultado. Datas relativas ("hoje
 Se a mensagem tiver mais de um pedido (ex: dois eventos, ou um gasto e um lembrete), retorne uma acao para cada um dentro de "actions". Cada pedido usa SO as informacoes que sao claramente dele -- um dia/horario mencionado perto de UM pedido NAO deve "vazar" pra outro pedido da mesma mensagem que nao mencionou nenhum dia/horario proprio, mesmo que os dois estejam na mesma frase. Nunca preencha 'date'/'start'/'due_at' com "hoje" so por preencher -- so use "hoje" se o usuario disse isso explicitamente (ou algo equivalente tipo "agora", "daqui a pouco") pra ESSE pedido especifico; se um pedido simplesmente nao mencionou nenhum dia, o campo de data dele fica vazio (ou o pedido vira 'unknown' se data for obrigatoria pro tipo).
 
 Para "dia N" sem mes (lembrete, evento, adiar ou remarcar), devolva o mes corrente com o dia N se N ainda nao passou neste mes ou se N for maior que os dias do mes; senao devolva o mes seguinte. NUNCA devolva outro dia para "compensar" um dia que o mes nao tem (ex: "dia 31" em abril continua 31 de abril, "dia 30" em fevereiro continua 30 de fevereiro): o sistema ajusta pro ultimo dia do mes e avisa o usuario.
+
+Frases curtas com verbo de EDITAR/APAGAR e SEM dados (valor, data, nome) -- 'trocar categoria', 'mudar pagamento', 'apagar gasto', 'editar lembrete' -- NAO sao gasto novo: trocar/mudar/alterar/corrigir/editar/apagar + substantivo e um pedido sobre algo que ja existe. Nunca classifique isso como unknown com likely_intent='expense' (use edit_*/delete_* sem 'query', ou unknown sem likely_intent). Gasto novo exige valor, 'R$' ou verbo de compra (comprei, gastei, paguei).
 
 Categorias de gasto ja existentes: ${categoryNames}.
 Ao classificar um gasto, se a compra claramente se encaixa numa dessas categorias, use exatamente esse nome.

@@ -167,6 +167,18 @@ import {
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
 import { runAgendaReport, runListReminders } from "./agenda/queries";
+import {
+  classifyLooseCommand,
+  DATE_CHOICES,
+  formatDateChoices,
+  formatSuggestions,
+  GENERIC_SUGGESTIONS,
+  isActionWithoutData,
+  LooseAction,
+  LooseField,
+  LooseTarget,
+} from "./intents/looseCommands";
+import { clearPendingLooseSuggest, getPendingLooseSuggest, setPendingLooseSuggest } from "./intents/pendingSuggest";
 import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount, restoreBillAlertFields } from "./bills/service";
 import { BILL_DUPLICATE_WARNING, BillChangeKey, BillChangeRequest, BillParams, applyBillChanges, billAlertLine, billChanges, hasBillChangeRequest, nextOccurrenceDate, recurrenceText } from "./bills/editPlan";
 import { PendingEditBillAlert, clearPendingEditBillAlert, getPendingEditBillAlert, setPendingEditBillAlert } from "./bills/pendingEdit";
@@ -555,7 +567,9 @@ Eu também mando um resumo automático toda sexta-feira às 9h, e outro no últi
     case "edit_expense":
       return `✏️ Como corrigir um gasto que você já registrou:
 
-O jeito mais fácil: diga só "editar" (ou "edita o mercado", "edita o 2"). Eu mostro as opções do que dá pra mudar (valor, nome, categoria, data, pagamento) e você escolhe uma ou mais, tipo "1 e 5". Funciona do mesmo jeito pra evento, lembrete e gasto fixo.
+O jeito mais fácil: diga só "editar" (ou "edita o mercado", "edita o 2"). Eu mostro as opções do que dá pra mudar (valor, nome, categoria, data, pagamento, tipo) e você escolhe uma ou mais, tipo "1 e 5". Funciona do mesmo jeito pra evento, lembrete e gasto fixo.
+
+Também dá pra dizer só o que quer mudar: "trocar categoria", "mudar valor", "trocar forma de pagamento", "mudar data" — eu mostro os 10 últimos gastos, você escolhe o número e eu já pergunto o novo valor daquele campo. Pra apagar: "apagar gasto" (ou "apagar lembrete", "apagar evento"...). A lista dos 10 últimos mostra só os gastos até este mês; parcelas de meses futuros aparecem no mês delas ou se você pedir ("mostra as parcelas futuras").
 
 Se preferir frases prontas: peça pra ver a lista, dizendo por exemplo "quais gastos eu tive hoje".
 
@@ -777,6 +791,9 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       return;
     }
 
+    // Card 17: frase solta de funcionalidade ("trocar categoria", "apagar gasto", "mudar data", "categoria")
+    if (await handleLooseCommand(from, text, activeEdit?.awaitingCorrection === true)) return;
+
     // so a palavra "editar"/"alterar"/"ajustar"/"trocar"... sem dizer o que:
     // pergunta o que editar (em vez de cair no "nao entendi" generico).
     if (BARE_EDIT_COMMAND.test(text)) {
@@ -807,6 +824,9 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
         }
       }
     }
+
+    const pendingLooseSuggest = getPendingLooseSuggest(from);
+    if (pendingLooseSuggest && (await resolveLooseSuggestReply(from, pendingLooseSuggest.options, text))) return;
 
     if (getPendingEditTarget(from)) {
       await resolveEditTargetChoice(from, text);
@@ -1035,6 +1055,20 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
   } else {
     logActivity(from, "unsupported_type", `messageType=${data.messageType}`);
     await sendText(from, "Por enquanto so entendo texto, audio e imagem de comprovante. 🙂");
+    return;
+  }
+
+  // Card 17 (RN05): "trocar pagamento do pix" etc. -- verbo de editar/apagar sem dados nunca abre o pedido de valor de um gasto novo
+  if (
+    interpretations.length === 1 &&
+    interpretations[0].type === "unknown" &&
+    interpretations[0].likely_intent === "expense" &&
+    text !== undefined &&
+    isActionWithoutData(text)
+  ) {
+    setPendingLooseSuggest(from, GENERIC_SUGGESTIONS);
+    logActivity(from, "help", `frase curta com verbo de acao e sem dados ("${text}") -- sugestoes em vez de gasto novo`);
+    await sendText(from, formatSuggestions(GENERIC_SUGGESTIONS));
     return;
   }
 
@@ -1856,27 +1890,9 @@ function looksLikeExplicitDifferentRequest(message: string): boolean {
   return wordCount >= 5 && EXPLICIT_EDIT_VERB.test(message);
 }
 
-// Descarta TODAS as perguntas pendentes desse numero (menos o alerta de conta
-// fixa, que e o bot puxando assunto por conta propria e tem sua propria
-// resposta "ja fez / amanha") e devolve quantas eram. Nada do que estava
-// pendente e registrado.
-function cancelAllPendings(from: string): number {
-  let cleared = 0;
-  while (getNextPendingExpensePaymentMethod(from)) {
-    clearHeadPendingExpensePaymentMethod(from);
-    cleared++;
-  }
-  let categorization = getNextPendingCategorization(from);
-  while (categorization) {
-    clearPendingCategorization(from, categorization.id);
-    cleared++;
-    categorization = getNextPendingCategorization(from);
-  }
-  while (getNextPendingCompletion(from)) {
-    clearHeadPendingCompletion(from);
-    cleared++;
-  }
-  const simple: Array<[unknown, () => void]> = [
+// as pendencias "simples" (um estado so cada) desse numero e como limpar cada uma -- usado por cancelAllPendings e hasOpenPending
+function simplePendings(from: string): Array<[unknown, () => void]> {
+  return [
     [getPendingListChoice(from), () => clearPendingListChoice(from)],
     [getPendingEventDeletion(from), () => clearPendingEventDeletion(from)],
     [getPendingBulkRecategorize(from), () => clearPendingBulkRecategorize(from)],
@@ -1900,7 +1916,38 @@ function cancelAllPendings(from: string): number {
     [getPendingCreateRecurrence(from), () => clearPendingCreateRecurrence(from)],
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
+    [getPendingLooseSuggest(from), () => clearPendingLooseSuggest(from)],
   ];
+}
+
+// ha alguma pergunta pendente pra esse numero? (nao descarta nada)
+function hasOpenPending(from: string): boolean {
+  if (getNextPendingExpensePaymentMethod(from) || getNextPendingCategorization(from) || getNextPendingCompletion(from)) return true;
+  if (getPendingBillCheckin(from)) return true;
+  return simplePendings(from).some(([state]) => Boolean(state));
+}
+
+// Descarta TODAS as perguntas pendentes desse numero (menos o alerta de conta
+// fixa, que e o bot puxando assunto por conta propria e tem sua propria
+// resposta "ja fez / amanha") e devolve quantas eram. Nada do que estava
+// pendente e registrado.
+function cancelAllPendings(from: string): number {
+  let cleared = 0;
+  while (getNextPendingExpensePaymentMethod(from)) {
+    clearHeadPendingExpensePaymentMethod(from);
+    cleared++;
+  }
+  let categorization = getNextPendingCategorization(from);
+  while (categorization) {
+    clearPendingCategorization(from, categorization.id);
+    cleared++;
+    categorization = getNextPendingCategorization(from);
+  }
+  while (getNextPendingCompletion(from)) {
+    clearHeadPendingCompletion(from);
+    cleared++;
+  }
+  const simple = simplePendings(from);
   for (const [pendingState, clear] of simple) {
     if (pendingState) {
       clear();
@@ -3269,7 +3316,10 @@ async function resolveDeleteCategoryConfirmation(from: string, pending: PendingD
 // o fluxo continua de onde parou (handleInterpretation com o id ja resolvido).
 // ---------------------------------------------------------------------------
 
+const ASK_FIELD_VERB: Record<LooseField, string> = { category: "mudar a categoria", payment_method: "mudar a forma de pagamento", amount: "mudar o valor", date: "mudar a data" };
+
 function targetActionVerb(action: Interpretation): string {
+  if (action.type === "edit_expense" && action.ask_field) return ASK_FIELD_VERB[action.ask_field];
   switch (action.type) {
     case "edit_event":
     case "edit_reminder":
@@ -3279,6 +3329,8 @@ function targetActionVerb(action: Interpretation): string {
     case "delete_reminder":
     case "delete_expense":
     case "delete_income":
+    case "remove_recurring_expense":
+    case "remove_bill_alert":
       return "apagar";
     case "snooze_reminder":
       return "adiar";
@@ -3303,6 +3355,11 @@ const NOTHING_TO_EDIT_TEXT: Record<TargetKind, string> = {
 };
 
 function targetNotFoundText(action: Interpretation, kind: TargetKind, query?: string): string {
+  const base = targetNotFoundBase(action, kind, query);
+  return action.type.startsWith("delete_") || action.type.startsWith("remove_") ? base.replace(/pra editar\.$/, "pra apagar.") : base;
+}
+
+function targetNotFoundBase(action: Interpretation, kind: TargetKind, query?: string): string {
   if (kind === "event") {
     if (!query) return NOTHING_TO_EDIT_TEXT.event;
     // avisos extras so valem pra evento que ainda nao comecou; editar e cancelar enxergam tambem os em andamento
@@ -3707,7 +3764,7 @@ function fieldChoices(from: string, def: FieldDef): string[] {
 }
 
 // RN08: um menu por numero; abrir outro limpa as confirmacoes de edicao e a escolha de alvo
-async function openFieldMenu(from: string, kind: MenuKind, itemId: number) {
+async function openFieldMenu(from: string, kind: MenuKind, itemId: number, preselect?: string) {
   const info = fieldMenuHeader(from, kind, itemId);
   if (!info) {
     await sendText(from, TARGET_GONE_TEXT);
@@ -3715,6 +3772,15 @@ async function openFieldMenu(from: string, kind: MenuKind, itemId: number) {
   }
   clearEditConfirmations(from);
   clearPendingTargetChoice(from);
+  // Card 17 (RN06): campo ja escolhido ("trocar categoria") -- pula o menu e faz direto a pergunta do campo
+  const def = preselect ? FIELD_REGISTRY[kind].find((f) => f.key === preselect) : undefined;
+  if (def) {
+    const choices = fieldChoices(from, def);
+    setPendingFieldMenu(from, { kind, itemId, header: info.header, label: info.label, stage: "ask_value", queue: [def.key], step: 0, collected: {}, choices });
+    logActivity(from, MENU_ACTIVITY[kind], `campo ${def.label} direto: "${info.label}"`);
+    await sendText(from, formatFieldQuestion({ def, step: 1, total: 1, options: choices }));
+    return;
+  }
   setPendingFieldMenu(from, { kind, itemId, header: info.header, label: info.label, stage: "choose_fields", queue: [], step: 0, collected: {}, choices: [] });
   logActivity(from, MENU_ACTIVITY[kind], `menu de campos aberto: "${info.label}"`);
   await sendText(from, formatFieldMenu(info.header, kind));
@@ -5150,6 +5216,123 @@ async function resolveEditBillConfirmation(from: string, pending: PendingEditBil
   await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_bill_alert", label });
 }
 
+// ---------------------------------------------------------------------------
+// Frases soltas de funcionalidade (Card 17): "trocar categoria", "apagar gasto", "mudar data", "categoria"...
+// O catalogo (intents/looseCommands.ts) e puro e local; aqui so chamamos os fluxos guiados que ja existem.
+// ---------------------------------------------------------------------------
+
+function describeLooseAction(action: LooseAction): string {
+  if (action.type === "edit") return `editar ${action.target}${action.field ? ` (${action.field})` : ""}`;
+  if (action.type === "delete") return `apagar ${action.target}`;
+  if (action.type === "view") return `ver ${action.what}`;
+  return action.type;
+}
+
+// true = a mensagem era uma frase solta e ja foi atendida. Palavra solta so vira sugestao sem pergunta aberta (pode ser a resposta dela);
+// com uma pergunta de texto esperando ("qual o novo nome?") a mensagem e o valor, nunca um pedido novo.
+async function handleLooseCommand(from: string, text: string, awaitingText: boolean): Promise<boolean> {
+  const loose = classifyLooseCommand(text);
+  if (!loose || awaitingText) return false;
+  if (loose.type === "suggest" && hasOpenPending(from)) return false;
+  cancelAllPendings(from);
+  if (loose.type === "suggest") {
+    setPendingLooseSuggest(from, loose.options);
+    logActivity(from, "help", `frase solta "${text}" -- ${loose.options.length} sugestoes`);
+    await sendText(from, formatSuggestions(loose.options));
+    return true;
+  }
+  logActivity(from, "help", `frase solta "${text}" -> ${describeLooseAction(loose.action)}`);
+  await runLooseAction(from, loose.action);
+  return true;
+}
+
+// resposta as sugestoes (`1 ... 2 ... 3 ...`): numero abre a opcao; "cancelar" encerra; qualquer outra frase segue o fluxo normal
+async function resolveLooseSuggestReply(from: string, options: { label: string; action: LooseAction }[], answerText: string): Promise<boolean> {
+  if (isCancelWord(answerText) || normalizeReply(answerText) === "cancela") {
+    clearPendingLooseSuggest(from);
+    logActivity(from, "help", "sugestoes de frase solta canceladas");
+    await sendText(from, "Beleza, não mexi em nada.");
+    return true;
+  }
+  const number = parseChoiceNumber(answerText);
+  if (number === null) {
+    clearPendingLooseSuggest(from);
+    return false;
+  }
+  const picked = options[number - 1];
+  if (!picked) {
+    await sendText(from, `Não entendi 🤔 Responde com um número de 1 a ${options.length}, ou diz o que você precisa.`);
+    return true;
+  }
+  clearPendingLooseSuggest(from);
+  logActivity(from, "help", `sugestao ${number} escolhida: ${describeLooseAction(picked.action)}`);
+  await runLooseAction(from, picked.action);
+  return true;
+}
+
+const DELETE_ACTION_BY_TARGET: Record<LooseTarget, Interpretation> = {
+  expense: { type: "delete_expense" },
+  event: { type: "delete_event", query: "" },
+  reminder: { type: "delete_reminder", query: "" },
+  income: { type: "delete_income" },
+  recurring: { type: "remove_recurring_expense", query: "" },
+  bill_alert: { type: "remove_bill_alert", query: "" },
+};
+
+// "trocar categoria": lista dos 10 ultimos gastos; o numero leva direto a pergunta do campo (RN06)
+async function offerExpenseFieldList(from: string, field: LooseField) {
+  const found = browseTargets(from, "expense");
+  if (found.total === 0) {
+    await sendText(from, "Você ainda não tem gastos pra editar.");
+    return;
+  }
+  setLastShownExpenses(from, found.ids, "últimos gastos");
+  await sendTargetList(from, "expense", { type: "edit_expense", ask_field: field }, found, { type: "browse" });
+}
+
+// "apagar lembrete": lista numerada; o numero leva a confirmacao 1/3 de sempre
+async function offerDeleteList(from: string, target: LooseTarget) {
+  const found = browseTargets(from, target);
+  if (found.total === 0) {
+    await sendText(from, NOTHING_TO_EDIT_TEXT[target].replace("pra editar", "pra apagar"));
+    return;
+  }
+  if (target === "expense") setLastShownExpenses(from, found.ids, "últimos gastos");
+  await sendTargetList(from, target, DELETE_ACTION_BY_TARGET[target], found, { type: "browse" });
+}
+
+async function runLooseAction(from: string, action: LooseAction) {
+  switch (action.type) {
+    case "hint":
+      await sendText(from, action.text);
+      return;
+    case "ask_date":
+      setPendingLooseSuggest(from, DATE_CHOICES);
+      await sendText(from, formatDateChoices());
+      return;
+    case "edit":
+      if (action.target === "expense" && action.field) await offerExpenseFieldList(from, action.field);
+      else await offerBrowseList(from, action.target);
+      return;
+    case "delete":
+      await offerDeleteList(from, action.target);
+      return;
+    case "view": {
+      if (action.what === "expenses") await handleInterpretation(from, { type: "list_expenses", last_n: 10 });
+      else if (action.what === "agenda") await handleInterpretation(from, { type: "report" });
+      else if (action.what === "reminders") await handleInterpretation(from, { type: "list_reminders" });
+      else if (action.what === "categories") await handleInterpretation(from, { type: "list_categories" });
+      else if (action.what === "incomes") await handleInterpretation(from, { type: "list_incomes" });
+      else {
+        const methods = listPaymentMethods(from);
+        const lines = methods.length ? methods.map((m) => `• ${m.name}`).join("\n") : "(nenhuma ainda)";
+        await sendText(from, `💳 Suas formas de pagamento:\n\n${lines}`);
+      }
+      return;
+    }
+  }
+}
+
 // mesma ideia de resolveRemoveRecurringConfirmation, pra alerta de conta fixa
 async function resolveRemoveBillAlertConfirmation(from: string, pending: PendingRemoveBillAlert, answerText: string) {
   await handleDeleteReply(from, { flow: "bill_alert" }, answerText, "remove_bill_alert", {
@@ -6072,7 +6255,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       if (!expense) break;
       // RN01: sem mudanca explicita abre o menu de campos
       if (rawChanges.length === 0) {
-        await openFieldMenu(from, "expense", expense.id);
+        await openFieldMenu(from, "expense", expense.id, interpretation.ask_field);
         break;
       }
       await startExpenseEdits(from, [{ expense, rawChanges }]);
@@ -6101,7 +6284,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "remove_recurring_expense": {
-      const recurring = findActiveRecurringExpenseByDescription(from, interpretation.query);
+      let recurring: ReturnType<typeof findActiveRecurringExpenseByDescription> = null;
+      if (resolvedTargetId !== undefined || !interpretation.query?.trim()) {
+        // Card 17: sem texto de busca ("apagar gasto fixo") escolhe pela lista
+        const recurringId = await chooseTarget(from, "recurring", interpretation, undefined, resolvedTargetId);
+        if (recurringId === null) break;
+        recurring = getRecurringExpenseById(from, recurringId) ?? null;
+      } else {
+        recurring = findActiveRecurringExpenseByDescription(from, interpretation.query);
+      }
       if (!recurring) {
         logActivity(from, "remove_recurring_expense", `nenhum gasto fixo encontrado para "${interpretation.query}"`);
         await sendText(from, `Não achei nenhum gasto fixo parecido com "${interpretation.query}".`);
@@ -6191,7 +6382,15 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       break;
     }
     case "remove_bill_alert": {
-      const bill = findActiveBillAlertByName(from, interpretation.query);
+      let bill: BillAlert | null = null;
+      if (resolvedTargetId !== undefined || !interpretation.query?.trim()) {
+        // Card 17: sem texto de busca ("apagar conta fixa") escolhe pela lista
+        const billId = await chooseTarget(from, "bill_alert", interpretation, undefined, resolvedTargetId);
+        if (billId === null) break;
+        bill = getBillAlertById(from, billId) ?? null;
+      } else {
+        bill = findActiveBillAlertByName(from, interpretation.query);
+      }
       if (!bill) {
         logActivity(from, "remove_bill_alert", `nenhum alerta encontrado para "${interpretation.query}"`);
         await sendText(from, `Não achei nenhum alerta parecido com "${interpretation.query}".`);
@@ -6474,7 +6673,7 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 "Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).
 
 📅 *Agenda e lembretes*
-"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento. Pra ver o dia: "o que tenho hoje", "agenda da semana", "meus lembretes".
+"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento. Pra ver o dia: "o que tenho hoje", "agenda da semana", "meus lembretes". Dá pra mandar só o que quer fazer, ex: "trocar categoria" ou "apagar gasto", e eu te guio.
 
 🎯 *Orçamento*
 "Me avisa se eu passar de R$300 em mercado" — eu aviso quando chegar perto ou passar.
