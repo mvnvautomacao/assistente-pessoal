@@ -774,7 +774,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // dela (responde "Beleza, nao mexi em nada." / cancela a correcao) em vez do
     // cancelamento geral; as outras saidas de emergencia (esquece, chega...) seguem iguais.
     const activeEdit = describeActiveEditConfirmation(from);
-    const deferCancelToEdit = (activeEdit !== null || getPendingTargetChoice(from) !== null) && /^s*cancel(a|ar)s*[.!]*s*$/i.test(text);
+    const deferCancelToEdit = (activeEdit !== null || getPendingTargetChoice(from) !== null) && CANCEL_ONLY_REPLY.test(text);
     if (CANCEL_COMMAND.test(text) && !deferCancelToEdit) {
       const cancelled = cancelAllPendings(from);
       if (cancelled > 0) {
@@ -1800,6 +1800,10 @@ function recordSimpleExpense(
 // nao pra frase que so contem essas palavras (ex: "cancela o evento X").
 const CANCEL_COMMAND =
   /^\s*(cancel(a|ar|o)|par(a|ar|e)|esque[cç]a?|esquece(r)?|desconsidera|ignora|chega|deixa\s+(pra|para)\s+l[aá]|deixa\s+quieto|deixa\s+isso|n[aã]o\s+quero\s+mais|esquece\s+isso)(\s+(isso|tudo|por\s+favor|pf|pfv))?\s*[.!]*\s*$/i;
+
+// So "cancelar"/"cancela" (com espacos, ponto ou exclamacao em volta): com uma confirmacao de edicao ou escolha por numero
+// aberta, quem responde e o resolvedor dela ("Beleza, nao mexi em nada."), nao o cancelamento geral (D-03, Card 18).
+const CANCEL_ONLY_REPLY = /^\s*cancel(a|ar)\s*[.!]*\s*$/i;
 
 // Achado real: "somente editar essa forma de pagamento para PIX" (claramente
 // um comando explicito, nao uma resposta curta) foi engolido como resposta a

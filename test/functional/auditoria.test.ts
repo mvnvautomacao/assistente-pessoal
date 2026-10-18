@@ -490,7 +490,7 @@ test("D-02 (corrigido no Card 10): mover um evento pro passado nao dispara o 'Da
   assert.ok(!eventsService.getDueEventReminders().some((e) => e.id === ev.id), "evento que ja comecou nao deveria gerar aviso");
 });
 
-test("D-03 (Baixo): ' cancelar ' com espacos durante a previa cai no cancelamento geral (regex com 's' literal em vez de '\\s')", { todo: "defeito D-03 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-03 (corrigido no Card 18): ' cancelar ' com espacos durante a previa fica com o resolvedor da edicao (regex com '\\s')", async (t) => {
   const N = "551100091816";
   seed(N);
   const cat = getOrCreateCategory(N, "Alimentação");
@@ -500,6 +500,52 @@ test("D-03 (Baixo): ' cancelar ' com espacos durante a previa cai no cancelament
   await handleIncomingMessage(evolutionMessage(N, "muda o item espacos pra 40"));
   await handleIncomingMessage(evolutionMessage(N, " cancelar "));
   assert.equal(last(sent), "Beleza, não mexi em nada.");
+});
+
+test("D-03 (Card 18): variantes com espaco e pontuacao cancelam a previa e a escolha por numero com 'Beleza, nao mexi em nada.'", async (t) => {
+  const N = "551100091990";
+  seed(N);
+  const cat = getOrCreateCategory(N, "Alimentação");
+  const exp = insertExpense({ fromNumber: N, amount: 10, description: "Item variantes", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  for (const variant of ["Cancelar.", "cancela!", "  cancela  ", "\tCancelar \n", "cancelar", "CANCELA."]) {
+    queueReply([{ type: "edit_expense", query: "item variantes", changes: [{ field: "amount", value: "40" }] }]);
+    await handleIncomingMessage(evolutionMessage(N, "muda o item variantes pra 40"));
+    await handleIncomingMessage(evolutionMessage(N, variant));
+    assert.equal(last(sent), "Beleza, não mexi em nada.", JSON.stringify(variant));
+    assert.deepEqual(pendingKinds(N), [], JSON.stringify(variant));
+  }
+  assert.equal(getExpenseById(N, exp.id)?.amount, 10, "nada foi alterado");
+
+  // escolha por numero (lista aberta)
+  insertExpense({ fromNumber: N, amount: 20, description: "Item variantes dois", categoryId: cat.id, paymentMethodId: null, date: today() });
+  queueReply([{ type: "edit_expense", query: "item variantes" }]);
+  await handleIncomingMessage(evolutionMessage(N, "edita o item variantes"));
+  assert.match(last(sent), /Qual deles/);
+  await handleIncomingMessage(evolutionMessage(N, "  Cancelar. "));
+  assert.equal(last(sent), "Beleza, não mexi em nada.");
+});
+
+test("D-03 (Card 18): 'cancelass' e 'scancelar' NAO sao cancelamento; 'cancelar' sem pendencia de edicao segue no cancelamento geral", async (t) => {
+  const N = "551100091991";
+  seed(N);
+  const cat = getOrCreateCategory(N, "Alimentação");
+  insertExpense({ fromNumber: N, amount: 10, description: "Item negativo", categoryId: cat.id, paymentMethodId: null, date: today() });
+  const { sent, queueReply } = withMocks(t);
+  queueReply([{ type: "edit_expense", query: "item negativo", changes: [{ field: "amount", value: "40" }] }]);
+  await handleIncomingMessage(evolutionMessage(N, "muda o item negativo pra 40"));
+  for (const word of ["cancelass", "scancelar", "ssscancelar", "cancelarr"]) {
+    await handleIncomingMessage(evolutionMessage(N, word));
+    assert.notEqual(last(sent), "Beleza, não mexi em nada.", word);
+    assert.ok(!last(sent).startsWith("Beleza, cancelei"), word);
+    assert.deepEqual(pendingKinds(N), ["edit_expense"], `${word}: a previa continua aberta`);
+  }
+  await handleIncomingMessage(evolutionMessage(N, "cancelar"));
+  assert.equal(last(sent), "Beleza, não mexi em nada.");
+
+  // sem nenhuma pendencia: comportamento anterior (cancelamento geral)
+  await handleIncomingMessage(evolutionMessage(N, "cancelar"));
+  assert.match(last(sent), /^Não tem nada pendente pra cancelar agora\./);
 });
 
 test("D-04 (corrigido no Card 11): numeros por extenso ('um', 'dois', 'tres') -- tipicos de audio -- respondem a previa 1/2/3", async (t) => {
