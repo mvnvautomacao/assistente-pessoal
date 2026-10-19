@@ -1,3 +1,5 @@
+import { listRecentJobRuns, JobRun } from "./scheduler/jobRuns";
+import { listRecentDowntimes } from "./scheduler/heartbeat";
 import { Router, Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "crypto";
 import { getRecentActivity, getPendingReminders, getRecentBlockedAttempts } from "./activity/service";
@@ -131,6 +133,29 @@ function formatDateOnly(value: string): string {
   return `${day}/${month}/${year}`;
 }
 
+// Card 19: rotinas agendadas -- nome legivel, status e tabela das ultimas execucoes + periodos fora do ar
+const JOB_LABEL: Record<string, string> = {
+  gastos_fixos: "Gastos fixos (7h)",
+  alertas_conta: "Alertas de conta (8h)",
+  relatorio_semanal: "Relatório semanal (9h)",
+  relatorio_mensal: "Relatório mensal (18h)",
+};
+const JOB_STATUS_LABEL: Record<string, string> = { done: "concluída", running: "em andamento", failed: "falhou", missed: "perdida" };
+
+export function renderSchedulerSection(runs: JobRun[], downtimes: { summary: string; created_at: string }[]): string {
+  const runRows = runs
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(JOB_LABEL[r.job] ?? r.job)}</td><td>${formatDateOnly(r.run_date)}</td><td>${r.started_at ? formatDate(r.started_at) : "—"}</td><td>${r.finished_at ? formatDate(r.finished_at) : "—"}</td><td>${escapeHtml(JOB_STATUS_LABEL[r.status] ?? r.status)}</td><td>${r.items}</td><td>${r.attempts}</td></tr>`
+    )
+    .join("");
+  const downtimeRows = downtimes.map((d) => `<tr><td>${formatDate(d.created_at)}</td><td>${escapeHtml(d.summary)}</td></tr>`).join("");
+  return `<h2>Rotinas agendadas (últimas ${runs.length})</h2>
+${runs.length ? `<table><tr><th>Rotina</th><th>Dia</th><th>Início</th><th>Fim</th><th>Status</th><th>Itens</th><th>Tentativas</th></tr>${runRows}</table>` : `<p class="empty">Nenhuma rotina executada ainda.</p>`}
+<h3>Fora do ar</h3>
+${downtimes.length ? `<table><tr><th>Registrado em</th><th>Período</th></tr>${downtimeRows}</table>` : `<p class="empty">Nenhuma queda registrada.</p>`}`;
+}
+
 const MONTH_NAMES = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
@@ -195,6 +220,8 @@ const TYPE_LABEL: Record<string, string> = {
   event_reminder_skipped: "🔕 Aviso de evento ignorado",
   edit_reminder: "✏️ Lembrete remarcado",
   report: "📅 Agenda consultada",
+  downtime: "🔌 Servidor fora do ar",
+  job_missed: "⏭️ Rotina perdida",
   correct_category: "✏️ Categoria corrigida",
   set_default_payment: "💳 Pagamento padrão",
   expense_report: "💰 Resumo de gastos",
@@ -498,6 +525,8 @@ ${renderAdminPagination({
 
 <h2>Lembretes pendentes (${pendingReminders.length})</h2>
 ${pendingReminders.length ? `<table><tr><th>Quando</th><th>Para</th><th>Mensagem</th></tr>${reminderRows}</table>` : `<p class="empty">Nenhum lembrete pendente.</p>`}
+
+${renderSchedulerSection(listRecentJobRuns(30), listRecentDowntimes(10))}
 
 <h2 id="activity">Atividade recente (${allActivity.length})</h2>
 ${allActivity.length ? `<table><tr><th>Quando</th><th>Tipo</th><th>De</th><th>Resumo</th></tr>${activityRows}</table>` : `<p class="empty">Nenhuma atividade registrada ainda.</p>`}

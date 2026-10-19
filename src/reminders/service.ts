@@ -8,10 +8,17 @@ export function createReminder(toNumber: string, message: string, dueAt: string)
   return Number(result.lastInsertRowid);
 }
 
-export function getDueReminders() {
+// Lembretes vencidos e ainda nao enviados, do mais antigo pro mais novo, no maximo `limit` por rodada (Card 19, RN07) -- depois de uma queda longa
+// eles saem aos poucos, em vez de uma rajada que pode bloquear o numero no WhatsApp. `now` entra por parametro (testes com relogio simulado).
+export function getDueReminders(now: Date = new Date(Date.now()), limit: number = Number.MAX_SAFE_INTEGER) {
   return db
-    .prepare(`SELECT id, to_number, message FROM reminders WHERE sent = 0 AND datetime(due_at) <= datetime('now')`)
-    .all() as { id: number; to_number: string; message: string }[];
+    .prepare(
+      `SELECT id, to_number, message, due_at FROM reminders
+       WHERE sent = 0 AND datetime(due_at) <= datetime(?)
+       ORDER BY datetime(due_at) ASC, id ASC
+       LIMIT ?`
+    )
+    .all(now.toISOString(), limit) as { id: number; to_number: string; message: string; due_at: string }[];
 }
 
 export function markReminderSent(toNumber: string, id: number) {

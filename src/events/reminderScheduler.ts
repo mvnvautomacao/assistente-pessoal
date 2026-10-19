@@ -54,32 +54,57 @@ const spTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   minute: "2-digit",
 });
 
+// Card 19 (RN09): aviso que sai atrasado (servidor fora do ar) diz os minutos que de fato faltam, calculados na hora do envio; dentro da
+// tolerancia mantem o texto de sempre ("Daqui a 1 hora")
+export const EVENT_REMINDER_LATE_TOLERANCE_MS = 2 * 60 * 1000;
+
+export function eventReminderLead(startIso: string, plannedMinutes: number, now: Date): string {
+  const start = new Date(startIso).getTime();
+  const lateMs = now.getTime() - (start - plannedMinutes * 60000);
+  if (lateMs <= EVENT_REMINDER_LATE_TOLERANCE_MS) return formatMinutesBefore(plannedMinutes);
+  return formatMinutesBefore(Math.max(0, Math.min(plannedMinutes, Math.ceil((start - now.getTime()) / 60000))));
+}
+
+// "Daqui a 20 min"; se o aviso saiu atrasado e o evento esta comecando (faltam 0 min), "Agora"
+export function eventReminderPrefix(startIso: string, plannedMinutes: number, now: Date): string {
+  const start = new Date(startIso).getTime();
+  const late = now.getTime() - (start - plannedMinutes * 60000) > EVENT_REMINDER_LATE_TOLERANCE_MS;
+  if (late && Math.ceil((start - now.getTime()) / 60000) <= 0) return "Agora";
+  return `Daqui a ${eventReminderLead(startIso, plannedMinutes, now)}`;
+}
+
+// Uma rodada (chamada a cada minuto): avisos principais e extras que venceram
+export async function sendDueEventReminders(now: Date = new Date(Date.now())) {
+  logSkippedEventReminders();
+  const due = getDueEventReminders(now);
+  for (const event of due) {
+    try {
+      const when = spTimeFormatter.format(new Date(event.start));
+      await sendText(event.from_number, `🔔 ${eventReminderPrefix(event.start, event.reminder_minutes, now)}: ${event.title} (${when})`);
+      markEventReminderSent(event.from_number, event.id);
+    } catch (err) {
+      console.error(`Erro ao enviar aviso do evento ${event.id}:`, err);
+    }
+  }
+
+  // alertas ADICIONAIS do mesmo evento (ver event_extra_reminders) -- cada um
+  // dispara independente, com seu proprio "sent", igual o principal acima.
+  const dueExtras = getDueExtraEventReminders(now);
+  for (const extra of dueExtras) {
+    try {
+      const when = spTimeFormatter.format(new Date(extra.start));
+      await sendText(extra.fromNumber, `🔔 ${eventReminderPrefix(extra.start, extra.minutesBefore, now)}: ${extra.title} (${when})`);
+      markEventExtraReminderSent(extra.id);
+    } catch (err) {
+      console.error(`Erro ao enviar aviso extra do evento ${extra.eventId}:`, err);
+    }
+  }
+}
+
+
 export function startEventReminderScheduler() {
   // roda a cada minuto, igual o scheduler de lembretes normais
   cron.schedule("* * * * *", async () => {
-    logSkippedEventReminders();
-    const due = getDueEventReminders();
-    for (const event of due) {
-      try {
-        const when = spTimeFormatter.format(new Date(event.start));
-        await sendText(event.from_number, `🔔 Daqui a ${formatMinutesBefore(event.reminder_minutes)}: ${event.title} (${when})`);
-        markEventReminderSent(event.from_number, event.id);
-      } catch (err) {
-        console.error(`Erro ao enviar aviso do evento ${event.id}:`, err);
-      }
-    }
-
-    // alertas ADICIONAIS do mesmo evento (ver event_extra_reminders) -- cada um
-    // dispara independente, com seu proprio "sent", igual o principal acima.
-    const dueExtras = getDueExtraEventReminders();
-    for (const extra of dueExtras) {
-      try {
-        const when = spTimeFormatter.format(new Date(extra.start));
-        await sendText(extra.fromNumber, `🔔 Daqui a ${formatMinutesBefore(extra.minutesBefore)}: ${extra.title} (${when})`);
-        markEventExtraReminderSent(extra.id);
-      } catch (err) {
-        console.error(`Erro ao enviar aviso extra do evento ${extra.eventId}:`, err);
-      }
-    }
+    await sendDueEventReminders();
   });
 }

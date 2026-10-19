@@ -189,7 +189,7 @@ test("Card 10 -- agendador: avisa evento que comeca agora, NAO avisa o que comec
   await tick!();
   const mine = sent.filter((m) => m.to === N);
   assert.equal(mine.length, 1, "so o evento recente gera aviso, uma vez");
-  assert.match(mine[0].text, /^🔔 Daqui a 1 hora: Evento aviso fresco \(/);
+  assert.match(mine[0].text, /^🔔 Agora: Evento aviso fresco \(/);
   assert.equal(eventsService.getEventById(N, fresh.id)?.reminder_sent, 1);
   assert.equal(eventsService.getEventById(N, stale.id)?.reminder_sent, 0, "o ignorado nao e gravado como enviado");
   const logged = getRecentActivity(500).filter((a) => a.from_number === N && a.type === "event_reminder_skipped");
@@ -213,7 +213,7 @@ test("Card 10 -- agendador: aviso EXTRA dispara na janela, e falha de envio nao 
   await tick!();
   const mine = sent.filter((m) => m.to === N);
   assert.equal(mine.length, 1);
-  assert.match(mine[0].text, /^🔔 Daqui a 1 hora: Evento extra agendador \(/);
+  assert.match(mine[0].text, /^🔔 Daqui a 30 min: Evento extra agendador \(/);
   assert.equal(eventsService.getDueExtraEventReminders().filter((d) => d.eventId === event.id).length, 0, "extra marcado como enviado");
   assert.equal(eventsService.getEventById(N, event.id)?.reminder_sent, 0, "o principal (5 min antes) ainda nao venceu");
 

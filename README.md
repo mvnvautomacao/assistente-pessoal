@@ -195,6 +195,30 @@ As confirmações de edição (gasto, evento, lembrete, gasto fixo, entrada), a 
 - Toda mensagem de sucesso de uma ação que registra desfazer termina com "Errou? Responde *desfazer*." (um só ponto no código: [src/undo/replyWithUndo.ts](src/undo/replyWithUndo.ts)). Só o último desfazer de cada número fica disponível.
 - Os demais pendentes mais antigos (completar gasto, forma de pagamento, check-in de conta, aviso adiantado, recibo...) e as listas numeradas de gastos/entradas continuam em memória; o store é genérico para migrá-los depois.
 
+## Rotinas agendadas e recuperação
+
+Deploy, reinício ou queda da VM não fazem mais o sistema perder o que estava agendado. As rotinas **diárias** (gastos fixos, alertas de conta fixa,
+relatório semanal e mensal) rodam num executor único (`src/scheduler/dailyJobs.ts`): um cron por minuto (fuso de São Paulo) mais uma execução ~20 s
+depois de subir. Cada rotina tem uma hora "a partir de", roda **no máximo uma vez por dia** (registro em `job_runs`, reivindicação atômica) e, se o servidor
+estava fora na hora, recupera ao voltar. A proteção contra repetição fica no **item** (`recurring_expenses.last_run_month`, `bill_alerts.last_asked_date` e
+`confirmed_month`), então rodar duas vezes nunca duplica lançamento nem mensagem.
+
+| Rotina | Hora | Se o servidor estava fora na hora |
+|---|---|---|
+| Gastos fixos | 07:00 | recupera até **7 dias**; lança com a **data do vencimento** e a linha `(lançado com atraso: vencia dia 05/10)`; só o que já existia no vencimento |
+| Alertas de conta fixa | 08:00 | recupera o ciclo pendente (inclusive o do mês anterior): aviso 1 com `(atrasado: vencia dia 10)`; alerta cadastrado depois do vencimento só avisa no próximo |
+| Relatório semanal | 09:00 | recupera **só no mesmo dia** (até 23:59); no dia seguinte a execução fica registrada como **perdida** |
+| Relatório mensal | 18:00, último dia | recupera até o **dia 2** do mês seguinte, com o nome do mês que acabou, uma vez só |
+| Lembretes | a cada minuto | sem limite de idade; atrasado em mais de 10 min sai com `⏰ (atrasado: era pra …)`; no máximo **10 por minuto**, do mais antigo ao mais novo |
+| Avisos de evento | a cada minuto | atrasado em mais de 2 min diz os minutos que de fato faltam (`Daqui a 20 min`); evento que já começou continua sem aviso |
+| "Sem gastos hoje" | horário do usuário | já se recuperava no mesmo dia (não mudou) |
+
+- Falha de envio (ex.: Evolution fora do ar): a rotina não é dada como concluída e tenta de novo no minuto seguinte, **no máximo 3 vezes por dia**; o gasto fixo cujo aviso não saiu é desfeito e refeito na tentativa seguinte.
+- `scheduler_heartbeat` guarda o último batimento (1 por minuto). Ao subir, se passou mais de **5 minutos**, o período fora do ar vira uma entrada `downtime` no log do dono (`servidor fora do ar de 19/10 06:58 a 19/10 07:39 (41 min)`); execuções de relatório que não dá mais para recuperar viram `job_runs.status = 'missed'` e uma entrada `job_missed`.
+- Na primeira subida com este recurso, os relatórios de hoje que o agendador antigo já tenha mandado ficam marcados como tratados (não saem em dobro).
+- O `/admin` tem a seção **Rotinas agendadas**: as últimas 30 execuções (rotina, dia, início, fim, status, itens, tentativas) e as últimas quedas.
+- **Atenção no Coolify:** o `job_runs` e o resto do SQLite vivem em `/app/data`; sem o volume persistente montado, tudo some a cada deploy e a recuperação não tem em que se apoiar.
+
 ## Testes
 
 ```bash

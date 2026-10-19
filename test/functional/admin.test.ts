@@ -363,3 +363,23 @@ test("admin: ajustar prazo e encerrar sprint pelo painel", async () => {
     assert.ok(page.includes("Sprints anteriores"));
   });
 });
+
+// Card 19: o painel mostra as ultimas execucoes das rotinas agendadas e os periodos fora do ar
+test("admin: secao 'Rotinas agendadas' lista as execucoes (com status) e os periodos fora do ar", async () => {
+  const { claimJobRun, finishJobRun, markJobRunMissed, resetJobRunsForTests } = await import("../../src/scheduler/jobRuns");
+  const { detectDowntime, beat } = await import("../../src/scheduler/heartbeat");
+  resetJobRunsForTests();
+  claimJobRun("gastos_fixos", "2026-10-19", new Date("2026-10-19T07:40:00-03:00"));
+  finishJobRun("gastos_fixos", "2026-10-19", new Date("2026-10-19T07:40:05-03:00"), 3);
+  markJobRunMissed("relatorio_semanal", "2026-10-12", new Date("2026-10-13T10:00:00-03:00"));
+  beat(new Date("2026-10-19T06:58:00-03:00"));
+  detectDowntime(new Date("2026-10-19T07:39:00-03:00"));
+  await withServer(async (baseUrl, authHeaders) => {
+    const html = await (await fetch(`${baseUrl}/admin`, { headers: authHeaders() })).text();
+    assert.match(html, /<h2>Rotinas agendadas \(últimas 2\)<\/h2>/);
+    assert.match(html, /<td>Gastos fixos \(7h\)<\/td><td>19\/10\/2026<\/td>.*<td>concluída<\/td><td>3<\/td><td>1<\/td>/s);
+    assert.match(html, /<td>Relatório semanal \(9h\)<\/td><td>12\/10\/2026<\/td>.*<td>perdida<\/td><td>0<\/td><td>0<\/td>/s);
+    assert.match(html, /<h3>Fora do ar<\/h3>/);
+    assert.ok(html.includes("servidor fora do ar de 19/10 06:58 a 19/10 07:39 (41 min)"));
+  });
+});
