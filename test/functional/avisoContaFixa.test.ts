@@ -1,7 +1,6 @@
 // Card 15: aviso de conta fixa com lista 1/2/3, leitura segura da resposta e check-in que nao engole pedidos novos.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import cron from "node-cron";
 import * as whatsappClient from "../../src/whatsapp/client";
 import type { Interpretation } from "../../src/ai/interpret";
 import { bootApp, msg, BotApp } from "../helpers/botApp";
@@ -10,6 +9,8 @@ import { allowNumber } from "../../src/access/allowlist";
 import { createBillAlert, getBillAlertById } from "../../src/bills/service";
 import { getPendingBillCheckin, setPendingBillCheckin } from "../../src/bills/pendingCheckin";
 import { startBillAlertScheduler } from "../../src/bills/scheduler";
+import { resetDailyJobsForTests, runDueDailyJobs } from "../../src/scheduler/dailyJobs";
+import { resetJobRunsForTests } from "../../src/scheduler/jobRuns";
 import { addDaysToDateString, spDateString } from "../../src/timeSP";
 import { db } from "../../src/db";
 
@@ -53,17 +54,14 @@ test("Card 15: o scheduler das 8h manda o aviso com a lista 1/2/3 (texto proprio
   t.mock.method(whatsappClient, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
-  let tick: (() => Promise<void>) | undefined;
-  t.mock.method(cron, "schedule", (_expr: string, fn: () => Promise<void>) => {
-    tick = fn;
-    return { stop() {} };
-  });
+  resetJobRunsForTests();
+  resetDailyJobsForTests();
   const today = spDateString();
   const day = createBillAlert({ fromNumber: N, name: "Conta de água", dayOfMonth: Number(today.slice(8, 10)) });
   const interval = createBillAlert({ fromNumber: N, name: "Ração", intervalDays: 45 });
   db.prepare(`UPDATE bill_alerts SET next_due_date = ? WHERE id = ?`).run(today, interval.id);
   startBillAlertScheduler();
-  await tick!();
+  await runDueDailyJobs(new Date(`${today}T12:00:00-03:00`));
 
   const mine = sent.filter((m) => m.to === N).map((m) => m.text);
   assert.ok(mine.includes(`📌 Hoje é dia de pagar: Conta de água.\n${LIST_DAY}`));

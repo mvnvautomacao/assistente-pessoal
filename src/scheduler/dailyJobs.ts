@@ -5,7 +5,7 @@ import cron from "node-cron";
 import { config } from "../config";
 import { logActivity } from "../activity/service";
 import { addDaysToDateString, spDateString, spTimeString } from "../timeSP";
-import { beat, detectDowntime, DowntimePeriod } from "./heartbeat";
+import { beat, detectDowntime, DowntimePeriod, getLastBeat } from "./heartbeat";
 import { claimJobRun, failJobRun, finishJobRun, getJobRun, markJobRunMissed } from "./jobRuns";
 
 // espera depois de subir antes do primeiro catch-up (a Evolution API precisa estar de pe pra enviar)
@@ -120,6 +120,23 @@ export function markUnrecoverableRuns(period: DowntimePeriod, now: Date): number
   return marked;
 }
 
+// Primeira subida do novo agendador (sem nenhum batimento antes): o agendador antigo (cron por rotina) pode ja ter enviado os relatorios de
+// hoje. Os de uma vez so que ja passaram da hora ficam como tratados, em vez de sair em dobro. Gastos fixos e alertas nao precisam disso (a trava e do item).
+export function markLegacyRuns(now: Date): number {
+  let marked = 0;
+  for (const job of listDailyJobs()) {
+    if (!job.atMostOnce) continue;
+    const dates = job.runDates ? job.runDates(now) : defaultRunDates(job, now);
+    for (const date of dates) {
+      if (!getJobRun(job.name, date) && markJobRunMissed(job.name, date, now)) {
+        marked++;
+        console.warn(`[agendador] primeira subida: rotina ${job.name} de ${date} considerada ja tratada pelo agendador anterior`);
+      }
+    }
+  }
+  return marked;
+}
+
 let started = false;
 
 // Um cron por minuto no fuso de SP: batimento + rotinas diarias. Tambem roda uma vez ~20 s depois de subir (catch-up).
@@ -127,8 +144,10 @@ export function startDailyJobRunner(options: { initialDelayMs?: number } = {}) {
   if (started) return;
   started = true;
   const boot = new Date();
+  const firstBoot = getLastBeat() === null;
   const downtime = detectDowntime(boot);
   beat(boot);
+  if (firstBoot) markLegacyRuns(boot);
   if (downtime) markUnrecoverableRuns(downtime, boot);
 
   let running = false;

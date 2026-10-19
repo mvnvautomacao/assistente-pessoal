@@ -14,6 +14,8 @@ export interface BillQuestionInfo {
   recurrenceType: BillRecurrence;
   // dia cadastrado quando o aviso veio antecipado pro ultimo dia de um mes curto (Card 16, RN17)
   monthEndFromDay?: number | null;
+  // vencimento que o servidor perdeu (Card 19): o aviso sai com "(atrasado: vencia dia ...)"
+  lateFromDate?: string | null;
 }
 
 // frases CLARAS (ja normalizadas: sem acento, minusculas, sem pontuacao; "ta"/"esta" valem os dois)
@@ -59,14 +61,22 @@ export function billCheckinOptions(recurrenceType: BillRecurrence): string {
   return `1 ✅ ${paid}\n2 ⏰ Ainda não, me lembra amanhã\n3 ⏭️ ${skip}`;
 }
 
+// " (atrasado: vencia dia 10)" (dia do mes) ou " (atrasado: vencia dia 05/10)" (intervalo)
+export function lateNote(bill: Pick<BillQuestionInfo, "recurrenceType" | "lateFromDate">): string {
+  if (!bill.lateFromDate) return "";
+  const [, month, day] = bill.lateFromDate.split("-");
+  return bill.recurrenceType === "interval" ? ` (atrasado: vencia dia ${day}/${month})` : ` (atrasado: vencia dia ${day})`;
+}
+
 // o aviso enviado pelo scheduler
 export function buildBillAlertQuestion(bill: BillQuestionInfo): string {
+  const late = lateNote(bill);
   const head =
     bill.recurrenceType === "interval"
-      ? `📌 Hora de: ${bill.name}.`
+      ? `📌 Hora de: ${bill.name}${late}.`
       : bill.monthEndFromDay
         ? `📌 Hoje é o último dia do mês (vence todo dia ${bill.monthEndFromDay}): ${bill.name}.`
-        : `📌 Hoje é dia de pagar: ${bill.name}.`;
+        : `📌 Hoje é dia de pagar: ${bill.name}${late}.`;
   return `${head}\n${billCheckinOptions(bill.recurrenceType)}`;
 }
 

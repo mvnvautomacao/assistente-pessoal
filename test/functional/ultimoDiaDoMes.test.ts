@@ -2,7 +2,6 @@
 // uma vez so por mes, e o texto diz que o dia foi antecipado (so quando foi).
 import { test, TestContext } from "node:test";
 import assert from "node:assert/strict";
-import cron from "node-cron";
 import * as whatsappClient from "../../src/whatsapp/client";
 import { ensureUserSeeded } from "../../src/expenses/service";
 import { allowNumber } from "../../src/access/allowlist";
@@ -11,7 +10,7 @@ import { startBillAlertScheduler } from "../../src/bills/scheduler";
 import { createRecurringExpense } from "../../src/expenses/recurring";
 import { startRecurringExpenseScheduler } from "../../src/expenses/recurringScheduler";
 import { monthEndShiftFrom } from "../../src/timeSP";
-import { runDueDailyJobs } from "../../src/scheduler/dailyJobs";
+import { resetDailyJobsForTests, runDueDailyJobs } from "../../src/scheduler/dailyJobs";
 import { resetJobRunsForTests } from "../../src/scheduler/jobRuns";
 
 let seq = 0;
@@ -29,19 +28,15 @@ function setup(t: TestContext, nowIso: string) {
   t.mock.method(whatsappClient, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
-  const ticks: Array<() => Promise<void>> = [];
-  t.mock.method(cron, "schedule", (_expr: string, fn: () => Promise<void>) => {
-    ticks.push(fn);
-    return { stop() {} };
-  });
   resetJobRunsForTests();
+  resetDailyJobsForTests();
   startBillAlertScheduler();
   startRecurringExpenseScheduler();
-  const [billTick] = ticks;
-  const recurringTick = async () => {
+  // as duas rotinas rodam juntas no executor diario (relogio simulado)
+  const tick = async () => {
     await runDueDailyJobs(new Date(nowIso));
   };
-  return { sent, billTick, recurringTick };
+  return { sent, billTick: tick, recurringTick: tick };
 }
 
 test("monthEndShiftFrom: devolve o dia cadastrado so quando hoje e o ultimo dia e o cadastro e maior", () => {

@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { filterByQuery, SEARCH_SCAN_LIMIT } from "../text/search";
-import { spDateString, addDaysToDateString, effectiveDayOfMonth } from "../timeSP";
+import { spDateString, addDaysToDateString, effectiveDayOfMonth, sqliteUtcToSpDate } from "../timeSP";
 
 export interface BillAlert {
   id: number;
@@ -138,8 +138,9 @@ export function confirmBillAlertPaid(fromNumber: string, id: number, todayDate: 
     db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(nextDueDate, id, fromNumber);
     return;
   }
+  // fecha o ciclo do ULTIMO vencimento (se o aviso veio atrasado, de um mes que ja acabou, e esse mes que fica confirmado)
   db.prepare(`UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(
-    todayDate.slice(0, 7),
+    lastBillDueDate(bill.day_of_month, todayDate).yearMonth,
     id,
     fromNumber
   );
@@ -152,15 +153,31 @@ export function snoozeBillAlert(fromNumber: string, id: number, untilDate: strin
   db.prepare(`UPDATE bill_alerts SET snoozed_until = ? WHERE id = ? AND from_number = ?`).run(untilDate, id, fromNumber);
 }
 
-// alertas ativos que precisam perguntar "ja fez?" hoje: pra dia fixo do mes,
-// bateu o dia configurado (com o mesmo fallback de ultimo-dia-do-mes de
-// getDueRecurringExpenses) e ainda nao foi confirmado nesse mes; pra
-// intervalo, a data calculada (next_due_date) ja chegou. Nas duas, uma soneca
-// de "lembra amanha" ainda pendente manda (ou nao) direto, sem olhar o resto.
-export function getDueBillAlerts(todayDate: string): BillAlert[] {
-  const day = Number(todayDate.slice(8, 10));
+// Ciclo "devido" de um alerta por dia do mes (Card 19, RN06): o ULTIMO vencimento que ja passou. Se o dia efetivo deste mes ainda nao
+// chegou, o ciclo e o do mes anterior (o servidor pode ter perdido aquele aviso). yearMonth e o mes do vencimento.
+export function lastBillDueDate(dayOfMonth: number, todayDate: string): { yearMonth: string; dueDate: string } {
   const yearMonth = todayDate.slice(0, 7);
+  const today = Number(todayDate.slice(8, 10));
+  const thisMonthDay = effectiveDayOfMonth(dayOfMonth, yearMonth);
+  if (thisMonthDay <= today) return { yearMonth, dueDate: `${yearMonth}-${String(thisMonthDay).padStart(2, "0")}` };
+  const previousMonth = addDaysToDateString(`${yearMonth}-01`, -1).slice(0, 7);
+  return { yearMonth: previousMonth, dueDate: `${previousMonth}-${String(effectiveDayOfMonth(dayOfMonth, previousMonth)).padStart(2, "0")}` };
+}
 
+// o aviso de HOJE e de um vencimento que ja passou (servidor fora do ar)? Devolve a data do vencimento, ou null.
+// Aviso de soneca ("me lembra amanha") nunca e "atrasado".
+export function billLateFromDate(bill: BillAlert, todayDate: string): string | null {
+  if (bill.snoozed_until) return null;
+  if (bill.recurrence_type === "interval") return bill.next_due_date && bill.next_due_date < todayDate ? bill.next_due_date : null;
+  const { dueDate } = lastBillDueDate(bill.day_of_month, todayDate);
+  return dueDate < todayDate ? dueDate : null;
+}
+
+// alertas ativos que precisam perguntar "ja fez?" hoje: pra dia fixo do mes, o ciclo do ultimo vencimento que ja passou (o de hoje,
+// ou o que o servidor perdeu) ainda nao foi confirmado nem perguntado; pra intervalo, a data calculada (next_due_date) ja chegou.
+// Nas duas, uma soneca de "lembra amanha" ainda pendente manda (ou nao) direto, sem olhar o resto. Alerta cadastrado DEPOIS do
+// vencimento nao e avisado retroativamente (RN05).
+export function getDueBillAlerts(todayDate: string): BillAlert[] {
   const candidates = db
     .prepare(`SELECT * FROM bill_alerts WHERE active = 1 AND (last_asked_date IS NULL OR last_asked_date != ?)`)
     .all(todayDate) as unknown as BillAlert[];
@@ -172,7 +189,10 @@ export function getDueBillAlerts(todayDate: string): BillAlert[] {
       return !!b.next_due_date && b.next_due_date <= todayDate;
     }
 
-    if (b.confirmed_month === yearMonth) return false;
-    return effectiveDayOfMonth(b.day_of_month, yearMonth) === day;
+    const cycle = lastBillDueDate(b.day_of_month, todayDate);
+    if (b.confirmed_month === cycle.yearMonth) return false;
+    if (b.last_asked_date && b.last_asked_date >= cycle.dueDate) return false; // ja perguntado neste ciclo
+    if (cycle.dueDate < todayDate && sqliteUtcToSpDate(b.created_at) > cycle.dueDate) return false;
+    return true;
   });
 }

@@ -16,6 +16,7 @@ export interface BillCheckinItem {
   recurrenceType: BillRecurrence;
   intervalDays: number | null;
   monthEndFromDay?: number | null; // aviso antecipado pro ultimo dia do mes (Card 16, RN17)
+  lateFromDate?: string | null; // vencimento perdido pelo servidor (Card 19, RN06)
 }
 
 export interface PendingBillCheckin extends BillCheckinItem {
