@@ -4,6 +4,10 @@ import { listCategories, listPaymentMethods, getExpenseById } from "../expenses/
 import { getLastShownExpenses } from "../expenses/listCache";
 import { getLastShownIncomes } from "../incomes/listCache";
 import { getIncomeById } from "../incomes/service";
+import { getLastShownAgenda } from "../lists/lastShown";
+import { getEventById } from "../events/service";
+import { getReminderById } from "../reminders/service";
+import { spDateString, spTimeString } from "../timeSP";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -21,10 +25,11 @@ export type Interpretation =
       is_fixed?: boolean;
     }
   | { type: "event"; title: string; start: string; end?: string; location?: string }
-  | { type: "delete_event"; query: string }
+  | { type: "delete_event"; query: string; list_ref?: number }
   | {
       type: "edit_event";
       query: string;
+      list_ref?: number;
       new_title?: string;
       new_date?: string;
       new_time?: string;
@@ -34,12 +39,12 @@ export type Interpretation =
       new_end_time?: string;
       new_duration_minutes?: number;
     }
-  | { type: "snooze_reminder"; query?: string; minutes?: number; new_date?: string; new_time?: string }
-  | { type: "add_event_reminder"; query: string; minutes_before: number }
-  | { type: "remove_event_reminder"; query: string; minutes_before: number }
+  | { type: "snooze_reminder"; query?: string; list_ref?: number; minutes?: number; new_date?: string; new_time?: string }
+  | { type: "add_event_reminder"; query: string; list_ref?: number; minutes_before: number }
+  | { type: "remove_event_reminder"; query: string; list_ref?: number; minutes_before: number }
   | { type: "reminder"; message: string; due_at: string; advance_minutes?: number }
-  | { type: "delete_reminder"; query: string }
-  | { type: "edit_reminder"; query: string; new_message?: string; new_date?: string; new_time?: string }
+  | { type: "delete_reminder"; query: string; list_ref?: number }
+  | { type: "edit_reminder"; query: string; list_ref?: number; new_message?: string; new_date?: string; new_time?: string }
   | { type: "report"; days?: number; month?: string; date?: string; week?: "current" | "next"; scope?: "all" | "events" | "reminders" }
   | { type: "list_reminders"; all?: boolean }
   | { type: "expense_report"; period?: "week" | "month"; days?: number; category?: string; payment_method?: string; month?: string; date_start?: string; date_end?: string; fixed_only?: boolean }
@@ -439,7 +444,7 @@ const ACTION_SCHEMA = {
     list_ref: {
       type: "number",
       description:
-        "So para type=edit_expense, delete_expense, edit_income ou delete_income: numero (1, 2, 3...) de um item na ultima lista mostrada (de gastos ou de entradas, conforme o tipo) (ex: 'edita o 2'). Nao preencher junto com 'query'.",
+        "Numero (1, 2, 3...) de um item na ULTIMA lista numerada que o usuario viu (ex: 'edita o 2', 'cancela o 3'). Vale para type=edit_expense, delete_expense (lista de gastos), edit_income, delete_income (lista de entradas) e, quando a ultima lista foi a AGENDA, para type=edit_event, delete_event, add_event_reminder, remove_event_reminder (item que e um evento) e edit_reminder, delete_reminder, snooze_reminder (item que e um lembrete). Nao preencher junto com 'query'.",
     },
     changes: {
       type: "array",
@@ -566,7 +571,31 @@ ${lines.join("\n")}
 Se a mensagem se referir a um desses itens por numero (ex: 'muda o valor do 2 pra 850', 'apaga o 3', 'o 1 foi dia 5'), use list_ref com esse numero (type=edit_income ou delete_income) e NUNCA classifique como unknown por falta de contexto.`;
 }
 
+// a ultima lista foi a AGENDA (Card 20): numero, tipo, horario e texto de cada item, pra IA resolver "cancela o 3"
+function buildShownAgendaContext(fromNumber: string): string {
+  const items = getLastShownAgenda(fromNumber);
+  if (!items || items.length === 0) return "";
+  const lines = items
+    .map((item, idx) => {
+      if (item.kind === "event") {
+        const e = getEventById(fromNumber, item.id);
+        return e ? `${idx + 1}. evento: ${e.title} (${spDateString(new Date(e.start))} ${spTimeString(new Date(e.start))})` : null;
+      }
+      const r = getReminderById(fromNumber, item.id);
+      return r ? `${idx + 1}. lembrete${r.sent ? " (ja tocou)" : ""}: ${r.message} (${spDateString(new Date(r.due_at))} ${spTimeString(new Date(r.due_at))})` : null;
+    })
+    .filter((l): l is string => l !== null);
+  if (lines.length === 0) return "";
+  return `
+
+CONTEXTO DA CONVERSA: o usuario acabou de ver esta lista numerada da AGENDA, com eventos e lembretes (os numeros sao as referencias dele):
+${lines.join("\n")}
+Se a mensagem se referir a um desses itens por numero (ex: 'edita o 2', 'cancela o 3', 'muda o 2 pra 16h', 'apaga o 5', 'adia o 1 pra amanha as 9h', 'me avisa tambem 1 dia antes do 2'), use list_ref com esse numero e o tipo que combina com o item: EVENTO = edit_event, delete_event, add_event_reminder ou remove_event_reminder; LEMBRETE = edit_reminder, delete_reminder ou snooze_reminder. NUNCA classifique como unknown por falta de contexto -- o contexto e essa lista. O numero logo depois de 'o'/'do'/'da' e a referencia ao item; o horario depois de 'pra'/'para'/'as' e o novo horario (preencha new_time/new_date).`;
+}
+
 function buildShownListContext(fromNumber: string): string {
+  const agendaContext = buildShownAgendaContext(fromNumber);
+  if (agendaContext) return agendaContext;
   const incomesContext = buildShownIncomesContext(fromNumber);
   if (incomesContext) return incomesContext;
   const ids = getLastShownExpenses(fromNumber);

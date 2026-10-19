@@ -70,6 +70,8 @@ import {
 } from "./confirmation/parsers";
 import {
   SNOOZE_NOT_FOUND_TEXT,
+  SNOOZE_NEEDS_TIME_TEXT,
+  MAX_SNOOZE_MINUTES,
   computeSnoozeDue,
   adjustSnoozeDate,
   formatAlreadyPlayed,
@@ -164,7 +166,7 @@ import {
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
 import { runAgendaReport, runListReminders } from "./agenda/queries";
-import { clearLastShownAgenda, setLastShownAgenda } from "./lists/lastShown";
+import { clearLastShownAgenda, getLastShownAgenda, setLastShownAgenda } from "./lists/lastShown";
 import {
   classifyLooseCommand,
   DATE_CHOICES,
@@ -511,6 +513,8 @@ Eu aviso você um tempo antes do horário chegar (60 minutos por padrão), pra n
 
 Pra ver a agenda: "o que tenho hoje", "e amanhã?", "agenda da sexta", "agenda do dia 20", "agenda da semana", "semana que vem", "próximos 15 dias" ou "agenda de novembro" — eu mostro eventos e lembretes juntos, por dia e em ordem de horário (com término e local). Dá pra filtrar: "eventos da semana", "lembretes de amanhã". "Meus lembretes" mostra os próximos 10 e "todos os meus lembretes" mostra tudo.
 
+A agenda sai numerada, e logo depois dela dá pra mexer pelo número: "edita o 2", "cancela o 3", "muda o 2 pra 15h", "apaga o 5", "adia o 1 pra amanhã às 9h" ou "me avisa também 1 dia antes do 4". O número vale por 10 minutos, pra última lista que eu mostrei.
+
 Se você pedir um dia que o mês não tem (ex: dia 31 em abril, dia 30 em fevereiro), eu uso o último dia do mês e te aviso.`;
     case "reminder":
       return `⏰ Como criar um lembrete:
@@ -523,7 +527,7 @@ Na hora certa eu mando uma mensagem avisando. Pra mudar o horário de um lembret
 
 Quando um lembrete tocar e você não puder fazer na hora, é só responder "adia 30 min" ou "adia pra amanhã 9h" — adio na hora, e se foi sem querer: "desfaz isso".
 
-Pra ver o que vem aí: "meus lembretes" (os próximos 10) ou "todos os meus lembretes". Se o dia pedido não existe no mês (ex: dia 31 em abril), eu marco no último dia do mês e te aviso.`;
+Pra ver o que vem aí: "meus lembretes" (os próximos 10, numerados) ou "todos os meus lembretes". Depois da lista, "apaga o 3" ou "muda o 2 pra 15h" mexem no item pelo número. Se o dia pedido não existe no mês (ex: dia 31 em abril), eu marco no último dia do mês e te aviso.`;
     case "budget":
       return `🎯 Como definir um limite de gastos (orçamento):
 
@@ -5452,6 +5456,111 @@ const AGENDA_LIST_TYPES: ReadonlySet<string> = new Set([
   "snooze_reminder",
 ]);
 
+// ---------------------------------------------------------------------------
+// Acao pelo numero da agenda (Card 20): "edita o 2", "cancela o 3", "adia o 1 pra amanha as 9h". O numero vale pra ULTIMA lista da agenda
+// mostrada; o tipo REAL do item (evento ou lembrete) manda, e o resto e o fluxo guiado de sempre (previa 1/2/3, confirmacao 1/3, desfazer).
+// ---------------------------------------------------------------------------
+
+type AgendaRefAction = Extract<
+  Interpretation,
+  { type: "edit_event" | "delete_event" | "add_event_reminder" | "remove_event_reminder" | "edit_reminder" | "delete_reminder" | "snooze_reminder" }
+>;
+
+const AGENDA_REF_TYPES: ReadonlySet<string> = new Set([
+  "edit_event",
+  "delete_event",
+  "add_event_reminder",
+  "remove_event_reminder",
+  "edit_reminder",
+  "delete_reminder",
+  "snooze_reminder",
+]);
+
+const agendaRefNotFoundText = (ref: number) => `Não sei a que item o número "${ref}" se refere. Me pede a agenda de novo, ex: "o que tenho hoje".`;
+const AGENDA_ITEM_GONE_TEXT = "Não achei mais esse item.";
+
+function isAgendaRefAction(interpretation: Interpretation): interpretation is AgendaRefAction & { list_ref: number } {
+  return AGENDA_REF_TYPES.has(interpretation.type) && typeof (interpretation as { list_ref?: unknown }).list_ref === "number";
+}
+
+// o pedido da IA vira o pedido do tipo real do item; ou um texto, quando nao faz sentido (adiar um evento, aviso extra num lembrete)
+function convertAgendaAction(
+  action: AgendaRefAction,
+  target: { kind: "event" } | { kind: "reminder"; reminder: { message: string; due_at: string; sent: number } },
+  ref: number
+): { action: Interpretation } | { reply: string } {
+  const remarcar = `Quer remarcar? Diga "muda o ${ref} pra ...".`;
+  if (target.kind === "event") {
+    switch (action.type) {
+      case "edit_event":
+      case "delete_event":
+      case "add_event_reminder":
+      case "remove_event_reminder":
+        return { action: { ...action, query: "", list_ref: undefined } };
+      case "edit_reminder":
+        return { action: { type: "edit_event", query: "", new_title: action.new_message, new_date: action.new_date, new_time: action.new_time } };
+      case "delete_reminder":
+        return { action: { type: "delete_event", query: "" } };
+      case "snooze_reminder":
+        return { reply: `Esse item é um evento, não dá pra adiar. ${remarcar}` };
+    }
+  }
+  const reminder = target.reminder;
+  switch (action.type) {
+    case "edit_reminder": {
+      const touchesTime = Boolean(action.new_date || action.new_time);
+      const nothingAsked = !touchesTime && !action.new_message;
+      // lembrete que ja tocou nao se edita: o caminho e adiar (RN04)
+      if (reminder.sent && (touchesTime || nothingAsked)) return { reply: formatAlreadyPlayed(reminder.message, reminder.due_at) };
+      return { action: { ...action, query: "", list_ref: undefined } };
+    }
+    case "delete_reminder":
+      return { action: { ...action, query: "", list_ref: undefined } };
+    case "edit_event":
+      if (reminder.sent && (action.new_date || action.new_time)) return { reply: formatAlreadyPlayed(reminder.message, reminder.due_at) };
+      return { action: { type: "edit_reminder", query: "", new_message: action.new_title, new_date: action.new_date, new_time: action.new_time } };
+    case "delete_event":
+      return { action: { type: "delete_reminder", query: "" } };
+    case "add_event_reminder":
+    case "remove_event_reminder":
+      return { reply: `Lembrete avisa só na hora marcada; aviso antecipado é coisa de evento. ${remarcar}` };
+    case "snooze_reminder": {
+      // tocou: adiar de verdade (fluxo existente); ainda pendente: adiar = remarcar, com a previa de sempre
+      if (reminder.sent) return { action: { ...action, query: "", list_ref: undefined } };
+      if (action.new_date || action.new_time) return { action: { type: "edit_reminder", query: "", new_date: action.new_date, new_time: action.new_time } };
+      if (action.minutes !== undefined && action.minutes > 0 && action.minutes <= MAX_SNOOZE_MINUTES) {
+        const moved = new Date(new Date(reminder.due_at).getTime() + action.minutes * 60 * 1000);
+        return { action: { type: "edit_reminder", query: "", new_date: spDateString(moved), new_time: spTimeString(moved) } };
+      }
+      return { reply: SNOOZE_NEEDS_TIME_TEXT };
+    }
+  }
+}
+
+async function handleAgendaRef(from: string, action: AgendaRefAction & { list_ref: number }) {
+  const ref = action.list_ref;
+  const item = getLastShownAgenda(from)?.[ref - 1];
+  if (!item) {
+    logActivity(from, action.type, `agenda: numero ${ref} sem lista valida`);
+    await sendText(from, agendaRefNotFoundText(ref));
+    return;
+  }
+  const event = item.kind === "event" ? getEventById(from, item.id) : undefined;
+  const reminder = item.kind === "reminder" ? getReminderById(from, item.id) : undefined;
+  if (!event && !reminder) {
+    logActivity(from, action.type, `agenda: ${ref} -> ${item.kind} #${item.id} nao existe mais`);
+    await sendText(from, AGENDA_ITEM_GONE_TEXT);
+    return;
+  }
+  logActivity(from, action.type, `agenda: ${ref} -> ${item.kind === "event" ? "evento" : "lembrete"} #${item.id}`);
+  const converted = convertAgendaAction(action, event ? { kind: "event" } : { kind: "reminder", reminder: reminder! }, ref);
+  if ("reply" in converted) {
+    await sendText(from, converted.reply);
+    return;
+  }
+  await handleInterpretation(from, converted.action, item.id);
+}
+
 async function handleInterpretation(from: string, interpretation: Interpretation, resolvedTargetId?: number) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -5467,6 +5576,12 @@ async function handleInterpretation(from: string, interpretation: Interpretation
   // e a da agenda (Card 20): a consulta e as acoes sobre evento e lembrete a mantem
   if (!AGENDA_LIST_TYPES.has(interpretation.type)) {
     clearLastShownAgenda(from);
+  }
+
+  // "cancela o 3" depois da agenda: resolve o numero e segue pelo fluxo do tipo real do item (Card 20)
+  if (resolvedTargetId === undefined && isAgendaRefAction(interpretation)) {
+    await handleAgendaRef(from, interpretation);
+    return;
   }
 
   switch (interpretation.type) {
@@ -5803,7 +5918,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const reminderId = await chooseTarget(from, "reminder_sent", interpretation, query, resolvedTargetId);
       if (reminderId === null) break;
       const reminder = getReminderById(from, reminderId)!;
-      const now = new Date();
+      const now = new Date(Date.now());
       const { newDate: snoozeDate, warning: snoozeWarning } = adjustSnoozeDate(reminder.due_at, { newDate: interpretation.new_date, newTime: interpretation.new_time }, now);
       const due = computeSnoozeDue(reminder.due_at, { minutes: interpretation.minutes, newDate: snoozeDate, newTime: interpretation.new_time }, now);
       if (!due.ok) {
@@ -6682,7 +6797,7 @@ Registre por texto, áudio ou foto do comprovante. Eu categorizo sozinho (e perg
 "Recebi 3000 de salário" registra a entrada. "Qual meu saldo esse mês" mostra quanto sobrou (entradas menos gastos).
 
 📅 *Agenda e lembretes*
-"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento. Pra ver o dia: "o que tenho hoje", "agenda da semana", "meus lembretes". Dá pra mandar só o que quer fazer, ex: "trocar categoria" ou "apagar gasto", e eu te guio.
+"Marca dentista amanhã 15h", "cancela a reunião de sexta", "me lembra de pagar a internet dia 10". Aviso automático antes de cada evento. Pra ver o dia: "o que tenho hoje", "agenda da semana", "meus lembretes" (numerados: depois é só dizer "cancela o 3"). Dá pra mandar só o que quer fazer, ex: "trocar categoria" ou "apagar gasto", e eu te guio.
 
 🎯 *Orçamento*
 "Me avisa se eu passar de R$300 em mercado" — eu aviso quando chegar perto ou passar.
