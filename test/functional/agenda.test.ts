@@ -39,7 +39,7 @@ test("Card 16: 'o que tenho hoje' as 10h mostra o dia inteiro -- lembrete das 7h
   const text = await say(app, n, "o que tenho hoje", { type: "report", date: "2026-10-15" });
   assert.equal(
     text,
-    "📅 Agenda — hoje (qui 15/10)\n\n• ✔️ 07:00 Remédio\n• 08:00–08:45 Consulta\n• agora 09:00–11:00 Reunião · Sala 2\n• ⏰ 18:00 Ligar pro contador"
+    "📅 Agenda — hoje (qui 15/10)\n\n1. ✔️ 07:00 Remédio\n2. 08:00–08:45 Consulta\n3. agora 09:00–11:00 Reunião · Sala 2\n4. ⏰ 18:00 Ligar pro contador\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
 });
 
@@ -51,7 +51,7 @@ test("Card 16: 'agenda de amanha' mistura eventos e lembretes em ordem de horari
   createReminder(n, "Pagar boleto", "2026-10-16T14:00:00-03:00");
   assert.equal(
     await say(app, n, "agenda de amanhã", { type: "report", date: "2026-10-16" }),
-    "📅 Agenda — amanhã (sex 16/10)\n\n• 09:00–10:00 Reunião · Sala 2\n• ⏰ 14:00 Pagar boleto\n• 15:00–16:00 Consulta · Clínica Sorriso"
+    "📅 Agenda — amanhã (sex 16/10)\n\n1. 09:00–10:00 Reunião · Sala 2\n2. ⏰ 14:00 Pagar boleto\n3. 15:00–16:00 Consulta · Clínica Sorriso\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.equal(await say(app, n, "agenda de domingo", { type: "report", date: "2026-10-18" }), "📅 Agenda — dia 18/10 (dom)\n\nNada agendado.");
   assert.equal(await say(app, n, "lembretes de domingo", { type: "report", date: "2026-10-18", scope: "reminders" }), "⏰ Lembretes — dia 18/10 (dom)\n\nNenhum lembrete.");
@@ -69,19 +69,19 @@ test("Card 16: semana atual numa quinta mostra de quinta a domingo; semana que v
 
   assert.equal(
     await say(app, n, "agenda da semana", { type: "report", week: "current" }),
-    "📅 Agenda — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n• agora 09:30–11:00 Reunião\n• ⏰ 18:00 Ligar pro contador\nSáb 17/10\n• 10:00–11:00 Dentista · Clínica Sorriso"
+    "📅 Agenda — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n1. agora 09:30–11:00 Reunião\n2. ⏰ 18:00 Ligar pro contador\nSáb 17/10\n3. 10:00–11:00 Dentista · Clínica Sorriso\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.equal(
     await say(app, n, "semana que vem", { type: "report", week: "next" }),
-    "📅 Agenda — semana que vem (19/10 a 25/10)\n\nSeg 19/10\n• ⏰ 08:00 Segunda lembrete\n• 09:00–10:00 Segunda que vem"
+    "📅 Agenda — semana que vem (19/10 a 25/10)\n\nSeg 19/10\n1. ⏰ 08:00 Segunda lembrete\n2. 09:00–10:00 Segunda que vem\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.equal(
     await say(app, n, "eventos da semana", { type: "report", week: "current", scope: "events" }),
-    "📅 Eventos — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n• agora 09:30–11:00 Reunião\nSáb 17/10\n• 10:00–11:00 Dentista · Clínica Sorriso"
+    "📅 Eventos — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n1. agora 09:30–11:00 Reunião\nSáb 17/10\n2. 10:00–11:00 Dentista · Clínica Sorriso\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.equal(
     await say(app, n, "lembretes da semana", { type: "report", week: "current", scope: "reminders" }),
-    "⏰ Lembretes — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n• ⏰ 18:00 Ligar pro contador"
+    "⏰ Lembretes — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n1. ⏰ 18:00 Ligar pro contador\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
 });
 
@@ -97,14 +97,14 @@ test("Card 16: proximos 15 dias (so o que ainda vale) e mes: futuro mostra tudo,
   createReminder(n, "Lembrete em 5 dias", "2026-10-20T09:00:00-03:00");
 
   const next = await say(app, n, "próximos 15 dias", { type: "report", days: 15 });
-  assert.match(next, /^📅 Agenda — próximos 15 dias\n\nHoje · qui 15\/10\n• agora 09:00–11:00 Em andamento\nTer 20\/10\n• ⏰ 09:00 Lembrete em 5 dias$/);
+  assert.match(next, /^📅 Agenda — próximos 15 dias\n\nHoje · qui 15\/10\n1. agora 09:00–11:00 Em andamento\nTer 20\/10\n2. ⏰ 09:00 Lembrete em 5 dias\n\nPra mexer em um item: "edita o 2" ou "cancela o 3"\.$/);
   assert.ok(!next.includes("Passou") && !next.includes("tocou"));
 
   const nov = await say(app, n, "agenda de novembro", { type: "report", month: "2026-11" });
-  assert.equal(nov, "📅 Agenda — novembro/2026\n\nTer 10/11\n• 14:00–15:00 Em novembro\nSex 20/11\n• ⏰ 09:00 Lembrete em novembro");
+  assert.equal(nov, "📅 Agenda — novembro/2026\n\nTer 10/11\n1. 14:00–15:00 Em novembro\nSex 20/11\n2. ⏰ 09:00 Lembrete em novembro\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
 
   const oct = await say(app, n, "agenda de outubro", { type: "report", month: "2026-10" });
-  assert.match(oct, /^📅 Agenda — outubro\/2026\n\nSeg 05\/10\n• 09:00–10:00 Passou\nTer 06\/10\n• ✔️ 09:00 Lembrete que tocou\nHoje · qui 15\/10\n• agora 09:00–11:00 Em andamento\nTer 20\/10\n• ⏰ 09:00 Lembrete em 5 dias$/);
+  assert.match(oct, /^📅 Agenda — outubro\/2026\n\nSeg 05\/10\n1. 09:00–10:00 Passou\nTer 06\/10\n2. ✔️ 09:00 Lembrete que tocou\nHoje · qui 15\/10\n3. agora 09:00–11:00 Em andamento\nTer 20\/10\n4. ⏰ 09:00 Lembrete em 5 dias\n\nPra mexer em um item: "edita o 2" ou "cancela o 3"\.$/);
 });
 
 test("Card 16: 'meus lembretes' mostra os 10 mais proximos e o '…e mais 6'; 'todos os meus lembretes' mostra os 16", async (t) => {
@@ -113,12 +113,12 @@ test("Card 16: 'meus lembretes' mostra os 10 mais proximos e o '…e mais 6'; 't
   for (let i = 1; i <= 16; i++) createReminder(n, `Lembrete ${String(i).padStart(2, "0")}`, `2026-10-${String(15 + Math.ceil(i / 4)).padStart(2, "0")}T${String(8 + (i % 4)).padStart(2, "0")}:00:00-03:00`);
   const first = await say(app, n, "meus lembretes", { type: "list_reminders" });
   assert.match(first, /^⏰ Lembretes — próximos 10\n\n/);
-  assert.equal(first.split("\n").filter((l) => l.startsWith("• ")).length, 10);
-  assert.ok(first.endsWith('…e mais 6. Diga "todos os meus lembretes" pra ver tudo.'));
+  assert.equal(first.split("\n").filter((l) => /^\d+\. /.test(l)).length, 10);
+  assert.ok(first.includes('…e mais 6. Diga "todos os meus lembretes" pra ver tudo.'));
   assert.match(first, /Lembrete 01/);
   assert.ok(!first.includes("Lembrete 16"));
   const all = await say(app, n, "todos os meus lembretes", { type: "list_reminders", all: true });
-  assert.equal(all.split("\n").filter((l) => l.startsWith("• ")).length, 16);
+  assert.equal(all.split("\n").filter((l) => /^\d+\. /.test(l)).length, 16);
   assert.ok(all.includes("Lembrete 16") && !all.includes("Veja tudo no painel"));
   assert.equal(await say(app, user(), "meus lembretes", { type: "list_reminders" }), "⏰ Lembretes — próximos 10\n\nNenhum lembrete.");
 });
@@ -130,8 +130,8 @@ test("Card 16: mais de 30 itens mostra 30 e a linha com o link do painel; nada d
   for (let i = 0; i < 34; i++) createReminder(n, `Item ${i}`, `2026-10-16T${String(6 + Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}:00-03:00`);
   createReminder(other, "SEGREDO DO OUTRO", "2026-10-16T09:15:00-03:00");
   const text = await say(app, n, "agenda de amanhã", { type: "report", date: "2026-10-16" });
-  assert.equal(text.split("\n").filter((l) => l.startsWith("• ")).length, 30);
-  assert.ok(text.endsWith(`…e mais 4 itens. Veja tudo no painel: ${config.dashboardUrl}`));
+  assert.equal(text.split("\n").filter((l) => /^\d+\. /.test(l)).length, 30);
+  assert.ok(text.includes(`…e mais 4 itens. Veja tudo no painel: ${config.dashboardUrl}`));
   assert.ok(!text.includes("SEGREDO"));
   assert.ok(text.length < 3500);
 });
@@ -142,7 +142,7 @@ test("Card 16 (RN16): 'agenda do dia 31' em abril mostra o dia 30/04 com o aviso
   createReminder(n, "Pagar o aluguel", "2026-04-30T09:00:00-03:00");
   assert.equal(
     await say(app, n, "agenda do dia 31", { type: "report", date: "2026-04-31" }),
-    "Abril só tem 30 dias — mostrando o dia 30/04.\n\n📅 Agenda — dia 30/04 (qui)\n\n• ⏰ 09:00 Pagar o aluguel"
+    "Abril só tem 30 dias — mostrando o dia 30/04.\n\n📅 Agenda — dia 30/04 (qui)\n\n1. ⏰ 09:00 Pagar o aluguel\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.match(await say(app, n, "agenda do dia 32", { type: "report", date: "2026-04-32" }), /^Não entendi essa data\./);
 });
@@ -153,9 +153,9 @@ test("Card 16: 23:30 e 00:10 ficam cada um no seu dia mesmo com o relogio do ser
   createEvent({ fromNumber: n, title: "Jantar", start: "2026-10-15T23:30:00-03:00", end: "2026-10-15T23:59:00-03:00" });
   createReminder(n, "Meia-noite", "2026-10-16T00:10:00-03:00");
   const hoje = await say(app, n, "o que tenho hoje", { type: "report", date: "2026-10-15" });
-  assert.equal(hoje, "📅 Agenda — hoje (qui 15/10)\n\n• 23:30–23:59 Jantar");
+  assert.equal(hoje, "📅 Agenda — hoje (qui 15/10)\n\n1. 23:30–23:59 Jantar\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
   const amanha = await say(app, n, "e amanhã?", { type: "report", date: "2026-10-16" });
-  assert.equal(amanha, "📅 Agenda — amanhã (sex 16/10)\n\n• ⏰ 00:10 Meia-noite");
+  assert.equal(amanha, "📅 Agenda — amanhã (sex 16/10)\n\n1. ⏰ 00:10 Meia-noite\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
 });
 
 test("Card 16: 'a agenda' sem recorte assume os proximos 7 dias", async (t) => {
@@ -164,5 +164,5 @@ test("Card 16: 'a agenda' sem recorte assume os proximos 7 dias", async (t) => {
   createReminder(n, "Em 3 dias", "2026-10-18T09:00:00-03:00");
   createReminder(n, "Em 10 dias", "2026-10-25T09:00:00-03:00");
   const text = await say(app, n, "a agenda");
-  assert.match(text, /^📅 Agenda — próximos 7 dias\n\nDom 18\/10\n• ⏰ 09:00 Em 3 dias$/);
+  assert.match(text, /^📅 Agenda — próximos 7 dias\n\nDom 18\/10\n1. ⏰ 09:00 Em 3 dias\n\nPra mexer em um item: "edita o 2" ou "cancela o 3"\.$/);
 });

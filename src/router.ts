@@ -164,6 +164,7 @@ import {
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
 import { runAgendaReport, runListReminders } from "./agenda/queries";
+import { clearLastShownAgenda, setLastShownAgenda } from "./lists/lastShown";
 import {
   classifyLooseCommand,
   DATE_CHOICES,
@@ -5438,6 +5439,19 @@ async function moveToNextBillCheckin(from: string) {
   if (next) await sendText(from, buildBillAlertQuestion(next));
 }
 
+// pedidos que mantem a lista numerada da agenda (a consulta e as acoes por numero sobre evento e lembrete)
+const AGENDA_LIST_TYPES: ReadonlySet<string> = new Set([
+  "report",
+  "list_reminders",
+  "edit_event",
+  "delete_event",
+  "add_event_reminder",
+  "remove_event_reminder",
+  "edit_reminder",
+  "delete_reminder",
+  "snooze_reminder",
+]);
+
 async function handleInterpretation(from: string, interpretation: Interpretation, resolvedTargetId?: number) {
   // "editar o 2" so faz sentido logo depois de uma lista mostrada; qualquer outro
   // pedido no meio invalida essa referencia por numero
@@ -5448,6 +5462,11 @@ async function handleInterpretation(from: string, interpretation: Interpretation
   // idem pra lista de entradas: so list_incomes/edit_income/delete_income a mantem
   if (interpretation.type !== "list_incomes" && interpretation.type !== "edit_income" && interpretation.type !== "delete_income") {
     clearLastShownIncomes(from);
+  }
+
+  // e a da agenda (Card 20): a consulta e as acoes sobre evento e lembrete a mantem
+  if (!AGENDA_LIST_TYPES.has(interpretation.type)) {
+    clearLastShownAgenda(from);
   }
 
   switch (interpretation.type) {
@@ -5809,12 +5828,14 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     case "report": {
       const agenda = runAgendaReport(from, interpretation, new Date(Date.now()));
       logActivity(from, "report", agenda.log);
+      if (agenda.shown.length) setLastShownAgenda(from, agenda.shown);
       await sendText(from, agenda.text);
       break;
     }
     case "list_reminders": {
       const reminders = runListReminders(from, interpretation.all === true, new Date(Date.now()));
       logActivity(from, "list_reminders", reminders.log);
+      if (reminders.shown.length) setLastShownAgenda(from, reminders.shown);
       await sendText(from, reminders.text);
       break;
     }

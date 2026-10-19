@@ -1,34 +1,17 @@
-// Cache curto e em memoria: guarda quais entradas foram mostradas na ultima
-// resposta de "list_incomes" pra cada numero, pra "muda o valor do 2" saber a
-// quem se refere. Mesma ideia de expenses/listCache.ts -- e uma lista invalida a
-// outra: o numero sempre vale para a ULTIMA lista mostrada (gastos ou entradas).
-import { clearLastShownExpenses } from "../expenses/listCache";
-
-const TTL_MS = 10 * 60 * 1000;
-
-interface CachedList {
-  ids: number[];
-  label?: string;
-  createdAt: number;
-}
-
-const cache = new Map<string, CachedList>();
+// Fachada da "ultima lista de entradas mostrada" (lists/lastShown.ts guarda as listas de gastos, entradas e agenda numa so): guarda quais
+// entradas foram mostradas na ultima resposta de "list_incomes" pra cada numero, pra "muda o valor do 2" saber a quem se refere. Mesma
+// ideia de expenses/listCache.ts -- e uma lista invalida a outra: o numero sempre vale para a ULTIMA lista mostrada.
+import { clearLastShown, getLastShown, setLastShown } from "../lists/lastShown";
 
 export function setLastShownIncomes(fromNumber: string, ids: number[], label?: string) {
-  clearLastShownExpenses(fromNumber);
-  cache.set(fromNumber, { ids, label, createdAt: Date.now() });
+  setLastShown(fromNumber, { kind: "income", ids, label });
 }
 
 export function getLastShownIncomes(fromNumber: string): number[] | null {
-  const entry = cache.get(fromNumber);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    cache.delete(fromNumber);
-    return null;
-  }
-  return entry.ids;
+  const list = getLastShown(fromNumber);
+  return list && list.kind === "income" ? list.ids : null;
 }
 
 export function clearLastShownIncomes(fromNumber: string) {
-  cache.delete(fromNumber);
+  clearLastShown(fromNumber, "income");
 }

@@ -222,7 +222,7 @@ test("Card 17: 'ver meus gastos' mostra as ultimas compras (10) e 'minha agenda'
   assert.match(gastos, /^🧾 Últimos 10 gastos/);
   assert.ok(gastos.includes("Gasto 12") && !gastos.includes("Gasto 01"));
   const agenda = await say(app, n, "minha agenda");
-  assert.match(agenda, /^📅 Agenda — próximos 7 dias\n\nAmanhã · dom 18\/10\n• ⏰ 14:00 Pagar boleto/);
+  assert.match(agenda, /^📅 Agenda — próximos 7 dias\n\nAmanhã · dom 18\/10\n1. ⏰ 14:00 Pagar boleto/);
   assert.equal(app.calls.length, 0);
 });
 

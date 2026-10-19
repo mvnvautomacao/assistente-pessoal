@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveAgendaRange, AgendaParams, INVALID_AGENDA_DATE_TEXT } from "../../src/agenda/range";
-import { formatAgenda, truncateTitle, dayHeader } from "../../src/agenda/format";
+import { formatAgenda as formatAgendaFull, truncateTitle, dayHeader, AgendaFormatInput } from "../../src/agenda/format";
 import { runAgendaReport, runListReminders } from "../../src/agenda/queries";
 import { createEvent, listEventsBetween } from "../../src/events/service";
 import { countPendingReminders, createReminder, listNextPendingReminders, listRemindersBetween, markReminderSent } from "../../src/reminders/service";
@@ -75,14 +75,19 @@ test("resolveAgendaRange: servidor em UTC -- 22h30 de Sao Paulo ainda e o mesmo 
   assert.equal(range({ date: "2026-10-15" }, early).label, "hoje (qui 15/10)");
 });
 
+// os testes de texto olham so o texto; a lista numerada (shown) tem testes proprios em agendaNumerada.test.ts
+const formatAgenda = (input: AgendaFormatInput) => formatAgendaFull(input).text;
+let nextId = 1;
+
 const ev = (over: Partial<{ title: string; start: string; end: string | null; location: string | null }> = {}) => ({
+  id: nextId++,
   title: "Reunião",
   start: "2026-10-16T09:00:00-03:00",
   end: "2026-10-16T10:00:00-03:00",
   location: null,
   ...over,
 });
-const rem = (message: string, due_at: string, sent = 0) => ({ message, due_at, sent });
+const rem = (message: string, due_at: string, sent = 0) => ({ id: nextId++, message, due_at, sent });
 
 const base = { now: THU, startDate: "2026-10-15", link: "https://painel.test", emptyText: "Nada agendado." };
 
@@ -96,7 +101,7 @@ test("formatAgenda: um dia -- sem cabecalho, ordem de horario, evento antes de l
   });
   assert.equal(
     text,
-    "📅 Agenda — amanhã (sex 16/10)\n\n• 09:00–10:00 Reunião · Sala 2\n• ⏰ 09:00 Ligar\n• 14:00–14:30 Sem local\n• ⏰ 14:00 Pagar boleto\n• 15:00–16:00 Consulta · Clínica Sorriso"
+    "📅 Agenda — amanhã (sex 16/10)\n\n1. 09:00–10:00 Reunião · Sala 2\n2. ⏰ 09:00 Ligar\n3. 14:00–14:30 Sem local\n4. ⏰ 14:00 Pagar boleto\n5. 15:00–16:00 Consulta · Clínica Sorriso\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   assert.ok(!/\d{4}, \d{2}:\d{2}:\d{2}/.test(text), "sem data completa nem segundos");
 });
@@ -111,7 +116,7 @@ test("formatAgenda: periodo -- cabecalho por dia (Hoje, Amanha, outros), 'agora'
   });
   assert.equal(
     text,
-    "📅 Agenda — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n• agora 09:30–11:00 Reunião\n• ⏰ 18:00 Ligar pro contador\nAmanhã · sex 16/10\n• ⏰ 08:00 Remédio\nSáb 17/10\n• 10:00–11:00 Dentista · Clínica"
+    "📅 Agenda — restante da semana (15/10 a 18/10)\n\nHoje · qui 15/10\n1. agora 09:30–11:00 Reunião\n2. ⏰ 18:00 Ligar pro contador\nAmanhã · sex 16/10\n3. ⏰ 08:00 Remédio\nSáb 17/10\n4. 10:00–11:00 Dentista · Clínica\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
 });
 
@@ -123,7 +128,7 @@ test("formatAgenda: lembrete ja enviado ganha ✔️; evento que terminou fica s
     events: [ev({ title: "Consulta", start: "2026-10-15T08:00:00-03:00", end: "2026-10-15T08:30:00-03:00" }), ev({ title: "Reunião", start: "2026-10-15T09:00:00-03:00", end: "2026-10-15T11:00:00-03:00" }), ev({ title: "Antigo", start: "2026-10-15T09:45:00-03:00", end: null })],
     reminders: [rem("Remédio", "2026-10-15T07:00:00-03:00", 1)],
   });
-  assert.equal(text, "📅 Agenda — hoje (qui 15/10)\n\n• ✔️ 07:00 Remédio\n• 08:00–08:30 Consulta\n• agora 09:00–11:00 Reunião\n• agora 09:45 Antigo");
+  assert.equal(text, "📅 Agenda — hoje (qui 15/10)\n\n1. ✔️ 07:00 Remédio\n2. 08:00–08:30 Consulta\n3. agora 09:00–11:00 Reunião\n4. agora 09:45 Antigo\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
 });
 
 test("formatAgenda: vazio, aviso antes do titulo, rodape, teto de 30 com link e singular", () => {
@@ -131,16 +136,16 @@ test("formatAgenda: vazio, aviso antes do titulo, rodape, teto de 30 com link e 
   assert.equal(formatAgenda({ ...base, title: "⏰ Lembretes — amanhã (sex 16/10)", mode: "day", events: [], reminders: [], emptyText: "Nenhum lembrete." }), "⏰ Lembretes — amanhã (sex 16/10)\n\nNenhum lembrete.");
   assert.equal(
     formatAgenda({ ...base, title: "📅 Agenda — dia 30/04 (qui)", notice: "Abril só tem 30 dias — mostrando o dia 30/04.", mode: "day", events: [], reminders: [rem("Aluguel", "2026-04-30T09:00:00-03:00")] }),
-    "Abril só tem 30 dias — mostrando o dia 30/04.\n\n📅 Agenda — dia 30/04 (qui)\n\n• ⏰ 09:00 Aluguel"
+    "Abril só tem 30 dias — mostrando o dia 30/04.\n\n📅 Agenda — dia 30/04 (qui)\n\n1. ⏰ 09:00 Aluguel\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\"."
   );
   const many = Array.from({ length: 33 }, (_, i) => rem(`Item ${i + 1}`, `2026-10-16T${String(Math.floor(i / 2) + 6).padStart(2, "0")}:${i % 2 ? "30" : "00"}:00-03:00`));
   const capped = formatAgenda({ ...base, title: "T", mode: "day", events: [], reminders: many });
-  assert.equal(capped.split("\n").filter((l) => l.startsWith("• ")).length, 30);
-  assert.ok(capped.endsWith("…e mais 3 itens. Veja tudo no painel: https://painel.test"));
+  assert.equal(capped.split("\n").filter((l) => /^\d+\. /.test(l)).length, 30);
+  assert.ok(capped.includes("…e mais 3 itens. Veja tudo no painel: https://painel.test"));
   const one = formatAgenda({ ...base, title: "T", mode: "day", events: [], reminders: many.slice(0, 31) });
-  assert.ok(one.endsWith("…e mais 1 item. Veja tudo no painel: https://painel.test"));
+  assert.ok(one.includes("…e mais 1 item. Veja tudo no painel: https://painel.test"));
   assert.ok(capped.length < 3500, "cabe numa mensagem");
-  assert.equal(formatAgenda({ ...base, title: "T", mode: "day", events: [], reminders: [rem("a", "2026-10-16T09:00:00-03:00")], footer: "rodape" }), "T\n\n• ⏰ 09:00 a\n\nrodape");
+  assert.equal(formatAgenda({ ...base, title: "T", mode: "day", events: [], reminders: [rem("a", "2026-10-16T09:00:00-03:00")], footer: "rodape" }), "T\n\n1. ⏰ 09:00 a\n\nrodape\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
 });
 
 test("formatAgenda: fuso de SP -- 23:30 e 00:10 ficam cada um no seu dia, com o titulo longo truncado", () => {
@@ -151,7 +156,7 @@ test("formatAgenda: fuso de SP -- 23:30 e 00:10 ficam cada um no seu dia, com o 
     events: [ev({ title: "Jantar", start: "2026-10-16T23:30:00-03:00", end: "2026-10-16T23:59:00-03:00" })],
     reminders: [rem("Meia-noite", "2026-10-17T00:10:00-03:00"), rem("x".repeat(80), "2026-10-17T08:00:00-03:00")],
   });
-  assert.match(text, /Amanhã · sex 16\/10\n• 23:30–23:59 Jantar\nSáb 17\/10\n• ⏰ 00:10 Meia-noite\n• ⏰ 08:00 x{59}…/);
+  assert.match(text, /Amanhã · sex 16\/10\n1. 23:30–23:59 Jantar\nSáb 17\/10\n2. ⏰ 00:10 Meia-noite\n3. ⏰ 08:00 x{59}…/);
   assert.equal(truncateTitle("a".repeat(60)), "a".repeat(60));
   assert.equal(Array.from(truncateTitle("😀".repeat(70))).length, 60);
   assert.equal(dayHeader("2026-10-20", "2026-10-15"), "Ter 20/10");
@@ -213,9 +218,9 @@ test("runAgendaReport e runListReminders: texto final, erro de recorte e teto/ro
   createEvent({ fromNumber: F, title: "Reunião", start: "2026-10-16T09:00:00-03:00", end: "2026-10-16T10:00:00-03:00", location: "Sala 2" });
   createReminder(F, "Pagar boleto", "2026-10-16T14:00:00-03:00");
   const out = runAgendaReport(F, { date: "2026-10-16" }, THU, "https://painel.test");
-  assert.equal(out.text, "📅 Agenda — amanhã (sex 16/10)\n\n• 09:00–10:00 Reunião · Sala 2\n• ⏰ 14:00 Pagar boleto");
-  assert.equal(runAgendaReport(F, { date: "2026-10-16", scope: "events" }, THU).text, "📅 Eventos — amanhã (sex 16/10)\n\n• 09:00–10:00 Reunião · Sala 2");
-  assert.equal(runAgendaReport(F, { date: "2026-10-16", scope: "reminders" }, THU).text, "⏰ Lembretes — amanhã (sex 16/10)\n\n• ⏰ 14:00 Pagar boleto");
+  assert.equal(out.text, "📅 Agenda — amanhã (sex 16/10)\n\n1. 09:00–10:00 Reunião · Sala 2\n2. ⏰ 14:00 Pagar boleto\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
+  assert.equal(runAgendaReport(F, { date: "2026-10-16", scope: "events" }, THU).text, "📅 Eventos — amanhã (sex 16/10)\n\n1. 09:00–10:00 Reunião · Sala 2\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
+  assert.equal(runAgendaReport(F, { date: "2026-10-16", scope: "reminders" }, THU).text, "⏰ Lembretes — amanhã (sex 16/10)\n\n1. ⏰ 14:00 Pagar boleto\n\nPra mexer em um item: \"edita o 2\" ou \"cancela o 3\".");
   assert.equal(runAgendaReport(F, { date: "2026-10-18", scope: "reminders" }, THU).text, "⏰ Lembretes — dia 18/10 (dom)\n\nNenhum lembrete.");
   assert.equal(runAgendaReport(F, { date: "2026-10-18" }, THU).text, "📅 Agenda — dia 18/10 (dom)\n\nNada agendado.");
   assert.equal(runAgendaReport(F, { date: "lixo" }, THU).text, INVALID_AGENDA_DATE_TEXT);
@@ -224,17 +229,17 @@ test("runAgendaReport e runListReminders: texto final, erro de recorte e teto/ro
   for (let i = 1; i <= 16; i++) createReminder(G, `Lembrete ${i}`, `2026-10-${String(15 + Math.floor(i / 4)).padStart(2, "0")}T${String(10 + (i % 4)).padStart(2, "0")}:00:00-03:00`);
   const next = runListReminders(G, false, THU, "https://painel.test");
   assert.match(next.text, /^⏰ Lembretes — próximos 10\n\n/);
-  assert.equal(next.text.split("\n").filter((l) => l.startsWith("• ")).length, 10);
-  assert.ok(next.text.endsWith('…e mais 6. Diga "todos os meus lembretes" pra ver tudo.'));
+  assert.equal(next.text.split("\n").filter((l) => /^\d+\. /.test(l)).length, 10);
+  assert.ok(next.text.includes('…e mais 6. Diga "todos os meus lembretes" pra ver tudo.'));
   const everything = runListReminders(G, true, THU, "https://painel.test");
   assert.match(everything.text, /^⏰ Lembretes — todos\n\n/);
-  assert.equal(everything.text.split("\n").filter((l) => l.startsWith("• ")).length, 16);
+  assert.equal(everything.text.split("\n").filter((l) => /^\d+\. /.test(l)).length, 16);
   assert.ok(!everything.text.includes("Veja tudo no painel"));
   assert.equal(runListReminders("551100071699", false, THU).text, "⏰ Lembretes — próximos 10\n\nNenhum lembrete.");
 
   const H = "551100071608";
   for (let i = 0; i < 35; i++) createReminder(H, `Item ${i}`, `2026-11-${String(1 + (i % 28)).padStart(2, "0")}T09:${String(i).padStart(2, "0")}:00-03:00`);
   const capped = runListReminders(H, true, THU, "https://painel.test");
-  assert.equal(capped.text.split("\n").filter((l) => l.startsWith("• ")).length, 30);
-  assert.ok(capped.text.endsWith("…e mais 5 itens. Veja tudo no painel: https://painel.test"));
+  assert.equal(capped.text.split("\n").filter((l) => /^\d+\. /.test(l)).length, 30);
+  assert.ok(capped.text.includes("…e mais 5 itens. Veja tudo no painel: https://painel.test"));
 });
