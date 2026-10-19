@@ -2,7 +2,6 @@
 // ambiguas, previa 1/2/3, duplicata, mes corrente, reinicio, expiracao e desfazer. Nada e gravado antes do "1".
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import cron from "node-cron";
 import * as whatsappClient from "../../src/whatsapp/client";
 import type { Interpretation } from "../../src/ai/interpret";
 import { bootApp, msg, BotApp } from "../helpers/botApp";
@@ -11,6 +10,8 @@ import { allowNumber } from "../../src/access/allowlist";
 import { createRecurringExpense, listRecurringExpenses, getRecurringExpenseById } from "../../src/expenses/recurring";
 import { createBillAlert, listBillAlerts } from "../../src/bills/service";
 import { startRecurringExpenseScheduler } from "../../src/expenses/recurringScheduler";
+import { runDueDailyJobs } from "../../src/scheduler/dailyJobs";
+import { resetJobRunsForTests } from "../../src/scheduler/jobRuns";
 import { addDaysToDateString, spDateString } from "../../src/timeSP";
 import { db } from "../../src/db";
 import { CANCELLED_TEXT } from "../../src/recurrence/messages";
@@ -461,16 +462,12 @@ test("Card 13: o cron das 7h usa o mesmo lancamento (gasto, mes marcado, mensage
   t.mock.method(whatsappClient, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
-  let tick: (() => Promise<void>) | undefined;
-  t.mock.method(cron, "schedule", (_expr: string, fn: () => Promise<void>) => {
-    tick = fn;
-    return { stop() {} };
-  });
+  resetJobRunsForTests();
   const today = spDateString();
+  const midday = new Date(`${today}T12:00:00-03:00`);
   createRecurringExpense({ fromNumber: N, description: "Cron compartilhado", amount: 77.5, categoryId: null, paymentMethodId: null, dayOfMonth: Number(today.slice(8, 10)) });
   startRecurringExpenseScheduler();
-  assert.ok(tick);
-  await tick!();
+  await runDueDailyJobs(midday);
   const mine = sent.filter((m) => m.to === N);
   assert.equal(mine.length, 1);
   assert.equal(mine[0].text, "🔁 Gasto fixo lançado: R$77.50 — Cron compartilhado");
@@ -478,6 +475,6 @@ test("Card 13: o cron das 7h usa o mesmo lancamento (gasto, mes marcado, mensage
   assert.equal(launched.length, 1);
   assert.equal(launched[0].date, today);
   assert.equal(listRecurringExpenses(N)[0].last_run_month, today.slice(0, 7));
-  await tick!();
+  await runDueDailyJobs(midday);
   assert.equal(expensesLike(N, "Cron compartilhado").length, 1, "marcou o mes: nao lanca de novo");
 });

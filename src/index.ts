@@ -13,6 +13,7 @@ import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import { startBillAlertScheduler } from "./bills/scheduler";
 import { startNoExpenseReminderScheduler } from "./expenses/noExpenseReminderScheduler";
 import { startPendingCleanup } from "./pending/cleanup";
+import { startDailyJobRunner } from "./scheduler/dailyJobs";
 import "./db";
 
 // incidente real: uma rota sem try/catch chamou a Evolution API, ela recusou o
@@ -71,4 +72,6 @@ app.listen(config.port, () => {
   startBillAlertScheduler();
   startNoExpenseReminderScheduler();
   startPendingCleanup();
+  // por ultimo: as rotinas diarias acima so se registram; este cron por minuto as executa e recupera o que o servidor perdeu
+  startDailyJobRunner();
 });

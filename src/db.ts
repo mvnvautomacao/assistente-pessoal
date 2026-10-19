@@ -433,6 +433,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pending_state_expires ON pending_state(expires_at);
 `);
 
+// Rotinas agendadas (Card 19): uma linha por (rotina, dia) e o batimento do servidor. Tabelas novas, nenhuma coluna existente muda.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS job_runs (
+    job         TEXT NOT NULL,
+    run_date    TEXT NOT NULL,
+    started_at  TEXT,
+    finished_at TEXT,
+    status      TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    items       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (job, run_date)
+  );
+  CREATE TABLE IF NOT EXISTS scheduler_heartbeat (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    last_beat TEXT NOT NULL
+  );
+`);
+
 // client_billing existia antes da coluna plan ser adicionada.
 const clientBillingColumns = db.prepare(`PRAGMA table_info(client_billing)`).all() as { name: string }[];
 if (clientBillingColumns.length && !clientBillingColumns.some((c) => c.name === "plan")) {

@@ -28,6 +28,12 @@ export function spTimeString(d: Date = new Date()): string {
   return spTimeFormatter.format(d);
 }
 
+// "2026-10-08 03:15:00" (datetime('now') do SQLite, em UTC) -> "2026-10-08"/"2026-10-07" no calendario de Sao Paulo
+export function sqliteUtcToSpDate(value: string): string {
+  const date = new Date(`${value.trim().replace(" ", "T")}Z`);
+  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : spDateString(date);
+}
+
 export function isLastDayOfMonthSP(d: Date = new Date()): boolean {
   const [y, m, day] = spDateString(d).split("-").map(Number);
   const nextDay = new Date(Date.UTC(y, m - 1, day + 1));

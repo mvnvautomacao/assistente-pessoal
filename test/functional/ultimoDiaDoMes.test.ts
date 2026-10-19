@@ -11,6 +11,8 @@ import { startBillAlertScheduler } from "../../src/bills/scheduler";
 import { createRecurringExpense } from "../../src/expenses/recurring";
 import { startRecurringExpenseScheduler } from "../../src/expenses/recurringScheduler";
 import { monthEndShiftFrom } from "../../src/timeSP";
+import { runDueDailyJobs } from "../../src/scheduler/dailyJobs";
+import { resetJobRunsForTests } from "../../src/scheduler/jobRuns";
 
 let seq = 0;
 function user(): string {
@@ -32,9 +34,13 @@ function setup(t: TestContext, nowIso: string) {
     ticks.push(fn);
     return { stop() {} };
   });
+  resetJobRunsForTests();
   startBillAlertScheduler();
   startRecurringExpenseScheduler();
-  const [billTick, recurringTick] = ticks;
+  const [billTick] = ticks;
+  const recurringTick = async () => {
+    await runDueDailyJobs(new Date(nowIso));
+  };
   return { sent, billTick, recurringTick };
 }
 
