@@ -3,7 +3,7 @@
 import { INVALID_MONTH_TEXT, monthLabel } from "../expenses/queryRange";
 import { addDaysToDateString, clampToMonthEnd, daysInMonth, monthNamePt, spDateString, spDayOfWeek } from "../timeSP";
 
-export type AgendaScope = "all" | "events" | "reminders";
+export type AgendaScope = "all" | "events" | "reminders" | "finance";
 
 export interface AgendaParams {
   days?: number;
@@ -14,6 +14,7 @@ export interface AgendaParams {
 }
 
 export const DEFAULT_AGENDA_DAYS = 7;
+export const DEFAULT_FINANCE_DAYS = 30; // agenda financeira sem recorte: os proximos 30 dias (Card 22)
 export const MAX_AGENDA_DAYS = 365;
 
 export const INVALID_AGENDA_DATE_TEXT = 'Não entendi essa data. Me diz o dia, ex: "agenda do dia 20" ou "agenda de amanhã".';
@@ -22,6 +23,7 @@ export interface AgendaRange {
   startIso: string; // inclusivo, com offset -03:00 (ou instante exato quando e "proximos N dias")
   endIso: string; // exclusivo
   startDate: string; // YYYY-MM-DD do primeiro dia do recorte (usado no agrupamento)
+  endDate: string; // YYYY-MM-DD do dia seguinte ao ultimo do recorte (exclusivo); a agenda financeira trabalha por data, nao por instante
   label: string; // "hoje (qui 08/10)", "restante da semana (15/10 a 18/10)", "novembro/2026"...
   mode: "day" | "period";
   // consulta de periodo (semana, proximos dias) so mostra o que ainda vale; um dia e um mes mostram tudo (RN02)
@@ -60,6 +62,7 @@ export function dayMonth(date: string, today: string): string {
 export function agendaTitlePrefix(scope: AgendaScope): string {
   if (scope === "events") return "📅 Eventos";
   if (scope === "reminders") return "⏰ Lembretes";
+  if (scope === "finance") return "💳 Agenda financeira";
   return "📅 Agenda";
 }
 
@@ -86,7 +89,23 @@ function adjustMissingDay(date: string): { date: string; notice: string } | null
   return { date: adjusted, notice: `${name.charAt(0).toUpperCase()}${name.slice(1)} só tem ${last} dias — mostrando o dia ${pad(last)}/${pad(month)}.` };
 }
 
-export function resolveAgendaRange(params: AgendaParams, now: Date = new Date()): AgendaRangeResult {
+export interface ResolveOptions {
+  defaultDays?: number; // "proximos N dias" quando o pedido nao traz recorte (padrao: 30 na agenda financeira, 7 nas demais)
+}
+
+export function resolveAgendaRange(params: AgendaParams, now: Date = new Date(), options: ResolveOptions = {}): AgendaRangeResult {
+  const result = resolveRawRange(params, now, options);
+  if (!result.ok || result.range.scope !== "finance") return result;
+  // a agenda financeira olha para frente (RN01): o recorte nunca comeca antes de hoje
+  const today = spDateString(now);
+  const range = result.range;
+  if (range.startDate >= today) return result;
+  const start = today;
+  const end = range.endDate > start ? range.endDate : start;
+  return { ok: true, range: { ...range, startDate: start, startIso: midnight(start), endDate: end, endIso: midnight(end) } };
+}
+
+function resolveRawRange(params: AgendaParams, now: Date, options: ResolveOptions): AgendaRangeResult {
   const scope: AgendaScope = params.scope ?? "all";
   const today = spDateString(now);
 
@@ -102,7 +121,7 @@ export function resolveAgendaRange(params: AgendaParams, now: Date = new Date())
     }
     return {
       ok: true,
-      range: { startIso: midnight(date), endIso: midnight(addDaysToDateString(date, 1)), startDate: date, label: dayLabel(date, today), mode: "day", onlyUpcoming: false, scope, notice },
+      range: { startIso: midnight(date), endIso: midnight(addDaysToDateString(date, 1)), startDate: date, endDate: addDaysToDateString(date, 1), label: dayLabel(date, today), mode: "day", onlyUpcoming: false, scope, notice },
     };
   }
 
@@ -119,6 +138,7 @@ export function resolveAgendaRange(params: AgendaParams, now: Date = new Date())
           startIso: midnight(start),
           endIso: midnight(end),
           startDate: start,
+          endDate: end,
           label: `semana que vem (${dayMonth(start, today)} a ${dayMonth(addDaysToDateString(end, -1), today)})`,
           mode: "period",
           onlyUpcoming: true,
@@ -134,6 +154,7 @@ export function resolveAgendaRange(params: AgendaParams, now: Date = new Date())
         startIso: midnight(today),
         endIso: midnight(end),
         startDate: today,
+        endDate: end,
         label: `${whole ? "semana" : "restante da semana"} (${dayMonth(today, today)} a ${dayMonth(addDaysToDateString(end, -1), today)})`,
         mode: "period",
         onlyUpcoming: true,
@@ -152,12 +173,13 @@ export function resolveAgendaRange(params: AgendaParams, now: Date = new Date())
     const end = month === 12 ? `${Number(match[1]) + 1}-01-01` : `${match[1]}-${pad(month + 1)}-01`;
     return {
       ok: true,
-      range: { startIso: midnight(start), endIso: midnight(end), startDate: start, label: monthLabel(yearMonth), mode: "period", onlyUpcoming: false, scope },
+      range: { startIso: midnight(start), endIso: midnight(end), startDate: start, endDate: end, label: monthLabel(yearMonth), mode: "period", onlyUpcoming: false, scope },
     };
   }
 
   // ---- proximos N dias a partir de agora (padrao 7) ----
-  const requested = params.days !== undefined && Number.isFinite(params.days) ? Math.floor(params.days) : DEFAULT_AGENDA_DAYS;
+  const fallbackDays = options.defaultDays ?? (scope === "finance" ? DEFAULT_FINANCE_DAYS : DEFAULT_AGENDA_DAYS);
+  const requested = params.days !== undefined && Number.isFinite(params.days) ? Math.floor(params.days) : fallbackDays;
   const days = Math.min(Math.max(requested, 1), MAX_AGENDA_DAYS);
   return {
     ok: true,
@@ -165,6 +187,7 @@ export function resolveAgendaRange(params: AgendaParams, now: Date = new Date())
       startIso: now.toISOString(),
       endIso: new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString(),
       startDate: today,
+      endDate: addDaysToDateString(today, days),
       label: days === 1 ? "próximas 24 horas" : `próximos ${days} dias`,
       mode: "period",
       onlyUpcoming: true,

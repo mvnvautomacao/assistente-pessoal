@@ -5,6 +5,8 @@ import type { AgendaShownItem } from "../lists/lastShown";
 import { listEventsBetween } from "../events/service";
 import { countPendingReminders, listNextPendingReminders, listRemindersBetween } from "../reminders/service";
 import { spDateString } from "../timeSP";
+import { listFinanceItems } from "./finance";
+import { formatFinanceAgenda } from "./financeFormat";
 import { formatAgenda, MAX_AGENDA_ITEMS } from "./format";
 import { agendaTitlePrefix, AgendaParams, AgendaScope, resolveAgendaRange } from "./range";
 
@@ -16,9 +18,28 @@ export interface AgendaOutput {
   shown: AgendaShownItem[]; // itens numerados na resposta (o roteador guarda pra "cancela o 3")
 }
 
-const EMPTY_TEXT: Record<AgendaScope, string> = { all: "Nada agendado.", events: "Nenhum evento.", reminders: "Nenhum lembrete." };
+const EMPTY_TEXT: Record<AgendaScope, string> = { all: "Nada agendado.", events: "Nenhum evento.", reminders: "Nenhum lembrete.", finance: "Nada a pagar neste período. 🎉" };
+
+// Agenda financeira (Card 22): o que vai ser cobrado de hoje em diante. Somente leitura e sem itens numerados (shown vazio).
+export function runFinanceAgenda(fromNumber: string, params: AgendaParams, now: Date = new Date(Date.now()), link: string = config.dashboardUrl): AgendaOutput {
+  const resolved = resolveAgendaRange({ ...params, scope: "finance" }, now);
+  if (!resolved.ok) return { text: resolved.error, log: "financeira: recorte invalido", shown: [] };
+  const range = resolved.range;
+  const finance = listFinanceItems(fromNumber, range, now);
+  const text = formatFinanceAgenda({
+    title: `${agendaTitlePrefix("finance")} — ${range.label}`,
+    finance,
+    today: spDateString(now),
+    link,
+    emptyText: EMPTY_TEXT.finance,
+    notice: range.notice,
+  });
+  const log = `financeira ${range.label}: ${finance.items.length + finance.hiddenCount} a vencer, ${finance.openItems.length} em aberto, total ${finance.total.toFixed(2)}`;
+  return { text, log, shown: [] };
+}
 
 export function runAgendaReport(fromNumber: string, params: AgendaParams, now: Date = new Date(Date.now()), link: string = config.dashboardUrl): AgendaOutput {
+  if (params.scope === "finance") return runFinanceAgenda(fromNumber, params, now, link);
   const resolved = resolveAgendaRange(params, now);
   if (!resolved.ok) return { text: resolved.error, log: "recorte invalido", shown: [] };
   const range = resolved.range;
