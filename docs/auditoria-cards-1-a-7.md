@@ -176,7 +176,10 @@ Todas executadas por teste funcional. Os testes de reinício **descartam todos o
 
 Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o comportamento **esperado**: hoje falha (e não quebra a suíte); quando a correção entrar, tire o `todo` e vira teste de regressão.
 
-### D-01 · Alto · Pedido de apagar + editar na mesma mensagem deixa duas perguntas conflitantes
+### D-01 · Alto · Pedido de apagar + editar na mesma mensagem deixa duas perguntas conflitantes — ✅ CORRIGIDO no Card 21
+> **Corrigido no Card 21 (parte 1):** `src/confirmation/recordActions.ts` lista explicitamente todo tipo que mexe em registro (editar, apagar, remover, renomear, mesclar, recategorizar em lote, avisos do evento); só o primeiro pedido da mensagem abre pergunta e os demais viram `Deixei a alteração/exclusão de "X" pra depois: confirma a de "Y" primeiro e me pede de novo.` Um teste de unidade falha se surgir tipo novo `edit_/delete_/remove_/add_/rename_` sem decisão. Os dois `todo` (D-01 e D-01b) viraram testes normais; cenários novos em `test/functional/umaConfirmacaoPorVez.test.ts`.
+
+
 - **Onde:** `processInterpretations` router.ts:992 (`EDIT_ACTION_TYPES` router.ts:968 só inclui `edit_*`, `correct_category`, `edit_income`, `delete_income`); resolvedores antigos de exclusão em `sim/não` (`resolveEventDeletionConfirmation`, `resolveDeleteExpenseConfirmation`, ...).
 - **Reproduzir:** `"cancela a reunião X e renomeia a reunião X"` (IA devolve `delete_event` + `edit_event`), ou `"apaga o gasto A e muda o gasto B pra 25"`. O bot manda **duas** perguntas: `Confirma que quer cancelar? Responde "sim" ou "não".` e a prévia `1 Confirmar / 2 Corrigir / 3 Cancelar`. Responder "1" (pensando na prévia) recebe `Não entendi — quer mesmo cancelar o evento? Responde "sim" ou "não".`; responder "sim" (pensando em confirmar a edição) **cancela o evento**.
 - **Esperado:** a regra RN10 do Card 3: só a primeira ação gera pendência; a segunda é adiada com `Deixei a alteração de "..." pra depois: ...`.
@@ -225,11 +228,17 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - **Correção sugerida:** incluir a saída na mensagem (`...ou *cancelar* pra mandar outra coisa`) e/ou tratar gasto completo claro (valor + descrição) como pedido novo.
 - **Evidência:** execução manual de cenário (E2 do plano de auditoria): sem teste `todo` porque o comportamento esperado é decisão de produto.
 
-### D-08 · Baixo · "Item mudou desde a prévia" só existe para gasto e entrada
+### D-08 · Baixo · "Item mudou desde a prévia" só existe para gasto e entrada — ✅ CORRIGIDO no Card 21
+> **Corrigido no Card 21 (parte 3):** `src/confirmation/changedSince.ts` (`eventChangedSince`, `reminderChangedSince`, `recurringChangedSince`, `billChangedSince`) compara o registro atual com o `previous` da prévia antes de aplicar; mudou → `O <evento|lembrete|gasto fixo|alerta> "X" mudou enquanto a gente conversava (agora está ...). Me pede a alteração de novo.`; apagado → `Não achei mais esse item.`
+
+
 - Evento, lembrete e gasto fixo aplicam a prévia sem conferir se o registro foi alterado (por exemplo no painel) entre a prévia e o "1".
 - **Correção sugerida:** o mesmo snapshot de `previous` comparado antes de aplicar, como em `confirmExpenseEdits`/`confirmIncomeEdit`. (Sugestão já registrada no Card 4, seção 14.)
 
-### D-09 · Baixo · Textos e formatos inconsistentes entre fluxos novos e antigos
+### D-09 · Baixo · Textos e formatos inconsistentes entre fluxos novos e antigos — ✅ CORRIGIDO no Card 21
+> **Corrigido no Card 21 (parte 3):** todo dinheiro dito ao usuário passa por `formatBRL` (`R$ 10,00`) e toda data com hora por `formatWhen` (`qui 15/10 às 10:00`), inclusive o texto das edições de evento/lembrete. Data sem hora segue `dd/mm/aaaa`. /admin, painel e o texto de contexto da IA não mudam.
+
+
 > **Corrigido em parte pelo Card 9:** as confirmações de apagar/remover dos 9 fluxos (evento, lembrete, gasto e compra parcelada, categoria, orçamento, gasto fixo, alerta de conta, juntar categorias e recategorizar em lote) passaram para o padrão `1`/`3`, valor `R$ 10,00` e data `qui 15/10 às 10:00`, 10 minutos e persistentes. **Continua aberto:** o formato antigo `R$10.00` / `15/10/2026, 10:00:00` em mensagens de sucesso de outros fluxos (por exemplo "evento criado", "alterado: de ... pra ...") e a frase única "Já está assim, não mexi em nada.".
 
 - Dinheiro: `R$ 10,00` (novo) × `R$10.00` (exclusões e criações antigas).
@@ -237,13 +246,19 @@ Cada defeito tem um teste `todo` em `test/functional/auditoria.test.ts` com o co
 - ~~Confirmação de exclusão de evento, lembrete, gasto, categoria, orçamento e gasto fixo continua em `sim/não`~~ — **corrigido no Card 9** (agora todas usam `1`/`3`).
 - "Já está assim, não mexi em nada." (o Card 4 pedia "não mudei nada" para evento/lembrete/gasto fixo; foi adotada uma frase só).
 
-### D-10 · Baixo · Ajuda e boas-vindas defasadas
+### D-10 · Baixo · Ajuda e boas-vindas defasadas — ✅ CORRIGIDO no Card 21
+> **Corrigido no Card 21 (parte 3):** boas-vindas curta (cabe numa tela) citando gasto, entrada, agenda, lembrete, consultas, conta fixa, editar/apagar pelo número, desfazer e "ajuda"; novo assunto de ajuda `agenda` (agenda numerada) e README atualizado.
+
+
 - `WELCOME_MESSAGE` (router.ts:555) não cita editar pelo menu, entradas, adiar lembrete nem "desfazer". `helpTopicMessage` está atualizado para gasto, evento, lembrete e entrada.
 
 ### D-11 · Baixo · Tamanho e duplicação do `router.ts`
 - 5.814 linhas, 128 funções de topo; `handleInterpretation` passa de 1.300 linhas. Cinco resolvedores de confirmação quase iguais (`resolveEditExpense/Event/Reminder/Recurring/IncomeConfirmation`, ~1.000 linhas) e dez wrappers `pending*.ts` repetem o mesmo padrão. Lacuna de cobertura: o `router.js` ficou em 89,18 %.
 
-### D-12 · Baixo · Retenção de dados no log de atividade
+### D-12 · Baixo · Retenção de dados no log de atividade — ✅ CORRIGIDO no Card 21
+> **Corrigido no Card 21 (parte 4):** `ACTIVITY_LOG_RETENTION_DAYS` (padrão 90; `0` desliga; inválido = 90), `purgeActivityLog` + índice `idx_activity_log_created_at` e a rotina diária `limpeza_log` às 3h (aparece em `job_runs` e no /admin, que também mostra a retenção).
+
+
 - `logActivity` grava descrições, valores e títulos em texto (por exemplo `pediu confirmacao: #5 Mercado: Valor R$ 38,00 -> R$ 45,00`) sem prazo de retenção. `pending_state` guarda no máximo 70 min, mas o `activity_log` não tem limpeza.
 
 ### D-13 · Baixo · Higiene do repositório e ferramentas — **corrigido no Card 18**

@@ -11,6 +11,7 @@ import { startExpenseReportScheduler } from "./expenses/reportScheduler";
 import { startEventReminderScheduler } from "./events/reminderScheduler";
 import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import { startBillAlertScheduler } from "./bills/scheduler";
+import { startActivityLogCleanup } from "./activity/cleanupJob";
 import { startNoExpenseReminderScheduler } from "./expenses/noExpenseReminderScheduler";
 import { startPendingCleanup } from "./pending/cleanup";
 import { startDailyJobRunner } from "./scheduler/dailyJobs";
@@ -70,6 +71,7 @@ app.listen(config.port, () => {
   startEventReminderScheduler();
   startRecurringExpenseScheduler();
   startBillAlertScheduler();
+  startActivityLogCleanup();
   startNoExpenseReminderScheduler();
   startPendingCleanup();
   // por ultimo: as rotinas diarias acima so se registram; este cron por minuto as executa e recupera o que o servidor perdeu

@@ -215,7 +215,7 @@ Faça 2.1 até a lista, **reinicie**, `2`, **reinicie**, `1`, **reinicie**, `45`
 1. Prévia aberta de gasto. 2. → `renomeia a reunião cliente para reunião nova com a diretoria`
    ← **`Cancelei a alteração de "..." e entendi seu novo pedido.` e a prévia do evento.**
 3. ⚠️ **Defeito conhecido D-07:** com a prévia aberta, → `gastei 30 de café` responde só `Não entendi 🤔 Responde *1*...` (não registra). Saída: `cancelar`.
-4. ⚠️ **Defeito conhecido D-01:** → `cancela a reunião cliente e renomeia a reunião cliente para x` deixa DUAS perguntas abertas (cuidado: responder `sim` cancela o evento). Responda `cancelar` para limpar.
+4. **D-01 (corrigido no Card 21):** → `cancela a reunião cliente e renomeia a reunião cliente para x` ← **só UMA pergunta (a do cancelamento) e `Deixei a alteração de "..." pra depois: confirma a de "..." primeiro e me pede de novo.`** Responda `3` para manter o evento.
 
 ### I-c Dois números ao mesmo tempo
 - Com dois celulares, abra uma prévia em cada um e responda `1` num e `3` no outro quase juntos. **Cada resposta vale só para a prévia do próprio número.**
@@ -235,6 +235,27 @@ Faça 2.1 até a lista, **reinicie**, `2`, **reinicie**, `1`, **reinicie**, `45`
 ### I-h Áudio, acento, emoji
 - Com uma prévia aberta: mande um **áudio dizendo "sim"** ← **aplica**. Com outra prévia: `Sím` ← **aplica**; `👍` ← **aplica**; `❌` ← **cancela**.
 - ⚠️ **Defeito conhecido D-04:** áudio dizendo "um" / "dois" / "três" **não** responde à prévia (responde `Não entendi 🤔`). Na lista numerada e no menu de campos, "um/dois" **funcionam**.
+
+---
+
+## Card 21 — Três avisos, mudou na conversa, formatos, boas-vindas e limpeza do log
+
+### 21.1 Três avisos sem resposta (conta fixa)
+- Cadastre `me lembra da luz todo dia 5`. No dia 5 chega `📌 Hora de: luz.` com `1/2/3` — **não responda**. Nos dois dias seguintes o aviso volta; o **3º** termina com `⚠️ Último aviso: se eu não tiver resposta, considero resolvido (sem lançar gasto) e te aviso de novo mês que vem, no dia certo.`
+- No quarto dia o alerta fecha em silêncio (sem gasto lançado) e só volta no próximo vencimento. Responder `1`, `2` ou `3` em qualquer dos avisos zera a contagem.
+- Para testar sem esperar: ajuste `last_asked_date`/`snoozed_until` do alerta no banco e chame a rotina `alertas_conta` (ou aguarde as 8h).
+
+### 21.2 Mudou enquanto a gente conversava
+- Abra a prévia de edição de um evento (`remarca a consulta pra 15h`), mude o mesmo evento pelo painel e responda `1` ← **`O evento "..." mudou enquanto a gente conversava (agora está qui 15/10 às 10:00). Me pede a alteração de novo.`** e nada é aplicado. Idem para lembrete, gasto fixo e alerta de conta. Apague o item e responda `1` ← **`Não achei mais esse item.`**
+
+### 21.3 Formatos
+- Registre um gasto, uma entrada, um orçamento e crie um evento/lembrete: todo valor aparece como `R$ 10,00` e toda data com hora como `qui 15/10 às 10:00` (sem segundos).
+
+### 21.4 Boas-vindas e ajuda
+- Número novo: a boas-vindas cabe numa tela e cita gasto, entrada, agenda, lembrete, consulta, conta fixa, editar/apagar, desfazer e `ajuda`. → `como mexo na agenda` ← **`Como ver a agenda e mexer pelo número`**.
+
+### 21.5 Limpeza do log de atividade
+- No `/admin`, a seção **Rotinas agendadas** mostra `Log de atividade guardado por: 90 dias` e, depois das 3h, a linha **Limpeza do log de atividade (3h)** com os itens apagados.
 
 ---
 

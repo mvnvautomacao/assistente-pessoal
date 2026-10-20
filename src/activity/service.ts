@@ -39,3 +39,12 @@ export function getPendingReminders(limit = 50): PendingReminder[] {
     .prepare(`SELECT id, to_number, message, due_at FROM reminders WHERE sent = 0 ORDER BY due_at ASC LIMIT ?`)
     .all(limit) as unknown as PendingReminder[];
 }
+
+// Card 21 (D-12): apaga as linhas mais velhas que `retentionDays` (todos os tipos, inclusive blocked e quedas). 0 ou invalido = nao apaga nada.
+// O corte e comparado como texto com o ISO que o logActivity grava (toISOString, sempre UTC e de largura fixa), entao a ordem e a do tempo.
+export function purgeActivityLog(retentionDays: number, now: Date): number {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+  const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(`DELETE FROM activity_log WHERE created_at < ?`).run(cutoff);
+  return Number(result.changes);
+}

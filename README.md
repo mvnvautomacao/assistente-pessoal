@@ -219,6 +219,7 @@ estava fora na hora, recupera ao voltar. A proteção contra repetição fica no
 - `scheduler_heartbeat` guarda o último batimento (1 por minuto). Ao subir, se passou mais de **5 minutos**, o período fora do ar vira uma entrada `downtime` no log do dono (`servidor fora do ar de 19/10 06:58 a 19/10 07:39 (41 min)`); execuções de relatório que não dá mais para recuperar viram `job_runs.status = 'missed'` e uma entrada `job_missed`.
 - Na primeira subida com este recurso, os relatórios de hoje que o agendador antigo já tenha mandado ficam marcados como tratados (não saem em dobro).
 - O `/admin` tem a seção **Rotinas agendadas**: as últimas 30 execuções (rotina, dia, início, fim, status, itens, tentativas) e as últimas quedas.
+- **Limpeza do log de atividade (Card 21):** a rotina `limpeza_log` (3h, uma vez por dia, aparece em `job_runs` e no `/admin`) apaga do `activity_log` as linhas mais velhas que `ACTIVITY_LOG_RETENTION_DAYS` dias — de todos os tipos, inclusive tentativas bloqueadas e quedas. Padrão **90**; `0` desliga a limpeza (guarda tudo); valor inválido volta para 90. O `/admin` mostra a retenção em vigor. Existe índice em `activity_log(created_at)`.
 - **Atenção no Coolify:** o `job_runs` e o resto do SQLite vivem em `/app/data`; sem o volume persistente montado, tudo some a cada deploy e a recuperação não tem em que se apoiar.
 
 ## Testes

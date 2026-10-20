@@ -26,6 +26,7 @@ db.exec(`
     summary TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at);
 
   -- categorias, formas de pagamento e as palavras-chave aprendidas sao isoladas
   -- por numero: um numero nunca ve nem herda dados de outro numero.

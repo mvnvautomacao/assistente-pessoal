@@ -1,4 +1,5 @@
 import { listRecentJobRuns, JobRun } from "./scheduler/jobRuns";
+import { retentionLabel } from "./activity/retention";
 import { listRecentDowntimes } from "./scheduler/heartbeat";
 import { Router, Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "crypto";
@@ -139,10 +140,11 @@ const JOB_LABEL: Record<string, string> = {
   alertas_conta: "Alertas de conta (8h)",
   relatorio_semanal: "Relatório semanal (9h)",
   relatorio_mensal: "Relatório mensal (18h)",
+  limpeza_log: "Limpeza do log de atividade (3h)",
 };
 const JOB_STATUS_LABEL: Record<string, string> = { done: "concluída", running: "em andamento", failed: "falhou", missed: "perdida" };
 
-export function renderSchedulerSection(runs: JobRun[], downtimes: { summary: string; created_at: string }[]): string {
+export function renderSchedulerSection(runs: JobRun[], downtimes: { summary: string; created_at: string }[], retentionDays: number = config.activityLogRetentionDays): string {
   const runRows = runs
     .map(
       (r) =>
@@ -152,6 +154,7 @@ export function renderSchedulerSection(runs: JobRun[], downtimes: { summary: str
   const downtimeRows = downtimes.map((d) => `<tr><td>${formatDate(d.created_at)}</td><td>${escapeHtml(d.summary)}</td></tr>`).join("");
   return `<h2>Rotinas agendadas (últimas ${runs.length})</h2>
 ${runs.length ? `<table><tr><th>Rotina</th><th>Dia</th><th>Início</th><th>Fim</th><th>Status</th><th>Itens</th><th>Tentativas</th></tr>${runRows}</table>` : `<p class="empty">Nenhuma rotina executada ainda.</p>`}
+<p class="warn">Log de atividade guardado por: ${escapeHtml(retentionLabel(retentionDays))}. A limpeza roda todo dia às 3h (variável ACTIVITY_LOG_RETENTION_DAYS).</p>
 <h3>Fora do ar</h3>
 ${downtimes.length ? `<table><tr><th>Registrado em</th><th>Período</th></tr>${downtimeRows}</table>` : `<p class="empty">Nenhuma queda registrada.</p>`}`;
 }

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { parseRetentionDays } from "./activity/retention";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -14,6 +15,9 @@ export const config = {
   webhookSecret: process.env.WEBHOOK_SECRET,
   // link do painel, mandado junto da mensagem de boas-vindas e da senha
   dashboardUrl: process.env.DASHBOARD_URL ?? "https://marcusvnv.com.br/dashboard",
+
+  // dias de retencao do activity_log (Card 21): 90 por padrao; 0 desliga a limpeza; valor invalido volta pra 90
+  activityLogRetentionDays: parseRetentionDays(process.env.ACTIVITY_LOG_RETENTION_DAYS),
 
   evolution: {
     apiUrl: required("EVOLUTION_API_URL"),
