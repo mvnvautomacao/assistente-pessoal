@@ -166,6 +166,7 @@ import {
   RecurringExpenseParams,
 } from "./expenses/pendingEditRecurring";
 import { runAgendaReport, runListReminders } from "./agenda/queries";
+import { isDeletionAction, isRecordAction } from "./confirmation/recordActions";
 import { clearLastShownAgenda, getLastShownAgenda, setLastShownAgenda } from "./lists/lastShown";
 import {
   classifyLooseCommand,
@@ -1582,27 +1583,47 @@ async function proposeRecurringEdit(from: string, recurring: RecurringExpense, c
   await sendText(from, buildRecurringPreview(from, pendingRecurring));
 }
 
-const EDIT_ACTION_TYPES = new Set<Interpretation["type"]>([
-  "edit_event",
-  "edit_reminder",
-  "edit_recurring_expense",
-  "edit_bill_alert",
-  "edit_expense",
-  "correct_category",
-  "edit_income",
-  "delete_income",
-]);
-
+// rotulo do pedido nas mensagens de adiamento: o item citado (nome, "gasto 2", "entrada 3", "item 3 da agenda")
 function editRequestLabel(interpretation: Interpretation): string {
-  if (interpretation.type === "edit_expense" && interpretation.list_ref) return `gasto ${interpretation.list_ref}`;
-  if ((interpretation.type === "edit_income" || interpretation.type === "delete_income") && interpretation.list_ref) return `entrada ${interpretation.list_ref}`;
+  const ref = (interpretation as { list_ref?: number }).list_ref;
+  if (ref) {
+    if (interpretation.type === "edit_expense" || interpretation.type === "delete_expense") return `gasto ${ref}`;
+    if (interpretation.type === "edit_income" || interpretation.type === "delete_income") return `entrada ${ref}`;
+    return `item ${ref} da agenda`;
+  }
   return (interpretation as { query?: string }).query || "esse item";
 }
 
-// RN10: o que ainda esta esperando resposta (confirmacao de edicao ou escolha de item)
+// a pergunta de EXCLUSAO (1/3) que esta esperando resposta, com o rotulo do item (Card 21, RN03). A de apagar entrada ja entra em
+// describeActiveEditConfirmation; aqui estao as demais: evento, lembrete, gasto, categoria, orcamento, gasto fixo, alerta e as em lote.
+function describeActiveDeletion(from: string): string | null {
+  const event = getPendingEventDeletion(from);
+  if (event) return event.title;
+  const reminder = getPendingReminderDeletion(from);
+  if (reminder) return reminder.message;
+  const expense = getPendingDeleteExpense(from);
+  if (expense) return expense.description || "gastos";
+  const category = getPendingDeleteCategory(from);
+  if (category) return category.categoryName;
+  const budget = getPendingRemoveBudget(from);
+  if (budget) return budget.categoryName;
+  const recurring = getPendingRemoveRecurring(from);
+  if (recurring) return recurring.description;
+  const bill = getPendingRemoveBillAlert(from);
+  if (bill) return bill.name;
+  const merge = getPendingMergeCategories(from);
+  if (merge) return `${merge.sourceCategoryName} → ${merge.targetCategoryName}`;
+  const bulk = getPendingBulkRecategorize(from);
+  if (bulk) return bulk.summary;
+  return null;
+}
+
+// RN10 (Card 3) + RN03 (Card 21): o que ainda esta esperando resposta (confirmacao de edicao, pergunta de exclusao ou escolha de item)
 function pendingEditBlockerLabel(from: string): string | null {
   const active = describeActiveEditConfirmation(from);
   if (active) return active.label;
+  const deletion = describeActiveDeletion(from);
+  if (deletion) return deletion;
   const choice = getPendingTargetChoice(from);
   return choice ? editRequestLabel(choice.action) : null;
 }
@@ -1619,12 +1640,13 @@ async function processInterpretations(from: string, items: Interpretation[]) {
 
       // RN10: so uma confirmacao de edicao por vez -- a segunda edicao da mesma
       // mensagem nao pode apagar a primeira que ainda espera resposta
-      if (editStarted && EDIT_ACTION_TYPES.has(interpretation.type)) {
+      if (editStarted && isRecordAction(interpretation.type)) {
         const blocker = pendingEditBlockerLabel(from);
         if (blocker !== null) {
           const skipped = batchEdits && isExpenseEditAction(interpretation) ? "gastos" : editRequestLabel(interpretation);
           logActivity(from, interpretation.type, `adiado: confirmacao de "${blocker}" ainda pendente`);
-          await sendText(from, `Deixei a alteração de "${skipped}" pra depois: confirma a de "${blocker}" primeiro e me pede de novo.`);
+          const what = isDeletionAction(interpretation.type) ? "exclusão" : "alteração";
+          await sendText(from, `Deixei a ${what} de "${skipped}" pra depois: confirma a de "${blocker}" primeiro e me pede de novo.`);
           if (batchEdits && isExpenseEditAction(interpretation)) batchDone = true;
           continue;
         }
@@ -1636,7 +1658,7 @@ async function processInterpretations(from: string, items: Interpretation[]) {
         await startExpenseEditBatch(from, expenseEdits);
         continue;
       }
-      if (EDIT_ACTION_TYPES.has(interpretation.type)) editStarted = true;
+      if (isRecordAction(interpretation.type)) editStarted = true;
       await handleInterpretation(from, interpretation);
     } catch (err) {
       console.error("Erro ao processar interpretacao:", err);

@@ -520,6 +520,9 @@ const ACTION_SCHEMA = {
   required: ["type"],
 };
 
+// todos os tipos que a IA pode devolver (o teste de tabela dos pedidos que mexem em registro percorre esta lista)
+export const INTERPRETATION_TYPES: readonly string[] = ACTION_SCHEMA.properties.type.enum;
+
 const CLASSIFY_TOOL: Anthropic.Tool = {
   name: "record_actions",
   description:

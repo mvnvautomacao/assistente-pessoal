@@ -447,7 +447,7 @@ test("RF09(h): resposta por audio transcrito ('Sim.'), com acento ('Sím') e emo
 // ============================================================================
 // DEFEITOS (esperado = comportamento correto; "todo" ate o defeito ser corrigido)
 // ============================================================================
-test("D-01 (Alto): 'cancela o evento X e renomeia o evento X' deixa DUAS perguntas abertas com instrucoes conflitantes", { todo: "defeito D-01 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-01 (corrigido no Card 21): 'cancela o evento X e renomeia o evento X' deixa DUAS perguntas abertas com instrucoes conflitantes", async (t) => {
   const N = "551100091813";
   seed(N);
   eventsService.createEvent({ fromNumber: N, title: "Reuniao conflito", start: futureAt(4, 10) });
@@ -462,7 +462,7 @@ test("D-01 (Alto): 'cancela o evento X e renomeia o evento X' deixa DUAS pergunt
   assert.ok(!sent.some((m) => /1 ✅ Confirmar/.test(m.text) && sent.some((x) => /Confirma que quer cancelar/.test(x.text))));
 });
 
-test("D-01b (Alto): 'apaga o gasto X e muda o gasto Y' idem -- o '1' da previa cai na pergunta 'sim/nao' da exclusao", { todo: "defeito D-01 -- ver docs/auditoria-cards-1-a-7.md" }, async (t) => {
+test("D-01b (corrigido no Card 21): 'apaga o gasto X e muda o gasto Y' idem -- o '1' da previa cai na pergunta 'sim/nao' da exclusao", async (t) => {
   const N = "551100091814";
   seed(N);
   const cat = getOrCreateCategory(N, "Alimentação");

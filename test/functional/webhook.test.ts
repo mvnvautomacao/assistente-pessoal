@@ -4525,7 +4525,7 @@ test("card 5 RN10: 'muda o 1 pra 100 e apaga o 2' -- so a primeira gera pendenci
   ]);
   await handleIncomingMessage(evolutionMessage(I10, "muda o 1 pra 100 e apaga o 2"));
   assert.match(sent[1].text, /Valor: R\$ 60,00 → R\$ 100,00/);
-  assert.equal(sent[2].text, 'Deixei a alteração de "entrada 2" pra depois: confirma a de "Entrada B rn10" primeiro e me pede de novo.');
+  assert.equal(sent[2].text, 'Deixei a exclusão de "entrada 2" pra depois: confirma a de "Entrada B rn10" primeiro e me pede de novo.');
   await handleIncomingMessage(evolutionMessage(I10, "1"));
   assert.deepEqual(incomeAmounts(I10).sort((a, b) => a - b), [50, 100]);
 });
