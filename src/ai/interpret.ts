@@ -117,7 +117,8 @@ export type Interpretation =
         | "payment_method"
         | "welcome"
         | "recurring_expense"
-        | "income";
+        | "income"
+        | "agenda";
     }
   | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string; fixed_only?: boolean; include_future?: boolean }
   | { type: "total_last_list" }
@@ -335,9 +336,10 @@ const ACTION_SCHEMA = {
         "welcome",
         "recurring_expense",
         "income",
+        "agenda",
       ],
       description:
-        "So para type=help: sobre qual assunto especifico e a duvida do usuario, pra responder com um exemplo direcionado em vez do catalogo inteiro. 'welcome' e so quando o usuario pede EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas', 'quero ver a mensagem de novo usuario') — diferente de uma pergunta generica tipo 'o que voce faz', que deve deixar 'topic' em branco.",
+        "So para type=help: sobre qual assunto especifico e a duvida do usuario, pra responder com um exemplo direcionado em vez do catalogo inteiro. 'welcome' e so quando o usuario pede EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas', 'quero ver a mensagem de novo usuario') — diferente de uma pergunta generica tipo 'o que voce faz', que deve deixar 'topic' em branco. 'agenda' e a duvida sobre ver a agenda e mexer nos itens pelo numero da lista (ex: 'como edito um item da agenda', 'como cancelo o 3').",
     },
     date: {
       type: "string",

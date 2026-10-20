@@ -93,7 +93,7 @@ test("Card 16 (RN17): gasto fixo dia 31 lanca em 30/04 com a observacao; o de di
   createRecurringExpense({ fromNumber: n, description: "Internet", amount: 100, categoryId: null, paymentMethodId: null, dayOfMonth: 30 });
   await recurringTick();
   const mine = sent.filter((m) => m.to === n).map((m) => m.text).sort();
-  assert.deepEqual(mine, ["🔁 Gasto fixo lançado (vence todo dia 31; hoje é o último dia do mês): R$120.00 — Água", "🔁 Gasto fixo lançado: R$100.00 — Internet"].sort());
+  assert.deepEqual(mine, ["🔁 Gasto fixo lançado (vence todo dia 31; hoje é o último dia do mês): R$ 120,00 — Água", "🔁 Gasto fixo lançado: R$ 100,00 — Internet"].sort());
   const before = sent.length;
   await recurringTick();
   assert.equal(sent.length, before, "no maximo uma vez por mes");
@@ -104,5 +104,5 @@ test("Card 16 (RN17): gasto fixo dia 30 em fevereiro bissexto lanca no 29 com a 
   const n = user();
   createRecurringExpense({ fromNumber: n, description: "Aluguel", amount: 900, categoryId: null, paymentMethodId: null, dayOfMonth: 30 });
   await bissexto.recurringTick();
-  assert.equal(bissexto.sent.find((m) => m.to === n)?.text, "🔁 Gasto fixo lançado (vence todo dia 30; hoje é o último dia do mês): R$900.00 — Aluguel");
+  assert.equal(bissexto.sent.find((m) => m.to === n)?.text, "🔁 Gasto fixo lançado (vence todo dia 30; hoje é o último dia do mês): R$ 900,00 — Aluguel");
 });

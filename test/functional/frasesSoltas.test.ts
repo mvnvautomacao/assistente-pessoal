@@ -159,7 +159,7 @@ test("Card 17: sugestao sem resposta e substituida por outra frase -- ela segue 
   const n = user();
   await say(app, n, "categoria");
   const reply = await say(app, n, "gastei 30 de uber", { type: "expense", amount: 30, description: "uber", date: TODAY, category: "Transporte" });
-  assert.match(reply, /forma de pagamento desse gasto de R\$30\.00 \(uber\)/);
+  assert.match(reply, /forma de pagamento desse gasto de R[$] 30,00 \(uber\)/);
   assert.equal(app.calls.length, 1);
 });
 

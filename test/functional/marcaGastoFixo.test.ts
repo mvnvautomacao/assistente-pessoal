@@ -48,7 +48,7 @@ test("Card 15: 'gastei 80 na luz' e 'luz 80' nascem avulsos (nao fixos) e sem ro
   const n = user();
   know(n, "luz");
   const text = await say(app, n, "gastei 80 na luz", { type: "expense", amount: 80, description: "luz", date: TODAY });
-  assert.ok(text.startsWith("✅ Gasto registrado: R$80.00 — luz\nCategoria: Moradia"), text);
+  assert.ok(text.startsWith("✅ Gasto registrado: R$ 80,00 — luz\nCategoria: Moradia"), text);
   assert.ok(!text.includes("conta fixa"));
   await say(app, n, "luz 80", { type: "expense", amount: 80, description: "luz", date: TODAY, is_fixed: false });
   assert.deepEqual(rows(n).map((r) => r.fixed_source), [null, null]);
@@ -59,7 +59,7 @@ test("Card 15: 'gastei 80 na luz, conta fixa' nasce fixo (marca 'user') e a resp
   const n = user();
   know(n, "luz");
   const text = await say(app, n, "gastei 80 na luz, conta fixa", { type: "expense", amount: 80, description: "luz", date: TODAY, is_fixed: true });
-  assert.ok(text.startsWith("✅ Gasto registrado: R$80.00 — luz (conta fixa)\nCategoria: Moradia"), text);
+  assert.ok(text.startsWith("✅ Gasto registrado: R$ 80,00 — luz (conta fixa)\nCategoria: Moradia"), text);
   const [row] = rows(n);
   assert.equal(row.fixed_source, "user");
   assert.equal(row.fixed_ref_id, null);
@@ -90,7 +90,7 @@ test("Card 15: dois gastos na mesma mensagem -- so o declarado fixo ganha a marc
     { type: "expense", amount: 50, description: "mercado", date: TODAY }
   );
   assert.deepEqual(rows(n).map((r) => [r.description, r.fixed_source]), [["luz", "user"], ["mercado", null]]);
-  assert.match(app.last(), /1\. R\$80\.00 em Moradia — luz \(conta fixa\)/);
+  assert.match(app.last(), /1\. R[$] 80,00 em Moradia — luz \(conta fixa\)/);
   assert.ok(!app.last().includes("mercado (conta fixa)"));
 });
 

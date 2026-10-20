@@ -2169,7 +2169,7 @@ test("list_expenses com intervalo de dias mostra detalhado com total, e 'qual o 
 
   queueReply([{ type: "total_last_list" }]);
   await handleIncomingMessage(evolutionMessage(LT, "qual o total?"));
-  assert.match(sent[1].text, /R[$]42.50/);
+  assert.match(sent[1].text, /R[$] 42,50/);
   assert.match(sent[1].text, /2 gasto/);
 });
 
@@ -2495,8 +2495,7 @@ test("event: mensagem de criacao mostra a data/hora marcada", async (t) => {
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "event", title: "consulta médica", start: "2026-09-15T14:00:00-03:00" }]);
   await handleIncomingMessage(evolutionMessage(EV1, "marca consulta médica dia 15 as 14h"));
-  assert.match(sent[0].text, /15\/09\/2026/);
-  assert.match(sent[0].text, /14:00/);
+  assert.match(sent[0].text, /ter 15\/09 às 14:00/);
 });
 
 // Regressao do mesmo caso: se a IA nao achar nenhum horario na mensagem (so
@@ -4289,7 +4288,7 @@ test("card 5: 'recebi 3500 de salario' continua registrando (nao vira edicao) e 
   const { sent, queueReply } = withMocks(t);
   queueReply([{ type: "income", amount: 3500, description: "salario", date: today() }]);
   await handleIncomingMessage(evolutionMessage(I0, "recebi 3500 de salario"));
-  assert.match(sent[0].text, /💵 Entrada registrada: R\$3500\.00 — salario/);
+  assert.match(sent[0].text, /💵 Entrada registrada: R\$ 3\.500,00 — salario/);
   queueReply([{ type: "income_report", period: "month" }]);
   await handleIncomingMessage(evolutionMessage(I0, "quanto recebi esse mes"));
   assert.match(sent[1].text, /Total: R\$ 3\.500,00 em 1 entrada\(s\)/);

@@ -65,7 +65,7 @@ test("Card 19: servidor volta as 7h40 -- o gasto do dia e lancado uma vez so, co
   assert.deepEqual(await runDueDailyJobs(at("2026-10-05T06:59:00-03:00")), [], "antes das 7h nada");
   await runDueDailyJobs(at("2026-10-05T07:40:00-03:00"));
   assert.deepEqual(launchedOf(n), [{ date: "2026-10-05", description: "Aluguel" }]);
-  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$900.00 — Aluguel"]);
+  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$ 900,00 — Aluguel"]);
   await runDueDailyJobs(at("2026-10-05T07:41:00-03:00"));
   await runDueDailyJobs(at("2026-10-05T23:00:00-03:00"));
   assert.equal(launchedOf(n).length, 1);
@@ -79,7 +79,7 @@ test("Card 19: servidor parado de 05/10 a 08/10 -- lanca com data 05/10, avisa '
   const r = recurring(n, 5, "Aluguel");
   await runDueDailyJobs(at("2026-10-08T08:00:00-03:00"));
   assert.deepEqual(launchedOf(n), [{ date: "2026-10-05", description: "Aluguel" }]);
-  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$900.00 — Aluguel\n(lançado com atraso: vencia dia 05/10)"]);
+  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$ 900,00 — Aluguel\n(lançado com atraso: vencia dia 05/10)"]);
   assert.equal(getRecurringExpenseById(n, r.id)?.last_run_month, "2026-10");
   await runDueDailyJobs(at("2026-10-08T08:01:00-03:00"));
   await runDueDailyJobs(at("2026-10-09T07:00:00-03:00"));
@@ -98,7 +98,7 @@ test("Card 19 (RN05): gasto fixo do dia 5 cadastrado no dia 8 nao e lancado retr
   assert.deepEqual(textsOf(sent, n), []);
   await runDueDailyJobs(at("2026-11-05T07:00:00-03:00"));
   assert.deepEqual(launchedOf(n), [{ date: "2026-11-05", description: "Luz" }]);
-  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$900.00 — Luz"]);
+  assert.deepEqual(textsOf(sent, n), ["🔁 Gasto fixo lançado: R$ 900,00 — Luz"]);
 });
 
 test("Card 19 (RN05): cadastro em UTC depois da meia-noite mas ainda no dia anterior em Sao Paulo conta como cadastrado antes", async (t) => {
@@ -121,7 +121,7 @@ test("Card 19: gasto fixo do dia 30, servidor parado de 30/09 a 02/10 -- lanca e
   assert.equal(launchedOf(n).length, 1);
   await runDueDailyJobs(at("2026-10-30T07:00:00-03:00"));
   assert.deepEqual(launchedOf(n).map((e) => e.date), ["2026-09-30", "2026-10-30"], "nao pula o gasto de outubro");
-  assert.equal(textsOf(sent, n)[1], "🔁 Gasto fixo lançado: R$900.00 — Condominio");
+  assert.equal(textsOf(sent, n)[1], "🔁 Gasto fixo lançado: R$ 900,00 — Condominio");
 });
 
 test("Card 19: dia 31 em mes curto -- o vencimento recuperado e o dia efetivo (30/04) e o texto de 'ultimo dia do mes' so vale no proprio dia", async (t) => {
@@ -132,7 +132,7 @@ test("Card 19: dia 31 em mes curto -- o vencimento recuperado e o dia efetivo (3
   recurring(m, 31, "Gas");
   await runDueDailyJobs(at("2026-05-02T07:00:00-03:00"));
   assert.deepEqual(launchedOf(n), [{ date: "2026-04-30", description: "Agua" }]);
-  assert.equal(textsOf(sent, n)[0], "🔁 Gasto fixo lançado: R$900.00 — Agua\n(lançado com atraso: vencia dia 30/04)");
+  assert.equal(textsOf(sent, n)[0], "🔁 Gasto fixo lançado: R$ 900,00 — Agua\n(lançado com atraso: vencia dia 30/04)");
   assert.ok(!textsOf(sent, m)[0].includes("último dia do mês"), "atrasado nao diz 'hoje e o ultimo dia'");
 });
 
@@ -141,7 +141,7 @@ test("Card 19: no proprio dia o texto de 'ultimo dia do mes' continua (rotina qu
   const n = user();
   recurring(n, 31, "Agua");
   await runDueDailyJobs(at("2026-04-30T07:00:00-03:00"));
-  assert.equal(textsOf(sent, n)[0], "🔁 Gasto fixo lançado (vence todo dia 31; hoje é o último dia do mês): R$900.00 — Agua");
+  assert.equal(textsOf(sent, n)[0], "🔁 Gasto fixo lançado (vence todo dia 31; hoje é o último dia do mês): R$ 900,00 — Agua");
 });
 
 test("Card 19: gasto fixo desativado, ja lancado na mao no mes ou fora da janela de 7 dias nao e lancado", async (t) => {
@@ -194,8 +194,8 @@ test("Card 19: dois executores ao mesmo tempo (ou dois processos) -- um unico la
   await Promise.all([runDueDailyJobs(now), runDueDailyJobs(now), runDueDailyJobs(now)]);
   assert.deepEqual(launchedOf(a), [{ date: "2026-10-05", description: "Do A" }]);
   assert.deepEqual(launchedOf(b), [{ date: "2026-10-05", description: "Do B" }]);
-  assert.deepEqual(textsOf(sent, a), ["🔁 Gasto fixo lançado: R$900.00 — Do A"]);
-  assert.deepEqual(textsOf(sent, b), ["🔁 Gasto fixo lançado: R$900.00 — Do B"]);
+  assert.deepEqual(textsOf(sent, a), ["🔁 Gasto fixo lançado: R$ 900,00 — Do A"]);
+  assert.deepEqual(textsOf(sent, b), ["🔁 Gasto fixo lançado: R$ 900,00 — Do B"]);
 });
 
 test("Card 19: rotina sem nada pra fazer tambem registra o dia como concluida com 0 itens", async (t) => {

@@ -323,6 +323,17 @@ import {
   correctionRetry,
   formatCorrectionLabels,
 } from "./confirmation/preview";
+import {
+  billChangedSince,
+  billCurrentValue,
+  changedWhileTalkingText,
+  eventChangedSince,
+  eventCurrentValue,
+  recurringChangedSince,
+  recurringCurrentValue,
+  reminderChangedSince,
+  reminderCurrentValue,
+} from "./confirmation/changedSince";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
@@ -372,10 +383,6 @@ import {
   ExpenseListItem,
   PendingCategorization,
 } from "./expenses/service";
-function formatDateTime(value: string): string {
-  return new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-}
-
 // so string, sem Date: "2026-08-25" vira meia-noite UTC no construtor Date, que
 // reprojetado pro fuso de Sao Paulo mostraria o dia anterior. expenses.date e
 // sempre uma data-calendario pura, entao so reformatar o texto evita essa cilada.
@@ -457,6 +464,7 @@ function helpTopicMessage(
     | "welcome"
     | "recurring_expense"
     | "income"
+    | "agenda"
 ): string | null {
   switch (topic) {
     case "welcome":
@@ -503,6 +511,18 @@ Você também pode:
 • Mandar uma foto do comprovante ou nota fiscal
 
 Eu registro sozinho e já escolho a categoria (tipo "Mercado", "Saúde"...). Se eu não souber qual categoria usar, eu pergunto pra você.`;
+    case "agenda":
+      return `🗓️ Como ver a agenda e mexer pelo número:
+
+Pergunte do jeito que quiser: "o que tenho hoje", "e amanhã?", "agenda da semana", "agenda de novembro". Eu mostro eventos e lembretes juntos, por dia e em ordem de horário, *numerados*.
+
+Depois da lista, é só usar o número do item:
+• "edita o 2" ou "muda o 2 pra 15h"
+• "cancela o 3" ou "apaga o 5"
+• "adia o 1 pra amanhã às 9h"
+• "me avisa também 1 dia antes do 4"
+
+O número vale por 10 minutos, pra última lista que eu mostrei (gastos, entradas e agenda dividem a mesma lista). Se passar o tempo, é só pedir a agenda de novo. Antes de mudar ou apagar eu sempre confirmo: *1* confirma, *3* cancela.`;
     case "event":
       return `📅 Como marcar um compromisso na agenda:
 
@@ -642,19 +662,20 @@ async function resolveMediaBase64(data: EvolutionMessage): Promise<string | unde
   }
 }
 
-const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal aqui no WhatsApp. Te ajudo a controlar gastos, agenda e lembretes.
+const WELCOME_MESSAGE = `👋 Oi! Eu sou seu assistente pessoal no WhatsApp. É só me contar o que precisa, do jeito que você fala:
 
-É bem simples: me conte o que precisar, do jeito que você fala naturalmente. Alguns exemplos:
-
-💰 "gastei 50 reais no mercado" — registro o gasto
-📅 "marca dentista amanhã 15h" — agendo o compromisso
+💰 "gastei 50 no mercado" — registro um gasto
+💵 "recebi 3000 de salário" — registro uma entrada
+📅 "marca dentista amanhã 15h" — agendo um compromisso
 ⏰ "me lembra de tomar remédio às 20h" — crio um lembrete
+📊 "quanto gastei este mês" — te mostro os números
+🔁 "todo dia 10 pago 50 de internet" — conta fixa, eu lanço todo mês
 
-Se tiver qualquer dúvida, é só perguntar, tipo "como faço pra editar um gasto" — eu explico com exemplo.
+✏️ Pra corrigir, é só dizer: "muda o valor do 2 pra 45" ou "apaga o 3" (o número vem das listas que eu mostro). Errou? Manda *desfazer*.
 
-✋ Se eu entender errado, é só dizer "cancelar" que eu paro de perguntar.
+❓ Qualquer dúvida, manda *ajuda*. Se eu entender errado, diga "cancelar".
 
-🖥️ Você também pode ver e editar tudo pelo painel no navegador: ${config.dashboardUrl}`;
+🖥️ Painel no navegador: ${config.dashboardUrl}`;
 
 export async function handleIncomingMessage(data: EvolutionMessage) {
   // Mensagem de grupo (JID termina em @g.us): nunca processa, incondicional --
@@ -1319,7 +1340,7 @@ async function finishRecurringCreation(from: string, draft: RecurrenceDraft, mon
   if (monthChoice === "launch") launchedText = launchRecurringExpense(recurring, dueDateThisMonth(draft.dayOfMonth!, today)).text;
   else if (monthChoice === "skip") markRecurringExpenseRunForMonth(from, recurring.id, today.slice(0, 7));
   setPendingUndo(from, { kind: "deactivate_recurring_expense", recurringId: recurring.id, description: recurring.description });
-  logActivity(from, "set_recurring_expense", `R${draft.amount!.toFixed(2)} em ${category.name} — ${draft.description}, todo dia ${draft.dayOfMonth}`);
+  logActivity(from, "set_recurring_expense", `${formatBRL(draft.amount!)} em ${category.name} — ${draft.description}, todo dia ${draft.dayOfMonth}`);
   await replyWithUndo(from, recurringCreatedText(draft, category.name, paymentMethod?.name ?? null));
   if (launchedText) await sendText(from, launchedText);
 }
@@ -1694,7 +1715,7 @@ function paymentMethodQuestionText(from: string, amount: number, description: st
   const methodNames = listPaymentMethods(from)
     .map((m) => m.name)
     .join(", ");
-  return `Qual foi a forma de pagamento desse gasto de R$${amount.toFixed(2)} (${description})?\n\nFormas cadastradas: ${methodNames}\n\nPode responder com uma dessas ou dizer uma nova -- e já deixo essa como sua forma padrão pras próximas vezes. (Pra desistir, diga "cancelar".)`;
+  return `Qual foi a forma de pagamento desse gasto de ${formatBRL(amount)} (${description})?\n\nFormas cadastradas: ${methodNames}\n\nPode responder com uma dessas ou dizer uma nova -- e já deixo essa como sua forma padrão pras próximas vezes. (Pra desistir, diga "cancelar".)`;
 }
 
 // Tempo maximo esperando "qual categoria e isso?" antes de decidir sozinho.
@@ -1763,7 +1784,7 @@ function formatExpenseConfirmation(params: {
   fixed?: FixedMark | null;
 }): string {
   const paymentLabel = params.paymentMethodName ?? "não definida";
-  return `R$${params.amount.toFixed(2)} — ${params.description}${fixedConfirmationSuffix(params.fixed)}\nCategoria: ${params.categoryName}\nData: ${formatDateOnly(params.date)}\nForma de pagamento: ${paymentLabel}`;
+  return `${formatBRL(params.amount)} — ${params.description}${fixedConfirmationSuffix(params.fixed)}\nCategoria: ${params.categoryName}\nData: ${formatDateOnly(params.date)}\nForma de pagamento: ${paymentLabel}`;
 }
 
 // Grava o gasto de verdade (categoria e forma de pagamento ja resolvidas) e os
@@ -1795,11 +1816,11 @@ function recordSimpleExpense(
   setPendingUndo(from, {
     kind: "delete_expense",
     expenseId: created.id,
-    description: `R$${params.amount.toFixed(2)} em ${params.categoryName} — ${params.description}`,
+    description: `${formatBRL(params.amount)} em ${params.categoryName} — ${params.description}`,
   });
   const paymentSuffix = params.paymentMethod ? ` via ${params.paymentMethod.name}` : "";
   const noteSuffix = params.logNote ? ` (${params.logNote})` : "";
-  logActivity(from, "expense", `R$${params.amount.toFixed(2)} em ${params.categoryName}${paymentSuffix} — ${params.description}${noteSuffix}`);
+  logActivity(from, "expense", `${formatBRL(params.amount)} em ${params.categoryName}${paymentSuffix} — ${params.description}${noteSuffix}`);
   const budgetAlert = checkBudgetAlert(from, params.categoryId, params.categoryName) ?? "";
   return { created, budgetAlert };
 }
@@ -1978,7 +1999,7 @@ function askForCategory(from: string, amount: number, description: string) {
     .join(", ");
   return sendText(
     from,
-    `Qual categoria é esse gasto de R$${amount.toFixed(2)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova. (Pra desistir, diga "cancelar".)`
+    `Qual categoria é esse gasto de ${formatBRL(amount)} (${description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova. (Pra desistir, diga "cancelar".)`
   );
 }
 
@@ -2010,7 +2031,7 @@ async function createExpenseAndNotify(
         categoryName: category.name,
         fixed: params.fixed ?? null,
       });
-      logActivity(from, "expense", `categoria resolvida (${category.name}), forma de pagamento pendente: R$${params.amount.toFixed(2)} — ${params.description}`);
+      logActivity(from, "expense", `categoria resolvida (${category.name}), forma de pagamento pendente: ${formatBRL(params.amount)} — ${params.description}`);
       // se ja tem outro gasto esperando forma de pagamento (ex: lote que
       // desistiu por causa disso, ver tryCreateExpenseBatch), so entra na
       // fila -- a pergunta em si so sai quando chegar a vez dele (ver
@@ -2051,7 +2072,7 @@ async function createExpenseAndNotify(
       suggested_payment_method: params.payment_method ?? null,
       fixed: params.fixed ?? null,
     });
-    logActivity(from, "expense", `pendente de categoria: R$${params.amount.toFixed(2)} — ${params.description}`);
+    logActivity(from, "expense", `pendente de categoria: ${formatBRL(params.amount)} — ${params.description}`);
     if (!alreadyWaiting) await askForCategory(from, params.amount, params.description);
   }
 }
@@ -2120,10 +2141,10 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
       });
       expenseIds.push(created.id);
       const paymentSuffix = r.paymentMethod ? ` via ${r.paymentMethod.name}` : "";
-      logActivity(from, "expense", `R$${r.amount.toFixed(2)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
+      logActivity(from, "expense", `${formatBRL(r.amount)} em ${r.category.name}${paymentSuffix} — ${r.description}`);
       const budgetAlert = checkBudgetAlert(from, r.category.id, r.category.name);
       if (budgetAlert) budgetAlerts.push(budgetAlert);
-      return `${idx + 1}. R$${r.amount.toFixed(2)} em ${r.category.name} — ${r.description}${fixedConfirmationSuffix(r.fixed)} (${formatDateOnly(r.date)}${paymentSuffix})`;
+      return `${idx + 1}. ${formatBRL(r.amount)} em ${r.category.name} — ${r.description}${fixedConfirmationSuffix(r.fixed)} (${formatDateOnly(r.date)}${paymentSuffix})`;
     })
   );
 
@@ -2131,7 +2152,7 @@ async function tryCreateExpenseBatch(from: string, items: Extract<Interpretation
   setPendingUndo(from, {
     kind: "delete_expenses_batch",
     expenseIds,
-    description: resolved.map((r) => `R$${r.amount.toFixed(2)} em ${r.category.name}`).join(", "),
+    description: resolved.map((r) => `${formatBRL(r.amount)} em ${r.category.name}`).join(", "),
   });
 
   await replyWithUndo(
@@ -2166,7 +2187,7 @@ async function createEventAndNotify(
   });
   setPendingUndo(from, { kind: "delete_event", eventId: created.id, description: params.title });
   logActivity(from, "event", `${params.title} — ${start}`);
-  await replyWithUndo(from, `📅 Evento "${params.title}" criado na agenda em ${formatDateTime(start)} (aviso ${created.reminder_minutes} min antes)${startAdjusted.warning ? `\n${startAdjusted.warning}` : ""}`);
+  await replyWithUndo(from, `📅 Evento "${params.title}" criado na agenda em ${formatWhen(start)} (aviso ${created.reminder_minutes} min antes)${startAdjusted.warning ? `\n${startAdjusted.warning}` : ""}`);
 }
 
 // Cria o lembrete de verdade. Extraido do case "reminder" pra ser reaproveitado
@@ -2177,7 +2198,7 @@ async function createReminderAndNotify(from: string, params: { message: string; 
   const reminderId = createReminder(from, params.message, dueAt);
   setPendingUndo(from, { kind: "delete_reminder", reminderId, description: params.message });
   logActivity(from, "reminder", `${params.message} — ${dueAt}`);
-  await replyWithUndo(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatDateTime(dueAt)}${adjusted.warning ? `\n${adjusted.warning}` : ""}`);
+  await replyWithUndo(from, `⏰ Lembrete criado: "${params.message}" — vou avisar em ${formatWhen(dueAt)}${adjusted.warning ? `\n${adjusted.warning}` : ""}`);
 }
 
 function missingDateTimeParts(date?: string, time?: string): Array<"date" | "time"> {
@@ -2275,7 +2296,7 @@ async function finalizeInstallmentExpense(
 
   const total = amounts.reduce((sum, a) => sum + a, 0);
   const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
-  const lastLabel = amounts[0] !== amounts[params.installments - 1] ? ` (última R$${amounts[params.installments - 1].toFixed(2)})` : "";
+  const lastLabel = amounts[0] !== amounts[params.installments - 1] ? ` (última ${formatBRL(amounts[params.installments - 1])})` : "";
   setPendingUndo(from, {
     kind: "delete_expenses_bulk",
     expenseIds,
@@ -2284,11 +2305,11 @@ async function finalizeInstallmentExpense(
   logActivity(
     from,
     "installment_expense",
-    `${params.description} — R$${total.toFixed(2)} em ${params.installments}x (${category.name}${paymentSuffix})`
+    `${params.description} — ${formatBRL(total)} em ${params.installments}x (${category.name}${paymentSuffix})`
   );
   await replyWithUndo(
     from,
-    `✅ Compra parcelada registrada: "${params.description}"${fixedConfirmationSuffix(params.fixed ? USER_FIXED : null)} — R$${total.toFixed(2)} em ${params.installments}x de R$${amounts[0].toFixed(2)}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
+    `✅ Compra parcelada registrada: "${params.description}"${fixedConfirmationSuffix(params.fixed ? USER_FIXED : null)} — ${formatBRL(total)} em ${params.installments}x de ${formatBRL(amounts[0])}${lastLabel} em ${category.name}${paymentSuffix}, lançada de ${formatDateOnly(params.date)} até ${formatDateOnly(addMonthsToDateString(params.date, params.installments - 1))}.`
   );
   return true;
 }
@@ -2299,7 +2320,7 @@ function installmentCategoryQuestionText(from: string, params: { description?: s
     .join(", ");
   const total =
     params.totalAmount ?? (params.installmentAmount !== undefined && params.installments ? params.installmentAmount * params.installments : undefined);
-  const amountLabel = total !== undefined ? `R$${total.toFixed(2)}` : "";
+  const amountLabel = total !== undefined ? `${formatBRL(total)}` : "";
   const installmentsLabel = params.installments ? ` em ${params.installments}x` : "";
   return `Qual categoria é essa compra parcelada${amountLabel ? ` de ${amountLabel}` : ""}${installmentsLabel} (${params.description})?\n\nCategorias: ${categoryNames}\n\nPode responder com uma dessas ou dizer uma categoria nova.`;
 }
@@ -2317,7 +2338,7 @@ type ReceiptFields = {
 };
 
 function receiptAmountLabel(fields: ReceiptFields): string {
-  return `R$${fields.totalAmount.toFixed(2)}`;
+  return `${formatBRL(fields.totalAmount)}`;
 }
 
 function receiptCategoryQuestionText(from: string, fields: ReceiptFields): string {
@@ -2517,9 +2538,9 @@ function pendingCompletionQuestionText(from: string, pending: PendingCompletion,
     const label = pending.description ? `"${pending.description}"` : "essa compra parcelada";
     const amountLabel =
       pending.totalAmount !== undefined
-        ? ` de R$${pending.totalAmount.toFixed(2)}`
+        ? ` de ${formatBRL(pending.totalAmount)}`
         : pending.installmentAmount !== undefined
-          ? ` de R$${pending.installmentAmount.toFixed(2)} cada parcela`
+          ? ` de ${formatBRL(pending.installmentAmount)} cada parcela`
           : "";
     const installmentsLabel = pending.installments !== undefined ? ` em ${pending.installments}x` : "";
     return `${prefix}${label}${amountLabel}${installmentsLabel}! Me diga ${askText}.`;
@@ -2528,7 +2549,7 @@ function pendingCompletionQuestionText(from: string, pending: PendingCompletion,
   const missingDescription = pending.missing.includes("description");
   if (missingAmount && missingDescription) return `${prefix}um gasto! Me diga o valor e do que foi.`;
   if (missingAmount) return `${prefix}gasto de "${pending.description}"! Quanto foi?`;
-  return `${prefix}um gasto de R$${pending.amount!.toFixed(2)}! Do que foi?`;
+  return `${prefix}um gasto de ${formatBRL(pending.amount!)}! Do que foi?`;
 }
 
 async function askNextPendingCompletionIfAny(from: string) {
@@ -2805,7 +2826,7 @@ async function resolvePendingCategorization(from: string, pending: PendingCatego
       logActivity(
         from,
         "expense",
-        `categoria definida (${category.name}) manualmente, forma de pagamento pendente: R$${pending.amount.toFixed(2)} — ${pending.description}`
+        `categoria definida (${category.name}) manualmente, forma de pagamento pendente: ${formatBRL(pending.amount)} — ${pending.description}`
       );
       if (isHead) await sendText(from, paymentMethodQuestionText(from, pending.amount, pending.description));
       return;
@@ -3192,7 +3213,7 @@ async function performDeleteExpense(
       })),
       description: `${baseName} (${group.length} parcelas)`,
     });
-    logActivity(from, "delete_expense", `compra parcelada apagada: ${baseName}, ${group.length} parcela(s), R$${total.toFixed(2)}`);
+    logActivity(from, "delete_expense", `compra parcelada apagada: ${baseName}, ${group.length} parcela(s), ${formatBRL(total)}`);
     await replyWithUndo(
       from,
       `🗑️ Compra parcelada apagada: "${baseName}" — as ${group.length} parcelas (total ${formatBRL(total)}) foram removidas.`
@@ -3215,9 +3236,9 @@ async function performDeleteExpense(
       paymentMethodId: expense.payment_method_id,
       date: expense.date,
     },
-    description: `R$${expense.amount.toFixed(2)} — ${expense.description}`,
+    description: `${formatBRL(expense.amount)} — ${expense.description}`,
   });
-  logActivity(from, "delete_expense", `apagado: R$${expense.amount.toFixed(2)} — ${expense.description}`);
+  logActivity(from, "delete_expense", `apagado: ${formatBRL(expense.amount)} — ${expense.description}`);
   await replyWithUndo(from, `🗑️ Gasto "${expense.description}" apagado.`);
 }
 
@@ -4666,8 +4687,14 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
 
   if (reply === "confirm") {
     clearPendingEditEvent(from);
-    if (!getEventById(from, pending.eventId)) {
+    const currentEvent = getEventById(from, pending.eventId);
+    if (!currentEvent) {
       await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    if (eventChangedSince(eventSnapshotOf(currentEvent), pending.previous)) {
+      logActivity(from, "edit_event", `"${currentEvent.title}" mudou durante a confirmacao`);
+      await sendText(from, changedWhileTalkingText("evento", currentEvent.title, eventCurrentValue(eventSnapshotOf(currentEvent))));
       return;
     }
     updateEvent(from, pending.eventId, {
@@ -4750,7 +4777,7 @@ function buildReminderPreview(pending: Omit<PendingEditReminder, "createdAt">): 
 
 function buildReminderChangeText(pending: Pick<PendingEditReminder, "isDateTimeChange" | "previousDueAt" | "proposedDueAt" | "message" | "proposedMessage">): string {
   const parts: string[] = [];
-  if (pending.isDateTimeChange) parts.push(`de ${formatDateTime(pending.previousDueAt)} pra ${formatDateTime(pending.proposedDueAt)}`);
+  if (pending.isDateTimeChange) parts.push(`de ${formatWhen(pending.previousDueAt)} pra ${formatWhen(pending.proposedDueAt)}`);
   if (pending.proposedMessage !== pending.message) parts.push(`texto "${pending.message}" → "${pending.proposedMessage}"`);
   return parts.join("; ");
 }
@@ -4805,8 +4832,15 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
 
   if (reply === "confirm") {
     clearPendingEditReminder(from);
-    if (!getReminderById(from, pending.reminderId)) {
+    const currentReminder = getReminderById(from, pending.reminderId);
+    if (!currentReminder) {
       await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    const reminderNow = { message: currentReminder.message, dueAt: currentReminder.due_at };
+    if (reminderChangedSince(reminderNow, { message: pending.message, dueAt: pending.previousDueAt })) {
+      logActivity(from, "edit_reminder", `"${currentReminder.message}" mudou durante a confirmacao`);
+      await sendText(from, changedWhileTalkingText("lembrete", currentReminder.message, reminderCurrentValue(reminderNow)));
       return;
     }
     updateReminder(from, pending.reminderId, { message: pending.proposedMessage, dueAt: pending.proposedDueAt });
@@ -4951,7 +4985,7 @@ function buildRecurringChangeText(
   const n = pending.proposedParams;
   const parts: string[] = [];
   if (n.description !== p.description) parts.push(`nome "${p.description}" → "${n.description}"`);
-  if (n.amount !== p.amount) parts.push(`valor R$${p.amount.toFixed(2)} → R$${n.amount.toFixed(2)}`);
+  if (n.amount !== p.amount) parts.push(`valor ${formatBRL(p.amount)} → ${formatBRL(n.amount)}`);
   if (n.categoryId !== p.categoryId || pending.newCategoryName) parts.push(`categoria → ${pending.newCategoryName ?? categoryLabel(from, n.categoryId)}`);
   if (n.dayOfMonth !== p.dayOfMonth) parts.push(`dia do mês ${p.dayOfMonth} → ${n.dayOfMonth}`);
   if (n.paymentMethodId !== p.paymentMethodId || pending.newPaymentMethodName) {
@@ -5009,8 +5043,21 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
 
   if (reply === "confirm") {
     clearPendingEditRecurring(from);
-    if (!getRecurringExpenseById(from, pending.recurringId)?.active) {
+    const currentRecurring = getRecurringExpenseById(from, pending.recurringId);
+    if (!currentRecurring?.active) {
       await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    const recurringNow: RecurringExpenseParams = {
+      description: currentRecurring.description,
+      amount: currentRecurring.amount,
+      categoryId: currentRecurring.category_id,
+      paymentMethodId: currentRecurring.payment_method_id,
+      dayOfMonth: currentRecurring.day_of_month,
+    };
+    if (recurringChangedSince(recurringNow, pending.previous)) {
+      logActivity(from, "edit_recurring_expense", `"${currentRecurring.description}" mudou durante a confirmacao`);
+      await sendText(from, changedWhileTalkingText("gasto fixo", currentRecurring.description, recurringCurrentValue(recurringNow)));
       return;
     }
     // criacao adiada: categoria / forma de pagamento novas nascem junto com a edicao
@@ -5207,6 +5254,11 @@ async function resolveEditBillConfirmation(from: string, pending: PendingEditBil
     const current = getBillAlertById(from, pending.billAlertId);
     if (!current || !current.active) {
       await sendText(from, "Não achei mais esse item.");
+      return;
+    }
+    if (billChangedSince(billParamsOfRow(current), pending.previous)) {
+      logActivity(from, "edit_bill_alert", `"${current.name}" mudou durante a confirmacao`);
+      await sendText(from, changedWhileTalkingText("alerta", current.name, billCurrentValue(billParamsOfRow(current))));
       return;
     }
     const prev = pending.previous;
@@ -5906,7 +5958,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
 
       const changeParts: string[] = [];
-      if (dueChanged) changeParts.push(`de ${formatDateTime(reminder.due_at)} pra ${formatDateTime(newDueAt)}`);
+      if (dueChanged) changeParts.push(`de ${formatWhen(reminder.due_at)} pra ${formatWhen(newDueAt)}`);
       if (messageChanged) changeParts.push(`texto "${reminder.message}" → "${proposedMessage}"`);
       const changeText = changeParts.join("; ");
 
@@ -6041,10 +6093,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
     case "set_budget": {
       const category = getOrCreateCategory(from, interpretation.category);
       setBudget(from, category.id, interpretation.amount);
-      logActivity(from, "set_budget", `orcamento de ${category.name} definido em R$${interpretation.amount.toFixed(2)}/mes`);
+      logActivity(from, "set_budget", `orcamento de ${category.name} definido em ${formatBRL(interpretation.amount)}/mes`);
       await sendText(
         from,
-        `✅ Orçamento de "${category.name}" definido em R$${interpretation.amount.toFixed(2)} por mês. Te aviso quando chegar perto ou passar disso.`
+        `✅ Orçamento de "${category.name}" definido em ${formatBRL(interpretation.amount)} por mês. Te aviso quando chegar perto ou passar disso.`
       );
       break;
     }
@@ -6084,8 +6136,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
           break;
         }
         const spent = getExpenseSummaryBetween(range.start, range.end, from, category.id).total;
-        logActivity(from, "list_budgets", `${category.name}: R$${spent.toFixed(2)} de R$${limit.toFixed(2)}`);
-        await sendText(from, `📋 Orçamento de "${category.name}" (mês atual): R$${spent.toFixed(2)} de R$${limit.toFixed(2)}`);
+        logActivity(from, "list_budgets", `${category.name}: ${formatBRL(spent)} de ${formatBRL(limit)}`);
+        await sendText(from, `📋 Orçamento de "${category.name}" (mês atual): ${formatBRL(spent)} de ${formatBRL(limit)}`);
         break;
       }
 
@@ -6096,7 +6148,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       }
       const lines = budgets.map((b) => {
         const spent = getExpenseSummaryBetween(range.start, range.end, from, b.category_id).total;
-        return `• ${b.category_name}: R$${spent.toFixed(2)} de R$${b.monthly_limit.toFixed(2)}`;
+        return `• ${b.category_name}: ${formatBRL(spent)} de ${formatBRL(b.monthly_limit)}`;
       });
       logActivity(from, "list_budgets", `${budgets.length} orcamento(s)`);
       await sendText(from, `📋 Seus orçamentos (mês atual):\n\n${lines.join("\n")}`);
@@ -6347,7 +6399,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         paymentMethodId: expense.payment_method_id,
         offerChoices: !explicitTarget,
       });
-      logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} R$${expense.amount.toFixed(2)} — ${expense.description}`);
+      logActivity(from, "delete_expense", `pediu confirmacao: #${expense.id} ${formatBRL(expense.amount)} — ${expense.description}`);
       const installmentGroup = findInstallmentGroup(from, expense.id);
       if (installmentGroup) {
         const baseName = expense.description.replace(/ \(parcela \d+\/\d+\)$/, "");
@@ -6383,8 +6435,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       const shown = ids.map((id) => getExpenseById(from, id)).filter((e): e is ExpenseRecord => e !== null);
       const total = shown.reduce((sum, e) => sum + e.amount, 0);
       const label = getLastShownLabel(from);
-      logActivity(from, "total_last_list", `R$${total.toFixed(2)} em ${shown.length} gasto(s)`);
-      await sendText(from, `💰 Total${label ? ` (${label})` : ""}: R$${total.toFixed(2)} em ${shown.length} gasto(s).`);
+      logActivity(from, "total_last_list", `${formatBRL(total)} em ${shown.length} gasto(s)`);
+      await sendText(from, `💰 Total${label ? ` (${label})` : ""}: ${formatBRL(total)} em ${shown.length} gasto(s).`);
       break;
     }
     case "edit_expense": {
@@ -6424,7 +6476,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         );
         break;
       }
-      const lines = recurring.map((r) => `• ${r.description} — R$${r.amount.toFixed(2)}, todo dia ${r.day_of_month}`).join("\n");
+      const lines = recurring.map((r) => `• ${r.description} — ${formatBRL(r.amount)}, todo dia ${r.day_of_month}`).join("\n");
       await sendText(
         from,
         `🔁 Seus gastos fixos:\n\n${lines}\n\nPra editar um, é só dizer, ex: "muda o valor do gasto fixo da internet pra 120". Pra parar de lançar, ex: "cancela o gasto fixo da internet".`
@@ -6562,10 +6614,10 @@ async function handleInterpretation(from: string, interpretation: Interpretation
       setPendingUndo(from, {
         kind: "delete_income",
         incomeId: created.id,
-        description: `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`,
+        description: `${formatBRL(interpretation.amount)} — ${interpretation.description}`,
       });
-      logActivity(from, "income", `R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
-      await replyWithUndo(from, `💵 Entrada registrada: R$${interpretation.amount.toFixed(2)} — ${interpretation.description}`);
+      logActivity(from, "income", `${formatBRL(interpretation.amount)} — ${interpretation.description}`);
+      await replyWithUndo(from, `💵 Entrada registrada: ${formatBRL(interpretation.amount)} — ${interpretation.description}`);
       break;
     }
     case "list_incomes": {
@@ -6761,7 +6813,7 @@ async function handleInterpretation(from: string, interpretation: Interpretation
         case "restore_budget":
           setBudget(from, undo.categoryId, undo.monthlyLimit);
           logActivity(from, "undo", `orcamento restaurado: ${undo.description}`);
-          await sendText(from, `↩️ Prontinho, o orçamento de "${undo.description}" voltou (R$${undo.monthlyLimit.toFixed(2)}/mês).`);
+          await sendText(from, `↩️ Prontinho, o orçamento de "${undo.description}" voltou (${formatBRL(undo.monthlyLimit)}/mês).`);
           break;
         case "restore_recurring_expense":
           createRecurringExpense(undo.params);

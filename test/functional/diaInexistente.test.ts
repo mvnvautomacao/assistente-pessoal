@@ -34,7 +34,7 @@ test("Card 16: 'me lembra dia 31 as 9h' em abril grava 30/04 as 09:00 e avisa", 
   const app = bootApp(t, at("2026-04-10T12:00:00-03:00"));
   const n = user();
   const reply = await say(app, n, "me lembra dia 31 de pagar o aluguel às 9h", { type: "reminder", message: "pagar o aluguel", due_at: "2026-04-31T09:00:00-03:00" });
-  assert.match(reply, /^⏰ Lembrete criado: "pagar o aluguel" — vou avisar em 30\/04\/2026, 09:00:00\nAbril só tem 30 dias, então marquei pro dia 30\/04\.\n/);
+  assert.match(reply, /^⏰ Lembrete criado: "pagar o aluguel" — vou avisar em qui 30\/04 às 09:00\nAbril só tem 30 dias, então marquei pro dia 30\/04\.\n/);
   assert.equal(remindersOf(n)[0].due_at, "2026-04-30T09:00:00-03:00");
 });
 

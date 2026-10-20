@@ -846,7 +846,7 @@ test("Card 7 RN11: a edicao de gasto fixo tambem termina com a dica de desfazer,
   queueReply([{ type: "edit_recurring_expense", query: "fixo dica aud", new_amount: 60 }]);
   await handleIncomingMessage(evolutionMessage(N, "muda o fixo dica aud pra 60"));
   await handleIncomingMessage(evolutionMessage(N, "1"));
-  assert.equal(last(sent), '✏️ Gasto fixo "Fixo dica aud" alterado: valor R$50.00 → R$60.00\nErrou? Responde *desfazer*.');
+  assert.equal(last(sent), '✏️ Gasto fixo "Fixo dica aud" alterado: valor R$ 50,00 → R$ 60,00\nErrou? Responde *desfazer*.');
   assert.equal(last(sent).split("Errou? Responde *desfazer*.").length - 1, 1);
 });
 

@@ -325,7 +325,7 @@ test("Card 13: mes corrente -- dia 10 ja passou (hoje dia 15): 1 lanca o deste m
   assert.equal(launched.length, 1);
   assert.equal(launched[0].date, "2026-10-10", "datado do dia do vencimento");
   assert.equal(launched[0].amount, 100);
-  assert.ok(app.sent.some((m) => m.to === A && m.text.startsWith("🔁 Gasto fixo lançado: R$100.00")));
+  assert.ok(app.sent.some((m) => m.to === A && m.text.startsWith("🔁 Gasto fixo lançado: R$ 100,00")));
 
   await say(app, B, "internet 100 dia 10", completeRec());
   await say(app, B, "1");
@@ -470,7 +470,7 @@ test("Card 13: o cron das 7h usa o mesmo lancamento (gasto, mes marcado, mensage
   await runDueDailyJobs(midday);
   const mine = sent.filter((m) => m.to === N);
   assert.equal(mine.length, 1);
-  assert.equal(mine[0].text, "🔁 Gasto fixo lançado: R$77.50 — Cron compartilhado");
+  assert.equal(mine[0].text, "🔁 Gasto fixo lançado: R$ 77,50 — Cron compartilhado");
   const launched = expensesLike(N, "Cron compartilhado");
   assert.equal(launched.length, 1);
   assert.equal(launched[0].date, today);

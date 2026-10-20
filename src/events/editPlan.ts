@@ -79,7 +79,7 @@ export function eventChanges(previous: EventSnapshot, proposed: EventSnapshot, s
       label: "Quando",
       from: formatWhen(previous.start),
       to: formatWhen(proposed.start),
-      text: `de ${new Date(previous.start).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} pra ${new Date(proposed.start).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+      text: `de ${formatWhen(previous.start)} pra ${formatWhen(proposed.start)}`,
     });
   }
   const preservedEnd = computeProposedEnd(previous, proposed.start, null);

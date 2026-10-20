@@ -6,6 +6,7 @@ import { checkBudgetAlert } from "./budgets";
 import { markRecurringExpenseRunForMonth, RecurringExpense } from "./recurring";
 import { logActivity } from "../activity/service";
 import { monthEndShiftFrom } from "../timeSP";
+import { formatBRL } from "../confirmation/preview";
 
 export interface LaunchedRecurringExpense {
   expenseId: number;
@@ -36,9 +37,9 @@ export function launchRecurringExpense(recurring: RecurringExpense, date: string
   const categorySuffix = category ? ` em ${category.name}` : "";
   const paymentSuffix = paymentMethod ? ` via ${paymentMethod.name}` : "";
   const budgetAlert = category ? (checkBudgetAlert(recurring.from_number, category.id, category.name) ?? "") : "";
-  logActivity(recurring.from_number, "recurring_expense", `R$${recurring.amount.toFixed(2)}${categorySuffix}${paymentSuffix} — ${recurring.description}`);
+  logActivity(recurring.from_number, "recurring_expense", `${formatBRL(recurring.amount)}${categorySuffix}${paymentSuffix} — ${recurring.description}`);
   return {
     expenseId: expense.id,
-    text: `🔁 Gasto fixo lançado${monthEndNote}: R$${recurring.amount.toFixed(2)}${categorySuffix}${paymentSuffix} — ${recurring.description}${lateNote}${budgetAlert}`,
+    text: `🔁 Gasto fixo lançado${monthEndNote}: ${formatBRL(recurring.amount)}${categorySuffix}${paymentSuffix} — ${recurring.description}${lateNote}${budgetAlert}`,
   };
 }

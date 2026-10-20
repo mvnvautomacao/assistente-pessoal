@@ -130,7 +130,7 @@ test("Card 15: o check-in nao engole pedido novo -- 'gastei 50 no mercado' e ate
   app.calls.length = 0;
   await say(app, n, "gastei 50 no mercado", { type: "expense", amount: 50, description: "mercado", category: "Mercado", date: TODAY });
   assert.deepEqual(app.calls, ["gastei 50 no mercado"]);
-  assert.match(app.last(), /Gasto registrado: R\$50\.00 — mercado/);
+  assert.match(app.last(), /Gasto registrado: R[$] 50,00 — mercado/);
   assert.equal(expensesOf(n).length, 1);
   assert.equal(checkinRows(n), 1, "o aviso continua aberto");
   assert.ok(!app.sent.some((m) => m.text.startsWith("Deixei")), "sem linha de troca: o aviso nao foi descartado");
@@ -250,7 +250,7 @@ test("Card 15: o valor lanca o gasto de hoje (SP) com a marca de conta fixa, fec
   assert.equal(rows[0].date, TODAY);
   assert.equal(rows[0].fixed_source, "bill_alert");
   assert.equal(rows[0].fixed_ref_id, bill.id);
-  assert.ok(app.sent.some((m) => m.text.startsWith("✅ Gasto registrado: R$120.00 — Conta de água (conta fixa)\nCategoria: Moradia")));
+  assert.ok(app.sent.some((m) => m.text.startsWith("✅ Gasto registrado: R$ 120,00 — Conta de água (conta fixa)\nCategoria: Moradia")));
   assert.equal(app.last(), '📌 Fechei "Conta de água" deste ciclo. Te aviso de novo mês que vem, no dia certo.');
   const closed = getBillAlertById(n, bill.id)!;
   assert.equal(closed.confirmed_month, "2026-10");

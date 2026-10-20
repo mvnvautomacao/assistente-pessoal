@@ -1,3 +1,4 @@
+import { formatBRL } from "../confirmation/preview";
 import { db } from "../db";
 import { getExpenseSummaryBetween } from "./service";
 import { currentMonthRange } from "./reportText";
@@ -49,10 +50,10 @@ export function checkBudgetAlert(fromNumber: string, categoryId: number, categor
   const pct = (summary.total / limit) * 100;
 
   if (pct >= 100) {
-    return `\n\n🚨 Você ultrapassou o orçamento de ${categoryName} este mês: R$${summary.total.toFixed(2)} de R$${limit.toFixed(2)} (${pct.toFixed(0)}%)`;
+    return `\n\n🚨 Você ultrapassou o orçamento de ${categoryName} este mês: ${formatBRL(summary.total)} de ${formatBRL(limit)} (${pct.toFixed(0)}%)`;
   }
   if (pct >= 80) {
-    return `\n\n⚠️ Você já usou ${pct.toFixed(0)}% do orçamento de ${categoryName} este mês (R$${summary.total.toFixed(2)} de R$${limit.toFixed(2)})`;
+    return `\n\n⚠️ Você já usou ${pct.toFixed(0)}% do orçamento de ${categoryName} este mês (${formatBRL(summary.total)} de ${formatBRL(limit)})`;
   }
   return null;
 }
