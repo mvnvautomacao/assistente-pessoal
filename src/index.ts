@@ -12,6 +12,7 @@ import { startEventReminderScheduler } from "./events/reminderScheduler";
 import { startRecurringExpenseScheduler } from "./expenses/recurringScheduler";
 import { startBillAlertScheduler } from "./bills/scheduler";
 import { startActivityLogCleanup } from "./activity/cleanupJob";
+import { checkVolumeAtStartup } from "./storage/volumeAlert";
 import { startNoExpenseReminderScheduler } from "./expenses/noExpenseReminderScheduler";
 import { startPendingCleanup } from "./pending/cleanup";
 import { startDailyJobRunner } from "./scheduler/dailyJobs";
@@ -76,4 +77,6 @@ app.listen(config.port, () => {
   startPendingCleanup();
   // por ultimo: as rotinas diarias acima so se registram; este cron por minuto as executa e recupera o que o servidor perdeu
   startDailyJobRunner();
+  // confere se o banco esta em volume persistente (Card 22); so avisa, nunca bloqueia a subida
+  void checkVolumeAtStartup();
 });

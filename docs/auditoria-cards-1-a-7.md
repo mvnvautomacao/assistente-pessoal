@@ -351,7 +351,7 @@ Comando: `node --require ./dist/test/setup.js --test --experimental-test-coverag
 | Promessas sem `await` | Nenhuma `sendText` sem `await`/`return` encontrada; os `.catch(...)` explícitos do alerta ao dono em `handleIncomingMessage` são intencionais. |
 | Ajuda e README | README atualizado a cada card; boas-vindas defasada (D-10). |
 | Lint e cobertura | **Criados no Card 18:** `npm run lint`, `npm run coverage` e `npm run check` (ver README). |
-| Volume persistente do SQLite | O README já documenta `/app/data` no Coolify e o `.env.example` aponta `DB_PATH=./data/data.sqlite`; o `Dockerfile` não define volume (é configurado no Coolify). Sem o volume, o `pending_state` (e tudo mais) some no deploy. **Confirmar no Coolify** que o volume está montado. |
+| Volume persistente do SQLite | O README já documenta `/app/data` no Coolify e o `.env.example` aponta `DB_PATH=./data/data.sqlite`; o `Dockerfile` não define volume (é configurado no Coolify). Sem o volume, o `pending_state` (e tudo mais) some no deploy. **Confirmar no Coolify** que o volume está montado. **Card 22:** o `Dockerfile` passou a definir `DB_PATH=/app/data/data.sqlite` e a subida detecta a falta de volume persistente (aviso ao dono por WhatsApp e faixa vermelha no `/admin`); criar o volume segue sendo ação manual no Coolify. |
 
 ---
 

@@ -1,5 +1,6 @@
 import { listRecentJobRuns, JobRun } from "./scheduler/jobRuns";
 import { retentionLabel } from "./activity/retention";
+import { getVolumeStatus, needsVolumeAlert, volumeInfoText, volumeWarningText, type VolumeCheck } from "./storage/volumeCheck";
 import { getMessageCountsSince, getMessageStats, renderMessageAverageCell, sinceNotice } from "./activity/messageCounts";
 import { listRecentDowntimes } from "./scheduler/heartbeat";
 import { Router, Request, Response, NextFunction } from "express";
@@ -133,6 +134,16 @@ function formatDate(value: string): string {
 function formatDateOnly(value: string): string {
   const [year, month, day] = value.slice(0, 10).split("-");
   return `${day}/${month}/${year}`;
+}
+
+// Card 22 (RN16): aviso vermelho fixo no topo quando o banco nao esta em volume persistente; linha discreta quando esta tudo certo
+export function renderVolumeBanner(check: VolumeCheck | null): string {
+  if (!check) return "";
+  if (needsVolumeAlert(check)) {
+    return `<p class="warn" style="background:#fdecea;border-color:#e57373;color:#b71c1c"><strong>${escapeHtml(volumeWarningText(check))}</strong><br><span style="font-size:0.85em">${escapeHtml(check.detail)}</span></p>`;
+  }
+  const info = volumeInfoText(check);
+  return info ? `<p style="color:var(--muted);font-size:0.8rem;margin:0.25rem 0">${escapeHtml(info)}</p>` : "";
 }
 
 // Card 19: rotinas agendadas -- nome legivel, status e tabela das ultimas execucoes + periodos fora do ar
@@ -469,6 +480,7 @@ adminRouter.get("/admin", (req, res) => {
 <body>
 <form class="inline" method="post" action="/admin/logout" style="float:right"><button type="submit" class="link-btn">Sair</button></form>
 <h1>Assistente Pessoal</h1>
+${renderVolumeBanner(getVolumeStatus())}
 <p><a href="/admin/sprints">📋 Sprints (Kanban)</a></p>
 
 <h2>Clientes e cobrança (${allowed.length})</h2>
