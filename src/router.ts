@@ -466,6 +466,7 @@ function helpTopicMessage(
     | "recurring_expense"
     | "income"
     | "agenda"
+    | "finance"
 ): string | null {
   switch (topic) {
     case "welcome":
@@ -512,6 +513,14 @@ Você também pode:
 • Mandar uma foto do comprovante ou nota fiscal
 
 Eu registro sozinho e já escolho a categoria (tipo "Mercado", "Saúde"...). Se eu não souber qual categoria usar, eu pergunto pra você.`;
+    case "finance":
+      return `💳 Como ver o que vai vencer (agenda financeira):
+
+Pergunte do jeito que quiser: "agenda financeira", "o que vence essa semana", "contas a pagar", "o que tenho pra pagar em novembro", "próximas parcelas" ou "contas dos próximos 15 dias". Sem dizer o período, eu mostro os próximos 30 dias.
+
+Eu junto, por dia: seus gastos fixos (que eu lanço sozinho), as contas fixas dos alertas (com o último valor que você lançou, como estimativa), as parcelas das compras parceladas e os gastos de data futura. No fim vem o total previsto.
+
+Em "Em aberto" ficam as contas cujo vencimento já passou e ainda esperam sua resposta; elas não entram no total. Pra saber quanto você JÁ gastou, é "quanto gastei esse mês".`;
     case "agenda":
       return `🗓️ Como ver a agenda e mexer pelo número:
 
@@ -5653,7 +5662,8 @@ async function handleInterpretation(from: string, interpretation: Interpretation
   }
 
   // e a da agenda (Card 20): a consulta e as acoes sobre evento e lembrete a mantem
-  if (!AGENDA_LIST_TYPES.has(interpretation.type)) {
+  // (a agenda financeira, Card 22, e uma consulta diferente: nao tem itens numerados, entao invalida a lista anterior)
+  if (!AGENDA_LIST_TYPES.has(interpretation.type) || (interpretation.type === "report" && interpretation.scope === "finance")) {
     clearLastShownAgenda(from);
   }
 
