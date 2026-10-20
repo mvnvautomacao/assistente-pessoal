@@ -1,5 +1,6 @@
 import { config } from "../config";
 import { isNumberBlocked } from "../access/blocklist";
+import { recordMessage } from "../activity/messageCounts";
 
 async function callEvolutionApi(path: string, body: unknown) {
   const res = await fetch(`${config.evolution.apiUrl}${path}`, {
@@ -21,10 +22,12 @@ export async function sendText(to: string, text: string) {
   // numero bloqueado pelo admin nunca recebe nada -- nem resposta, nem
   // lembrete, relatorio ou qualquer outra automacao (todas passam por aqui).
   if (isNumberBlocked(to)) return { skipped: "blocked" };
-  return callEvolutionApi(`/message/sendText/${config.evolution.instanceName}`, {
+  const result = await callEvolutionApi(`/message/sendText/${config.evolution.instanceName}`, {
     number: to,
     text,
   });
+  recordMessage(to, "outbound"); // so conta o que a Evolution API aceitou (falha de envio lanca antes)
+  return result;
 }
 
 // Em algumas versoes/configuracoes da Evolution API, o webhook nao manda o audio/

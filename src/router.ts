@@ -334,6 +334,7 @@ import {
   reminderChangedSince,
   reminderCurrentValue,
 } from "./confirmation/changedSince";
+import { recordMessage } from "./activity/messageCounts";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
 import { config } from "./config";
@@ -704,6 +705,8 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     }
     return;
   }
+
+  recordMessage(from, "inbound"); // media mensal de mensagens do /admin (conta antes do freio: mensagem em cooldown tambem e do cliente)
 
   // Freio de emergencia: numero ja autorizado mandando mensagens rapido demais
   // (loop de outro tipo, script travado etc) tambem pausa, pra nunca gastar API

@@ -125,6 +125,16 @@ db.exec(`
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- mensagens por numero e por mes (SP): quantas o cliente mandou (inbound) e quantas o bot enviou (outbound).
+  -- Alimenta a coluna de media mensal do /admin; so conta de quando a tabela passou a existir (nao ha historico antes).
+  CREATE TABLE IF NOT EXISTS message_counts (
+    from_number TEXT NOT NULL,
+    month TEXT NOT NULL,
+    inbound INTEGER NOT NULL DEFAULT 0,
+    outbound INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (from_number, month)
+  );
+
   -- sprints (prazo padrao de 10 dias, ajustavel) e os cards do kanban do /admin.
   -- Todo pedido (melhoria, evolucao, incidente) vira um card num sprint; o card
   -- anda pelas colunas backlog > refinado > a_fazer > fazendo > testando > feito.
