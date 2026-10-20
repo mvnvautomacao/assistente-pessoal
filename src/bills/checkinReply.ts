@@ -16,6 +16,9 @@ export interface BillQuestionInfo {
   monthEndFromDay?: number | null;
   // vencimento que o servidor perdeu (Card 19): o aviso sai com "(atrasado: vencia dia ...)"
   lateFromDate?: string | null;
+  intervalDays?: number | null;
+  // 3o aviso sem resposta (Card 21, RN08): a mensagem avisa que o ciclo fecha sozinho
+  isLastAsk?: boolean;
 }
 
 // frases CLARAS (ja normalizadas: sem acento, minusculas, sem pontuacao; "ta"/"esta" valem os dois)
@@ -68,6 +71,15 @@ export function lateNote(bill: Pick<BillQuestionInfo, "recurrenceType" | "lateFr
   return bill.recurrenceType === "interval" ? ` (atrasado: vencia dia ${day}/${month})` : ` (atrasado: vencia dia ${day})`;
 }
 
+// "daqui a 45 dias" / "mês que vem, no dia certo": quando o alerta volta depois de resolvido (ou fechado sozinho)
+export function nextAskLabel(recurrenceType: BillRecurrence, intervalDays: number | null | undefined): string {
+  return recurrenceType === "interval" ? `daqui a ${intervalDays} dias` : "mês que vem, no dia certo";
+}
+
+export function lastAskLine(bill: Pick<BillQuestionInfo, "recurrenceType" | "intervalDays">): string {
+  return `⚠️ Último aviso: se eu não tiver resposta, considero resolvido (sem lançar gasto) e te aviso de novo ${nextAskLabel(bill.recurrenceType, bill.intervalDays)}.`;
+}
+
 // o aviso enviado pelo scheduler
 export function buildBillAlertQuestion(bill: BillQuestionInfo): string {
   const late = lateNote(bill);
@@ -77,7 +89,8 @@ export function buildBillAlertQuestion(bill: BillQuestionInfo): string {
       : bill.monthEndFromDay
         ? `📌 Hoje é o último dia do mês (vence todo dia ${bill.monthEndFromDay}): ${bill.name}.`
         : `📌 Hoje é dia de pagar: ${bill.name}${late}.`;
-  return `${head}\n${billCheckinOptions(bill.recurrenceType)}`;
+  const last = bill.isLastAsk ? `\n${lastAskLine(bill)}` : "";
+  return `${head}\n${billCheckinOptions(bill.recurrenceType)}${last}`;
 }
 
 // resposta que nao foi entendida: repete a lista (cita a conta quando ha mais de um aviso esperando)

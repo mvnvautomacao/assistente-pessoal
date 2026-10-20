@@ -70,7 +70,7 @@ test("Card 19 (regras puras): ciclo do ultimo vencimento, atraso e texto do comp
   assert.equal(buildBillAlertQuestion({ name: "Luz", recurrenceType: "day_of_month" }), `📌 Hoje é dia de pagar: Luz.\n${LIST}`);
 });
 
-test("Card 19: alerta do dia 10, servidor fora de 10/11 a 12/11 -- ao voltar o aviso 1 sai 'atrasado' e nao repete", async (t) => {
+test("Card 19: alerta do dia 10, servidor fora de 10/11 a 12/11 -- ao voltar o aviso 1 sai 'atrasado'; os seguintes nao (Card 21: 3 avisos e fecha)", async (t) => {
   const { sent } = setup(t);
   const n = user();
   const bill = alert(n, "Luz", 10);
@@ -79,9 +79,12 @@ test("Card 19: alerta do dia 10, servidor fora de 10/11 a 12/11 -- ao voltar o a
   assert.equal(getPendingBillCheckin(n)?.lateFromDate, "2026-11-10");
   assert.equal(getBillAlertById(n, bill.id)?.last_asked_date, "2026-11-12");
   await runDueDailyJobs(at("2026-11-12T08:01:00-03:00"));
+  assert.equal(textsOf(sent, n).length, 1, "no mesmo dia nao repete");
   await runDueDailyJobs(at("2026-11-13T08:00:00-03:00"));
+  await runDueDailyJobs(at("2026-11-14T08:00:00-03:00"));
   await runDueDailyJobs(at("2026-11-20T08:00:00-03:00"));
-  assert.equal(textsOf(sent, n).length, 1, "um aviso por ciclo (sem soneca)");
+  assert.equal(textsOf(sent, n).length, 3, "3 avisos em dias seguidos e depois o ciclo fecha sozinho");
+  assert.ok(!textsOf(sent, n)[1].includes("atrasado"), "o 2o aviso e pedido pela soneca, nao e 'atrasado'");
 });
 
 test("Card 19: no dia certo o aviso e o de sempre, sem complemento de atraso", async (t) => {

@@ -180,13 +180,13 @@ import {
   LooseTarget,
 } from "./intents/looseCommands";
 import { clearPendingLooseSuggest, getPendingLooseSuggest, setPendingLooseSuggest } from "./intents/pendingSuggest";
-import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount, restoreBillAlertFields } from "./bills/service";
+import { createBillAlert, getBillAlertById, BillAlert, listBillAlerts, findActiveBillAlertByName, updateBillAlert, deactivateBillAlert, confirmBillAlertPaid, snoozeBillAlert, getLastBillAlertAmount, restoreBillAlertFields, resetBillAlertAsks } from "./bills/service";
 import { BILL_DUPLICATE_WARNING, BillChangeKey, BillChangeRequest, BillParams, applyBillChanges, billAlertLine, billChanges, hasBillChangeRequest, nextOccurrenceDate, recurrenceText } from "./bills/editPlan";
 import { PendingEditBillAlert, clearPendingEditBillAlert, getPendingEditBillAlert, setPendingEditBillAlert } from "./bills/pendingEdit";
 import { resolveDate } from "./expenses/editItem";
 import { FixedMark, USER_FIXED, fixedConfirmationSuffix, markFromColumns } from "./expenses/fixedMark";
 import { setPendingBillCheckin, advanceBillCheckin, getPendingBillCheckin, PendingBillCheckin } from "./bills/pendingCheckin";
-import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply } from "./bills/checkinReply";
+import { billCheckinRepeat, buildBillAlertQuestion, classifyBillCheckinReply, nextAskLabel } from "./bills/checkinReply";
 import { BILL_NO_PREVIOUS_VALUE_TEXT, billValueQuestion, billValueRetry, interpretBillValueReply } from "./bills/checkinValue";
 import { setPendingRemoveBillAlert, getPendingRemoveBillAlert, clearPendingRemoveBillAlert, PendingRemoveBillAlert } from "./bills/pendingRemove";
 import {
@@ -5382,7 +5382,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
   // "desfaz isso" fala da ultima acao, nao do aviso
   if (isUndoText(answerText)) return false;
   const today = spDateString(new Date(Date.now()));
-  const nextLabel = pending.recurrenceType === "interval" ? `daqui a ${pending.intervalDays} dias` : "mês que vem, no dia certo";
+  const nextLabel = nextAskLabel(pending.recurrenceType, pending.intervalDays);
   const passthrough = { activity: "bill_alert", label: pending.name, kind: "question" as const, keepPending: true, minWords: 1 };
 
   // o alerta foi apagado no meio do caminho
@@ -5441,6 +5441,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
   if (reply === "paid") {
     // ainda NAO fecha o ciclo: so quando o valor chegar. Se o valor nunca vier, o alerta volta a perguntar amanha.
     snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
+    resetBillAlertAsks(from, pending.billAlertId); // respondeu: a contagem de avisos sem resposta recomeca (Card 21, RN09)
     setPendingBillCheckin(from, { billAlertId: pending.billAlertId, name: pending.name, recurrenceType: pending.recurrenceType, intervalDays: pending.intervalDays, step: "ask_value", queued: pending.queued });
     logActivity(from, "bill_alert", `pago, perguntando o valor: ${pending.name}`);
     await sendText(from, billValueQuestion(pending.name, getLastBillAlertAmount(from, pending.billAlertId)));
@@ -5452,6 +5453,7 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
     await sendText(from, `Beleza, pulei ${pending.name} neste ciclo. Te aviso de novo ${nextLabel}.`);
   } else {
     snoozeBillAlert(from, pending.billAlertId, addDaysToDateString(today, 1));
+    resetBillAlertAsks(from, pending.billAlertId);
     logActivity(from, "bill_alert", `adiado pra amanha: ${pending.name}`);
     await sendText(from, `Combinado, te lembro de "${pending.name}" amanhã de novo.`);
   }

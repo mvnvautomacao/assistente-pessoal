@@ -371,6 +371,13 @@ if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "inter
 if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "next_due_date")) {
   db.exec(`ALTER TABLE bill_alerts ADD COLUMN next_due_date TEXT`);
 }
+// Card 21: no maximo 3 avisos sem resposta por ciclo -- quantos ja foram e de qual ciclo (data do vencimento). Linhas antigas: 0 e nulo.
+if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "unanswered_asks")) {
+  db.exec(`ALTER TABLE bill_alerts ADD COLUMN unanswered_asks INTEGER NOT NULL DEFAULT 0`);
+}
+if (billAlertsColumns.length && !billAlertsColumns.some((c) => c.name === "asks_cycle")) {
+  db.exec(`ALTER TABLE bill_alerts ADD COLUMN asks_cycle TEXT`);
+}
 
 // numero do dono sempre autorizado, senao ele mesmo ficaria bloqueado assim que
 // a lista de autorizados existir. Outros numeros precisam ser liberados no /admin.

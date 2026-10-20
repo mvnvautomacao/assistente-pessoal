@@ -17,6 +17,7 @@ export interface BillCheckinItem {
   intervalDays: number | null;
   monthEndFromDay?: number | null; // aviso antecipado pro ultimo dia do mes (Card 16, RN17)
   lateFromDate?: string | null; // vencimento perdido pelo servidor (Card 19, RN06)
+  isLastAsk?: boolean; // 3o aviso sem resposta (Card 21)
 }
 
 export interface PendingBillCheckin extends BillCheckinItem {
@@ -78,4 +79,22 @@ export function advanceBillCheckin(fromNumber: string): BillCheckinItem | null {
   }
   setPendingBillCheckin(fromNumber, { ...next, step: "ask_paid", queued: rest });
   return next;
+}
+
+// o alerta fechou sozinho (3 avisos sem resposta): sai do aviso aberto. Se era o da vez, o proximo da fila assume (sem reenviar nada: a
+// pergunta dele ja saiu); se estava na fila, e retirado (Card 21, RN11).
+export function removeBillFromCheckin(fromNumber: string, billAlertId: number) {
+  const current = getPendingBillCheckin(fromNumber);
+  if (!current) return;
+  if (current.billAlertId === billAlertId) {
+    const [next, ...rest] = current.queued;
+    if (!next) clearPendingBillCheckin(fromNumber);
+    else setPendingBillCheckin(fromNumber, { ...next, step: "ask_paid", queued: rest });
+    return;
+  }
+  if (current.queued.some((q) => q.billAlertId === billAlertId)) {
+    const { createdAt, ...rest } = current;
+    void createdAt;
+    setPendingBillCheckin(fromNumber, { ...rest, queued: current.queued.filter((q) => q.billAlertId !== billAlertId) });
+  }
 }

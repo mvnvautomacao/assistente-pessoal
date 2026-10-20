@@ -1,6 +1,6 @@
 import { sendText } from "../whatsapp/client";
-import { billLateFromDate, getDueBillAlerts, markBillAlertAsked, snoozeBillAlert } from "./service";
-import { enqueueBillCheckin } from "./pendingCheckin";
+import { BILL_MAX_UNANSWERED_ASKS, billLateFromDate, closeBillAlertUnanswered, getDueBillAlerts, markBillAlertAsked, snoozeBillAlert, unansweredAsksInCycle } from "./service";
+import { enqueueBillCheckin, removeBillFromCheckin } from "./pendingCheckin";
 import { buildBillAlertQuestion } from "./checkinReply";
 import { logActivity } from "../activity/service";
 import { addDaysToDateString, monthEndShiftFrom } from "../timeSP";
@@ -21,6 +21,16 @@ export const billAlertJob: DailyJob = {
     let failures = 0;
     for (const bill of getDueBillAlerts(today)) {
       try {
+        // 3 avisos sem resposta neste ciclo: fecha em silencio, sem lancar gasto, e soma a recorrencia (o 3o aviso ja avisou que seria o ultimo)
+        const previousAsks = unansweredAsksInCycle(bill, today);
+        if (previousAsks >= BILL_MAX_UNANSWERED_ASKS) {
+          if (closeBillAlertUnanswered(bill.from_number, bill.id, today)) {
+            removeBillFromCheckin(bill.from_number, bill.id);
+            logActivity(bill.from_number, "bill_alert", `fechado sem resposta apos ${BILL_MAX_UNANSWERED_ASKS} avisos: ${bill.name}`);
+            items++;
+          }
+          continue;
+        }
         // manda ANTES de marcar/armar a pendencia -- se o envio falhar (ex:
         // Evolution API fora do ar), nada fica registrado como "perguntado".
         // Na ordem antiga, uma falha aqui deixava o sistema achando que
@@ -28,19 +38,23 @@ export const billAlertJob: DailyJob = {
         // a pergunta -- a proxima mensagem dele recebia "ja resolveu X?" do nada.
         const lateFromDate = billLateFromDate(bill, today);
         const monthEndFromDay = bill.recurrence_type === "day_of_month" && !lateFromDate ? monthEndShiftFrom(bill.day_of_month, today) : null;
-        await sendText(bill.from_number, buildBillAlertQuestion({ name: bill.name, recurrenceType: bill.recurrence_type, monthEndFromDay, lateFromDate }));
+        const isLastAsk = previousAsks + 1 >= BILL_MAX_UNANSWERED_ASKS;
+        await sendText(
+          bill.from_number,
+          buildBillAlertQuestion({ name: bill.name, recurrenceType: bill.recurrence_type, intervalDays: bill.interval_days, monthEndFromDay, lateFromDate, isLastAsk })
+        );
         markBillAlertAsked(bill.from_number, bill.id, today);
-        const position = enqueueBillCheckin(bill.from_number, {
+        enqueueBillCheckin(bill.from_number, {
           billAlertId: bill.id,
           name: bill.name,
           recurrenceType: bill.recurrence_type,
           intervalDays: bill.interval_days,
           monthEndFromDay,
           lateFromDate,
+          isLastAsk,
         });
-        // varios avisos no mesmo dia: o que espera na fila volta a perguntar amanha se a fila se perder
-        // (ex: o da vez vence esperando o valor)
-        if (position === "queued") snoozeBillAlert(bill.from_number, bill.id, addDaysToDateString(today, 1));
+        // sem resposta, o aviso volta amanha (ate o limite de 3): a soneca agenda isso; qualquer resposta que fecha o ciclo a limpa
+        snoozeBillAlert(bill.from_number, bill.id, addDaysToDateString(today, 1));
         logActivity(bill.from_number, "bill_alert", `pergunta enviada: ${bill.name}${lateFromDate ? ` (atrasado: vencia ${lateFromDate})` : ""}`);
         items++;
       } catch (err) {

@@ -14,8 +14,13 @@ export interface BillAlert {
   last_asked_date: string | null;
   confirmed_month: string | null;
   snoozed_until: string | null;
+  unanswered_asks: number; // avisos seguidos sem resposta no ciclo de asks_cycle (Card 21)
+  asks_cycle: string | null; // chave do ciclo dos avisos: a data do vencimento (dia do mes) ou a next_due_date (intervalo)
   created_at: string;
 }
+
+// no maximo isso de avisos sem resposta por ciclo; no seguinte o ciclo fecha em silencio (Card 21, RN05)
+export const BILL_MAX_UNANSWERED_ASKS = 3;
 
 export type CreateBillAlertParams =
   | { fromNumber: string; name: string; dayOfMonth: number }
@@ -85,6 +90,7 @@ export function updateBillAlert(
       `UPDATE bill_alerts SET recurrence_type = 'day_of_month', day_of_month = ?, interval_days = NULL, next_due_date = NULL, snoozed_until = NULL, last_asked_date = NULL, confirmed_month = NULL WHERE id = ? AND from_number = ?`
     ).run(changes.dayOfMonth, id, fromNumber);
   }
+  resetBillAlertAsks(fromNumber, id); // editar o alerta recomeca a contagem (Card 21, RN09)
   return getBillAlertById(fromNumber, id);
 }
 
@@ -100,6 +106,7 @@ export function restoreBillAlertFields(
        WHERE id = ? AND from_number = ? AND active = 1`
     )
     .run(previous.name, previous.recurrenceType, previous.dayOfMonth ?? 1, previous.intervalDays, previous.nextDueDate, id, fromNumber);
+  if (result.changes > 0) resetBillAlertAsks(fromNumber, id);
   return result.changes > 0;
 }
 
@@ -122,8 +129,47 @@ export function getLastBillAlertAmount(fromNumber: string, billAlertId: number):
   return row ? row.amount : null;
 }
 
+// chave do ciclo dos avisos (RN10): a data do vencimento no alerta por dia do mes, a next_due_date no por intervalo
+export function billCycleKey(bill: Pick<BillAlert, "recurrence_type" | "day_of_month" | "next_due_date">, todayDate: string): string {
+  return bill.recurrence_type === "interval" ? (bill.next_due_date ?? "") : lastBillDueDate(bill.day_of_month, todayDate).dueDate;
+}
+
+// quantos avisos sem resposta o ciclo de HOJE ja tem (ciclo novo = recomeca em 0)
+export function unansweredAsksInCycle(bill: BillAlert, todayDate: string): number {
+  return bill.asks_cycle === billCycleKey(bill, todayDate) ? bill.unanswered_asks : 0;
+}
+
+// o aviso saiu (so chamar depois do envio dar certo): registra o dia e soma 1 ao contador do ciclo
 export function markBillAlertAsked(fromNumber: string, id: number, todayDate: string) {
-  db.prepare(`UPDATE bill_alerts SET last_asked_date = ? WHERE id = ? AND from_number = ?`).run(todayDate, id, fromNumber);
+  const bill = getBillAlertById(fromNumber, id);
+  if (!bill) return;
+  const cycle = billCycleKey(bill, todayDate);
+  db.prepare(
+    `UPDATE bill_alerts SET last_asked_date = ?, unanswered_asks = CASE WHEN asks_cycle = ? THEN unanswered_asks + 1 ELSE 1 END, asks_cycle = ?
+     WHERE id = ? AND from_number = ?`
+  ).run(todayDate, cycle, cycle, id, fromNumber);
+}
+
+// o usuario respondeu (1, 2 ou 3) ou editou o alerta: a contagem de avisos sem resposta recomeca
+export function resetBillAlertAsks(fromNumber: string, id: number) {
+  db.prepare(`UPDATE bill_alerts SET unanswered_asks = 0, asks_cycle = NULL WHERE id = ? AND from_number = ?`).run(id, fromNumber);
+}
+
+// 3 avisos sem resposta (RN07): equivale a "pular" -- fecha o ciclo SEM lancar gasto. Dia do mes: confirma o mes do ciclo; intervalo:
+// next_due_date = hoje + intervalo (mesma conta de confirmBillAlertPaid). Limpa soneca e contador. Devolve false se o alerta nao existe mais.
+export function closeBillAlertUnanswered(fromNumber: string, id: number, todayDate: string): boolean {
+  const bill = getBillAlertById(fromNumber, id);
+  if (!bill || !bill.active) return false;
+  if (bill.recurrence_type === "interval") {
+    db.prepare(
+      `UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL, unanswered_asks = 0, asks_cycle = NULL WHERE id = ? AND from_number = ?`
+    ).run(addDaysToDateString(todayDate, bill.interval_days ?? 0), id, fromNumber);
+  } else {
+    db.prepare(
+      `UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL, unanswered_asks = 0, asks_cycle = NULL WHERE id = ? AND from_number = ?`
+    ).run(lastBillDueDate(bill.day_of_month, todayDate).yearMonth, id, fromNumber);
+  }
+  return true;
 }
 
 // usuario respondeu que ja fez: por dia fixo do mes, fecha o ciclo desse mes
@@ -135,11 +181,15 @@ export function confirmBillAlertPaid(fromNumber: string, id: number, todayDate: 
   if (!bill) return;
   if (bill.recurrence_type === "interval") {
     const nextDueDate = addDaysToDateString(todayDate, bill.interval_days ?? 0);
-    db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(nextDueDate, id, fromNumber);
+    db.prepare(`UPDATE bill_alerts SET next_due_date = ?, snoozed_until = NULL, unanswered_asks = 0, asks_cycle = NULL WHERE id = ? AND from_number = ?`).run(
+      nextDueDate,
+      id,
+      fromNumber
+    );
     return;
   }
   // fecha o ciclo do ULTIMO vencimento (se o aviso veio atrasado, de um mes que ja acabou, e esse mes que fica confirmado)
-  db.prepare(`UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL WHERE id = ? AND from_number = ?`).run(
+  db.prepare(`UPDATE bill_alerts SET confirmed_month = ?, snoozed_until = NULL, unanswered_asks = 0, asks_cycle = NULL WHERE id = ? AND from_number = ?`).run(
     lastBillDueDate(bill.day_of_month, todayDate).yearMonth,
     id,
     fromNumber
