@@ -135,6 +135,12 @@ db.exec(`
     PRIMARY KEY (from_number, month)
   );
 
+  -- chave/valor pra pequenos fatos do app (ex: message_counts_since = desde quando a contagem de mensagens existe)
+  CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   -- sprints (prazo padrao de 10 dias, ajustavel) e os cards do kanban do /admin.
   -- Todo pedido (melhoria, evolucao, incidente) vira um card num sprint; o card
   -- anda pelas colunas backlog > refinado > a_fazer > fazendo > testando > feito.

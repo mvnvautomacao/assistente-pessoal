@@ -1,6 +1,6 @@
 import { listRecentJobRuns, JobRun } from "./scheduler/jobRuns";
 import { retentionLabel } from "./activity/retention";
-import { getMessageStats, renderMessageAverageCell } from "./activity/messageCounts";
+import { getMessageCountsSince, getMessageStats, renderMessageAverageCell, sinceNotice } from "./activity/messageCounts";
 import { listRecentDowntimes } from "./scheduler/heartbeat";
 import { Router, Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "crypto";
@@ -286,6 +286,7 @@ adminRouter.get("/admin", (req, res) => {
   const allowed = listAllowedNumbers();
   const allowedSet = new Set(allowed.map((a) => a.from_number));
   const messageStats = getMessageStats();
+  const messageSince = getMessageCountsSince();
   const billingByNumber = new Map(listClientBilling().map((b) => [b.from_number, b]));
   const today = spDateString();
   const noExpenseReminderDays = new Set(getNoExpenseReminderDays());
@@ -317,7 +318,7 @@ adminRouter.get("/admin", (req, res) => {
         <td>${escapeHtml(a.from_number)}</td>
         <td>${escapeHtml(a.note ?? "—")}</td>
         <td>${formatDate(a.added_at)}</td>
-        <td>${renderMessageAverageCell(messageStats.get(a.from_number))}</td>
+        <td>${renderMessageAverageCell(messageStats.get(a.from_number), messageSince, today)}</td>
         <td>
           <form class="inline" method="post" action="/admin/allowlist/remove" onsubmit="return confirm('Bloquear esse número de novo?')">
             <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
@@ -489,7 +490,7 @@ ${dashboardAccounts.length ? `<table><tr><th>Número</th><th>Criada em</th><th>�
 
 <h2>Números autorizados (${allowed.length})</h2>
 <p class="warn">Só quem está nessa lista recebe resposta do assistente. Qualquer outro número é ignorado em silêncio (nada é respondido) — isso evita o bot ficar respondendo sem parar pra outro bot.</p>
-${allowed.length ? `<table><tr><th>Número</th><th>Nota</th><th>Autorizado em</th><th title="Mensagens do cliente + respostas e avisos do bot, divididas pelos meses desde o primeiro registro">Média de mensagens/mês</th><th></th></tr>${allowedRows}</table>` : `<p class="empty">Nenhum número autorizado ainda.</p>`}
+${allowed.length ? `<p class="warn">${escapeHtml(sinceNotice(messageSince))}</p><table><tr><th>Número</th><th>Nota</th><th>Autorizado em</th><th title="${escapeHtml(sinceNotice(messageSince))} Mensagens do cliente + respostas e avisos do bot; com menos de 30 dias de contagem mostro o total e o período.">Média de mensagens/mês</th><th></th></tr>${allowedRows}</table>` : `<p class="empty">Nenhum número autorizado ainda.</p>`}
 <form class="add-form" method="post" action="/admin/allowlist/add">
   <input type="text" name="from_number" placeholder="Ex: 5561999210718" required>
   <input type="text" name="note" placeholder="Nota (opcional)">
