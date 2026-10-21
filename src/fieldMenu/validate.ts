@@ -124,7 +124,7 @@ export async function validateFieldAnswer(def: FieldDef, text: string, fromNumbe
       return validateLeadAnswer(text);
     case "date": {
       if (def.key === "next_due") {
-        const near = nextOccurrenceDate(text, spDateString());
+        const near = nextOccurrenceDate(text, spDateString(new Date(Date.now())));
         if (near) return { ok: true, value: near };
       }
       return validateDateAnswer(text);

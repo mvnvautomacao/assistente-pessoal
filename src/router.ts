@@ -467,6 +467,7 @@ function helpTopicMessage(
     | "income"
     | "agenda"
     | "finance"
+    | "no_expense_reminder"
 ): string | null {
   switch (topic) {
     case "welcome":
@@ -513,6 +514,14 @@ Você também pode:
 • Mandar uma foto do comprovante ou nota fiscal
 
 Eu registro sozinho e já escolho a categoria (tipo "Mercado", "Saúde"...). Se eu não souber qual categoria usar, eu pergunto pra você.`;
+    case "no_expense_reminder":
+      return `🔔 Aviso de gasto pendente:
+
+Se você não registrar nenhum gasto até o horário combinado (18:30, por padrão), eu te mando um aviso nos dias da semana em que ele está ligado, pra você lembrar de anotar.
+
+Pra não incomodar, eu mando no máximo 2 avisos seguidos: se você não registrar nenhum gasto nem entrada depois deles, eu paro de mandar. O resto continua normal: lembretes, agenda, contas fixas, gastos fixos e os relatórios da semana e do mês.
+
+Pra voltar a receber, é só me contar um gasto ou uma entrada, ou dizer "ativa o aviso de gasto pendente". Pra mudar o horário: "muda o horário do aviso de gasto pra 20h". Pra desligar de vez: "desativa o aviso de gasto pendente".`;
     case "finance":
       return `💳 Como ver o que vai vencer (agenda financeira):
 

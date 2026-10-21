@@ -271,11 +271,13 @@ export function getNoExpenseReminderSettings(fromNumber: string): NoExpenseRemin
   return { enabled: row ? row.no_expense_reminder_enabled === 1 : true, time: row?.no_expense_reminder_time ?? "18:30" };
 }
 
+// Ligar o aviso de novo ou mudar o horario mostra que o cliente quer o aviso: zera a pausa por inatividade (Card 23, RN04)
 export function setNoExpenseReminderEnabled(fromNumber: string, enabled: boolean) {
   db.prepare(
     `INSERT INTO user_settings (from_number, no_expense_reminder_enabled) VALUES (?, ?)
      ON CONFLICT(from_number) DO UPDATE SET no_expense_reminder_enabled = excluded.no_expense_reminder_enabled`
   ).run(fromNumber, enabled ? 1 : 0);
+  if (enabled) resetNoExpenseReminder(fromNumber);
 }
 
 export function setNoExpenseReminderTime(fromNumber: string, time: string) {
@@ -283,6 +285,77 @@ export function setNoExpenseReminderTime(fromNumber: string, time: string) {
     `INSERT INTO user_settings (from_number, no_expense_reminder_time) VALUES (?, ?)
      ON CONFLICT(from_number) DO UPDATE SET no_expense_reminder_time = excluded.no_expense_reminder_time`
   ).run(fromNumber, time);
+  resetNoExpenseReminder(fromNumber);
+}
+
+// ---- pausa por inatividade (Card 23) ----
+// depois de 2 avisos de "sem gastos" sem nenhum registro do cliente, o aviso para ate ele registrar algo ou religar o aviso
+export const NO_EXPENSE_MAX_UNANSWERED = 2;
+
+export interface NoExpenseReminderState {
+  unanswered: number; // avisos enviados seguidos sem registro (MAX + 1 = pausa ja registrada no log)
+  lastAlertAt: string | null; // ISO do ultimo aviso enviado
+}
+
+export function getNoExpenseReminderState(fromNumber: string): NoExpenseReminderState {
+  const row = db.prepare(`SELECT no_expense_unanswered, no_expense_last_alert_at FROM user_settings WHERE from_number = ?`).get(fromNumber) as
+    | { no_expense_unanswered: number; no_expense_last_alert_at: string | null }
+    | undefined;
+  return { unanswered: row?.no_expense_unanswered ?? 0, lastAlertAt: row?.no_expense_last_alert_at ?? null };
+}
+
+// so depois do envio aceito (RN08)
+export function recordNoExpenseReminderSent(fromNumber: string, nowIso: string) {
+  db.prepare(`UPDATE user_settings SET no_expense_unanswered = no_expense_unanswered + 1, no_expense_last_alert_at = ? WHERE from_number = ?`).run(nowIso, fromNumber);
+}
+
+export function resetNoExpenseReminder(fromNumber: string) {
+  db.prepare(`UPDATE user_settings SET no_expense_unanswered = 0, no_expense_last_alert_at = NULL WHERE from_number = ?`).run(fromNumber);
+}
+
+// a pausa ja foi escrita no log: o contador passa de MAX pra MAX + 1, e nao se escreve de novo nas checagens seguintes
+export function markNoExpensePauseLogged(fromNumber: string) {
+  db.prepare(`UPDATE user_settings SET no_expense_unanswered = ? WHERE from_number = ? AND no_expense_unanswered = ?`).run(
+    NO_EXPENSE_MAX_UNANSWERED + 1,
+    fromNumber,
+    NO_EXPENSE_MAX_UNANSWERED
+  );
+}
+
+// O cliente fez algo depois de `sinceIso`? (RN02) Gasto ou entrada criados por ele; o gasto lancado sozinho pelo gasto fixo nao conta.
+// A data do gasto nao importa (so o created_at). datetime() dos dois lados porque gasto e entrada gravam created_at em ISO e o SQLite
+// puro grava "YYYY-MM-DD HH:MM:SS" (RN03).
+export function hasUserActivitySince(fromNumber: string, sinceIso: string): boolean {
+  const expense = db
+    .prepare(
+      `SELECT 1 FROM expenses WHERE from_number = ? AND datetime(created_at) > datetime(?) AND (fixed_source IS NULL OR fixed_source != 'recurring') LIMIT 1`
+    )
+    .get(fromNumber, sinceIso);
+  if (expense) return true;
+  return !!db.prepare(`SELECT 1 FROM incomes WHERE from_number = ? AND datetime(created_at) > datetime(?) LIMIT 1`).get(fromNumber, sinceIso);
+}
+
+// status do aviso por numero, pro /admin
+export interface NoExpenseReminderStatus {
+  enabled: boolean;
+  unanswered: number;
+}
+
+export function getNoExpenseReminderStatuses(): Map<string, NoExpenseReminderStatus> {
+  const rows = db.prepare(`SELECT from_number, no_expense_reminder_enabled AS enabled, no_expense_unanswered AS unanswered FROM user_settings`).all() as unknown as {
+    from_number: string;
+    enabled: number;
+    unanswered: number;
+  }[];
+  return new Map(rows.map((r) => [r.from_number, { enabled: r.enabled === 1, unanswered: r.unanswered }]));
+}
+
+export function noExpenseStatusLabel(status: NoExpenseReminderStatus | undefined): string {
+  if (!status) return "ativo";
+  if (!status.enabled) return "desligado";
+  if (status.unanswered >= NO_EXPENSE_MAX_UNANSWERED) return "pausado por inatividade";
+  if (status.unanswered > 0) return `${status.unanswered} de ${NO_EXPENSE_MAX_UNANSWERED} avisos sem registro`;
+  return "ativo";
 }
 
 export interface NoExpenseReminderSubscriber {

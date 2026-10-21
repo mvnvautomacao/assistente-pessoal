@@ -19,7 +19,7 @@ import { previousWeekRange, buildExpenseReportText } from "./expenses/reportText
 import { PAGE_SIZES, paginate } from "./dashboard/utils";
 import { destroyDashboardSessionsForPhone } from "./auth/session";
 import { listClientBilling, setClientBillingInfo, recordClientPayment, getPaidMonthsForClient, PLAN_PRICES, BillingPlan } from "./billing/service";
-import { getNoExpenseReminderDays, setNoExpenseReminderDays } from "./expenses/service";
+import { getNoExpenseReminderDays, getNoExpenseReminderStatuses, noExpenseStatusLabel, setNoExpenseReminderDays } from "./expenses/service";
 import { spDateString } from "./timeSP";
 import { registerSprintRoutes } from "./adminSprints";
 
@@ -236,6 +236,7 @@ const TYPE_LABEL: Record<string, string> = {
   edit_reminder: "✏️ Lembrete remarcado",
   report: "📅 Agenda consultada",
   downtime: "🔌 Servidor fora do ar",
+  no_expense_reminder: "🔕 Aviso de gasto pendente pausado",
   job_missed: "⏭️ Rotina perdida",
   correct_category: "✏️ Categoria corrigida",
   set_default_payment: "💳 Pagamento padrão",
@@ -298,6 +299,7 @@ adminRouter.get("/admin", (req, res) => {
   const allowedSet = new Set(allowed.map((a) => a.from_number));
   const messageStats = getMessageStats();
   const messageSince = getMessageCountsSince();
+  const noExpenseStatuses = getNoExpenseReminderStatuses();
   const billingByNumber = new Map(listClientBilling().map((b) => [b.from_number, b]));
   const today = spDateString();
   const noExpenseReminderDays = new Set(getNoExpenseReminderDays());
@@ -330,6 +332,7 @@ adminRouter.get("/admin", (req, res) => {
         <td>${escapeHtml(a.note ?? "—")}</td>
         <td>${formatDate(a.added_at)}</td>
         <td>${renderMessageAverageCell(messageStats.get(a.from_number), messageSince, today)}</td>
+        <td>${escapeHtml(noExpenseStatusLabel(noExpenseStatuses.get(a.from_number)))}</td>
         <td>
           <form class="inline" method="post" action="/admin/allowlist/remove" onsubmit="return confirm('Bloquear esse número de novo?')">
             <input type="hidden" name="from_number" value="${escapeHtml(a.from_number)}">
@@ -502,7 +505,7 @@ ${dashboardAccounts.length ? `<table><tr><th>Número</th><th>Criada em</th><th>�
 
 <h2>Números autorizados (${allowed.length})</h2>
 <p class="warn">Só quem está nessa lista recebe resposta do assistente. Qualquer outro número é ignorado em silêncio (nada é respondido) — isso evita o bot ficar respondendo sem parar pra outro bot.</p>
-${allowed.length ? `<p class="warn">${escapeHtml(sinceNotice(messageSince))}</p><table><tr><th>Número</th><th>Nota</th><th>Autorizado em</th><th title="${escapeHtml(sinceNotice(messageSince))} Mensagens do cliente + respostas e avisos do bot; com menos de 30 dias de contagem mostro o total e o período.">Média de mensagens/mês</th><th></th></tr>${allowedRows}</table>` : `<p class="empty">Nenhum número autorizado ainda.</p>`}
+${allowed.length ? `<p class="warn">${escapeHtml(sinceNotice(messageSince))}</p><table><tr><th>Número</th><th>Nota</th><th>Autorizado em</th><th title="${escapeHtml(sinceNotice(messageSince))} Mensagens do cliente + respostas e avisos do bot; com menos de 30 dias de contagem mostro o total e o período.">Média de mensagens/mês</th><th title="Aviso &quot;você não registrou nenhum gasto&quot;: pausa sozinho depois de 2 avisos sem nenhum gasto ou entrada do cliente e volta quando ele registrar algo.">Aviso de gasto pendente</th><th></th></tr>${allowedRows}</table>` : `<p class="empty">Nenhum número autorizado ainda.</p>`}
 <form class="add-form" method="post" action="/admin/allowlist/add">
   <input type="text" name="from_number" placeholder="Ex: 5561999210718" required>
   <input type="text" name="note" placeholder="Nota (opcional)">

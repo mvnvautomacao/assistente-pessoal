@@ -374,6 +374,13 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "n
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_reminder_sent_date")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_reminder_sent_date TEXT`);
 }
+// Card 23: quantos avisos de "sem gastos" foram enviados seguidos sem o cliente registrar nada depois, e quando saiu o ultimo (ISO)
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_unanswered")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_unanswered INTEGER NOT NULL DEFAULT 0`);
+}
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_last_alert_at")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_last_alert_at TEXT`);
+}
 
 // bill_alerts existia antes da recorrencia por intervalo (so tinha dia fixo do
 // mes) -- linhas antigas ficam com recurrence_type default 'day_of_month' via
