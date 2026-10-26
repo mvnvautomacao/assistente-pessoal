@@ -18,7 +18,7 @@ function userFacingErrorText(err: unknown, fallback = "Deu erro aqui do meu lado
   }
   return fallback;
 }
-import { transcribeAudio } from "./ai/transcribe";
+import { isHintEcho, REPLY_VOCAB_HINT, transcribeAudio } from "./ai/transcribe";
 import {
   interpretText,
   interpretReceiptImage,
@@ -339,10 +339,12 @@ import {
   buildReplyConfirmMessage,
   clearPendingReplyConfirm,
   getPendingReplyConfirm,
+  heardLine,
   readReplyConfirmation,
   REPLY_QUESTION_GONE_TEXT,
   setPendingReplyConfirm,
   truncateText,
+  type ReplySource,
 } from "./confirmation/replyConfirm";
 import { billReplyQuestion, deleteReplyQuestion, previewReplyQuestion, recurrenceReplyQuestion, type ReplyQuestion } from "./confirmation/replyOptions";
 import { recordMessage } from "./activity/messageCounts";
@@ -479,6 +481,7 @@ function helpTopicMessage(
     | "agenda"
     | "finance"
     | "no_expense_reminder"
+    | "voice_reply"
 ): string | null {
   switch (topic) {
     case "welcome":
@@ -525,6 +528,14 @@ Você também pode:
 • Mandar uma foto do comprovante ou nota fiscal
 
 Eu registro sozinho e já escolho a categoria (tipo "Mercado", "Saúde"...). Se eu não souber qual categoria usar, eu pergunto pra você.`;
+    case "voice_reply":
+      return `🎧 Responder por áudio ou com suas palavras:
+
+Quando eu te faço uma pergunta com opções (1, 2 ou 3), você pode responder com o número, por áudio ou do seu jeito: "já paguei a conta hoje", "isso mesmo, pode salvar", "pode apagar".
+
+Se a frase não for exatamente uma das opções, eu repito o que entendi pra você confirmar: "Entendi que foi *1 ✅ Já paguei*. Confirma?" Responde *1* (ou "sim") pra seguir, ou *2* pra ver as opções de novo. Em áudio eu também mostro o que ouvi ("🎧 Ouvi: …") pra você conferir.
+
+Nada é feito antes da sua confirmação. Quando a frase tem condição, dúvida ou mistura ("não, já paguei", "acho que sim"), eu não escolho por você: mostro as opções de novo.`;
     case "no_expense_reminder":
       return `🔔 Aviso de gasto pendente:
 
@@ -788,7 +799,12 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // corrigida pra imagem (ver handleReceiptImage), agora tambem coberta aqui.
     try {
       const audioBase64 = await resolveMediaBase64(data);
-      if (audioBase64) text = await transcribeAudio(Buffer.from(audioBase64, "base64"));
+      // com pergunta de opcoes aberta, o Whisper recebe a dica de vocabulario; se ele so devolver a propria dica, nao ouviu nada (Card 24, RN09)
+      const hint = hasOpenReplyQuestion(from) ? { prompt: REPLY_VOCAB_HINT, temperature: 0 } : undefined;
+      if (audioBase64) {
+        text = await transcribeAudio(Buffer.from(audioBase64, "base64"), "audio.ogg", hint);
+        if (hint && isHintEcho(text, hint.prompt)) text = "";
+      }
     } catch (err) {
       console.error("Erro ao transcrever audio:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
@@ -808,6 +824,8 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // cliente. Essa rede de seguranca cobre todos de uma vez; quem ja tem
     // tratamento proprio (categorizacao, forma de pagamento, comprovante)
     // nunca chega a lancar ate aqui.
+    // de onde veio a mensagem (audio ou texto): o "nao entendi" e a sugestao mostram "Ouvi" so em audio (Card 24, RN08)
+    messageSources.set(from, data.messageType === "audioMessage" ? "audio" : "text");
     try {
       if (await resolveOpenPendings(from, text)) return;
     } catch (err) {
@@ -815,6 +833,8 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
       await sendText(from, userFacingErrorText(err));
       return;
+    } finally {
+      messageSources.delete(from);
     }
   }
 
@@ -910,6 +930,43 @@ async function dispatchAllInterpretations(from: string, interpretations: Interpr
   await processInterpretations(from, interpretations);
 }
 
+// Card 24: de onde veio a mensagem que esta sendo processada (por numero; so vale durante o processamento das pendencias)
+const messageSources = new Map<string, ReplySource>();
+
+const HEARD_LOG_CHARS = 200;
+
+// o texto que o bot ouviu, pro log: so em audio (digitado nao e transcricao), truncado em 200 caracteres (RN11)
+function heardForLog(from: string, text: string): string {
+  return messageSources.get(from) === "audio" && text.trim() ? `; ouvi: "${truncateText(text, HEARD_LOG_CHARS)}"` : "";
+}
+
+// ha uma pergunta com opcoes esperando resposta? (decide se o Whisper recebe a dica de vocabulario)
+function hasOpenReplyQuestion(from: string): boolean {
+  const bill = getPendingBillCheckin(from);
+  if (bill && bill.step === "ask_paid") return true;
+  const creation = getPendingCreateRecurrence(from);
+  if (creation && creation.step !== "fill") return true;
+  return [
+    getPendingReplyConfirm(from),
+    getPendingEventDeletion(from),
+    getPendingBulkRecategorize(from),
+    getPendingMergeCategories(from),
+    getPendingDeleteCategory(from),
+    getPendingDeleteExpense(from),
+    getPendingEditExpense(from),
+    getPendingEditIncome(from),
+    getPendingDeleteIncome(from),
+    getPendingEditEvent(from),
+    getPendingEditReminder(from),
+    getPendingReminderDeletion(from),
+    getPendingRemoveBudget(from),
+    getPendingRemoveRecurring(from),
+    getPendingEditRecurring(from),
+    getPendingEditBillAlert(from),
+    getPendingRemoveBillAlert(from),
+  ].some(Boolean);
+}
+
 // Card 24: identifica a(s) pergunta(s) aberta(s) agora (qual pendencia e quando foi criada); se mudou entre a sugestao e o "1", ela nao esta mais aberta
 function openPendingSignature(from: string): string {
   const parts: string[] = [];
@@ -925,7 +982,8 @@ function openPendingSignature(from: string): string {
 // da pergunta e propoe "Entendi que foi *N*. Confirma?"; nada e aplicado ate o cliente confirmar (RN05).
 async function tryInterpretReply(from: string, text: string, repeatText: string, context: NotUnderstoodContext): Promise<boolean> {
   const question = context.reply!;
-  const interpreted = await interpretOpenReply(from, text, question);
+  const source = messageSources.get(from) ?? "text";
+  const interpreted = await interpretOpenReply(from, text, question, source);
   if (!interpreted) return false;
   const { option, level } = interpreted;
   // chave opcional (padrao desligada, RN05): "pago" interpretado do aviso de conta vai direto pra pergunta do valor, repetindo o que foi entendido
@@ -940,14 +998,14 @@ async function tryInterpretReply(from: string, text: string, repeatText: string,
     optionLabel: option.label,
     intent: option.intent,
     originalText: text,
-    source: "text",
+    source,
     repeatText,
     signature: openPendingSignature(from),
     subject: question.subject ?? null,
     level,
   });
-  logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como opcao ${option.number} (${option.intent}, nivel ${level === "rules" ? "A" : "B"}); aguardando confirmacao`);
-  await sendText(from, buildReplyConfirmMessage({ optionNumber: option.number, optionLabel: option.label, subject: question.subject }));
+  logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como opcao ${option.number} (${option.intent}, nivel ${level === "rules" ? "A" : "B"}); aguardando confirmacao${heardForLog(from, text)}`);
+  await sendText(from, buildReplyConfirmMessage({ optionNumber: option.number, optionLabel: option.label, subject: question.subject, heard: source === "audio" ? text : null }));
   return true;
 }
 
@@ -1016,8 +1074,10 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
   }
 
   // a unica linha de log da resposta nao entendida (os resolvedores nao registram a sua)
-  if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida`);
-  await sendText(from, notUnderstoodText);
+  if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida${heardForLog(from, text)}`);
+  // em audio, mostra o que o bot ouviu (so quando houve texto) pra o cliente ver se a transcricao errou
+  const heardPrefix = messageSources.get(from) === "audio" && text.trim() ? `${heardLine(text)}\n` : "";
+  await sendText(from, `${heardPrefix}${notUnderstoodText}`);
 }
 
 // Card 24: as pendencias abertas, na ordem em que leem a mensagem de texto. Devolve true quando alguma respondeu (ou tratou) a mensagem; false deixa

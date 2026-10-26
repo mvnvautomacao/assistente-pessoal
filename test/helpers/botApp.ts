@@ -20,6 +20,9 @@ export interface BotApp {
   // Card 24: a IA que escolhe a opcao de uma resposta livre (classifyReply). Sem nada na fila devolve 'nenhuma' (baixa); um Error simula a IA fora do ar.
   queueClassification: (result: ReplyClassification | Error) => void;
   classifyCalls: ClassifyReplyInput[];
+  // Card 24: o que o Whisper "ouve" no proximo audio (um Error simula a transcricao falhando) e com que dica ele foi chamado
+  queueTranscription: (text: string | Error) => void;
+  transcribeCalls: TranscribeCall[];
 }
 
 interface Clock {
@@ -48,6 +51,20 @@ export function msg(from: string, text: string) {
   };
 }
 
+// mensagem de audio (o conteudo e fake: a transcricao vem de bot.queueTranscription)
+export function audioMsg(from: string) {
+  return {
+    key: { remoteJid: `${from}@s.whatsapp.net`, id: `ba-${Math.random().toString(36).slice(2)}`, fromMe: false },
+    messageType: "audioMessage" as const,
+    message: { base64: "QUFB" },
+  };
+}
+
+export interface TranscribeCall {
+  filename: string;
+  options: { prompt?: string; temperature?: number } | undefined;
+}
+
 export function bootApp(t: TestContext, now?: number): BotApp {
   const clock = clockFor(t);
   if (now !== undefined) clock.fixed = now;
@@ -66,6 +83,8 @@ export function bootApp(t: TestContext, now?: number): BotApp {
   let failing = false;
   const classifyQueue: (ReplyClassification | Error)[] = [];
   const classifyCalls: ClassifyReplyInput[] = [];
+  const transcriptions: (string | Error)[] = [];
+  const transcribeCalls: TranscribeCall[] = [];
   t.mock.method(client, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
@@ -76,6 +95,13 @@ export function bootApp(t: TestContext, now?: number): BotApp {
       throw new Error("IA fora do ar (simulado)");
     }
     return queue.shift() ?? [];
+  });
+  const transcribe = require("../../src/ai/transcribe");
+  t.mock.method(transcribe, "transcribeAudio", async (_audio: Buffer, filename: string, options?: TranscribeCall["options"]) => {
+    transcribeCalls.push({ filename, options });
+    const next = transcriptions.shift();
+    if (next instanceof Error) throw next;
+    return next ?? "";
   });
   t.mock.method(ai, "classifyReply", async (input: ClassifyReplyInput) => {
     classifyCalls.push(input);
@@ -90,6 +116,8 @@ export function bootApp(t: TestContext, now?: number): BotApp {
     queueReply: (a) => queue.push(a),
     queueClassification: (result) => void classifyQueue.push(result),
     classifyCalls,
+    queueTranscription: (text) => void transcriptions.push(text),
+    transcribeCalls,
     failNext: () => {
       failing = true;
     },

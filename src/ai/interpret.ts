@@ -120,7 +120,8 @@ export type Interpretation =
         | "income"
         | "agenda"
         | "finance"
-        | "no_expense_reminder";
+        | "no_expense_reminder"
+        | "voice_reply";
     }
   | { type: "list_expenses"; date?: string; days?: number; date_start?: string; date_end?: string; month?: string; last_n?: number; category?: string; payment_method?: string; fixed_only?: boolean; include_future?: boolean }
   | { type: "total_last_list" }
@@ -341,9 +342,10 @@ const ACTION_SCHEMA = {
         "agenda",
         "finance",
         "no_expense_reminder",
+        "voice_reply",
       ],
       description:
-        "So para type=help: sobre qual assunto especifico e a duvida do usuario, pra responder com um exemplo direcionado em vez do catalogo inteiro. 'welcome' e so quando o usuario pede EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas', 'quero ver a mensagem de novo usuario') — diferente de uma pergunta generica tipo 'o que voce faz', que deve deixar 'topic' em branco. 'agenda' e a duvida sobre ver a agenda e mexer nos itens pelo numero da lista (ex: 'como edito um item da agenda', 'como cancelo o 3'). 'finance' e a duvida sobre a agenda financeira (ex: 'como vejo o que vence', 'como funciona a agenda financeira'). 'no_expense_reminder' e a duvida sobre o aviso de gasto pendente, aquele 'voce nao registrou nenhum gasto hoje' (ex: 'por que parou de me avisar dos gastos', 'como desligo o aviso de gasto', 'como volto a receber o aviso').",
+        "So para type=help: sobre qual assunto especifico e a duvida do usuario, pra responder com um exemplo direcionado em vez do catalogo inteiro. 'welcome' e so quando o usuario pede EXPLICITAMENTE pra ver/reenviar a mensagem de boas-vindas (ex: 'manda a mensagem de boas-vindas', 'reenvia as boas-vindas', 'quero ver a mensagem de novo usuario') — diferente de uma pergunta generica tipo 'o que voce faz', que deve deixar 'topic' em branco. 'agenda' e a duvida sobre ver a agenda e mexer nos itens pelo numero da lista (ex: 'como edito um item da agenda', 'como cancelo o 3'). 'finance' e a duvida sobre a agenda financeira (ex: 'como vejo o que vence', 'como funciona a agenda financeira'). 'voice_reply' e a duvida sobre responder por audio ou com as proprias palavras as perguntas com opcoes 1/2/3 (ex: 'posso responder por audio', 'preciso digitar o numero', 'por que voce repetiu o que eu falei'). 'no_expense_reminder' e a duvida sobre o aviso de gasto pendente, aquele 'voce nao registrou nenhum gasto hoje' (ex: 'por que parou de me avisar dos gastos', 'como desligo o aviso de gasto', 'como volto a receber o aviso').",
     },
     date: {
       type: "string",

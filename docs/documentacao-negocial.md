@@ -144,11 +144,23 @@ Dizer só **"editar"** mostra o que dá para editar. Para cada item, o assistent
 
 ### 3.10 Ajuda
 
-💬 "Ajuda", "o que você faz" ou perguntas como "como adiciono um gasto?" trazem explicações com exemplos prontos para copiar. Há ajuda por assunto: gasto, evento, lembrete, orçamento, consultas de gastos, editar gasto, categoria, forma de pagamento, gasto fixo e contas fixas, entradas, agenda numerada e agenda financeira.
+💬 "Ajuda", "o que você faz" ou perguntas como "como adiciono um gasto?" trazem explicações com exemplos prontos para copiar. Há ajuda por assunto: gasto, evento, lembrete, orçamento, consultas de gastos, editar gasto, categoria, forma de pagamento, gasto fixo e contas fixas, entradas, agenda numerada, agenda financeira, aviso de gasto pendente e responder por áudio.
 
 ### 3.11 Busca tolerante
 
 Para achar evento, lembrete, gasto fixo ou conta pelo nome, o assistente **ignora acentos e maiúsculas**, aceita as palavras em qualquer ordem e ignora artigos ("o remédio" acha "Remédio da pressão").
+
+### 3.12 Responder por áudio ou com as próprias palavras
+
+Nas perguntas com opções (prévia 1/2/3, apagar 1/3, aviso de conta fixa e as perguntas do cadastro de gasto fixo), o cliente pode responder **com o número, por áudio ou do seu jeito** ("já paguei a conta hoje", "isso mesmo, pode salvar", "pode apagar").
+
+- Se a frase for exatamente uma das respostas conhecidas ("1", "sim", "já paguei"), tudo segue como sempre.
+- Se não for, o assistente tenta entender a frase **dentro das opções daquela pergunta** e **repete o que entendeu** para o cliente confirmar: *"Entendi que foi 1 ✅ Já paguei. Confirma?"* com *1 Sim, é isso* e *2 Não, ver as opções*. **Nada é feito antes dessa confirmação.**
+- **1** (ou "sim") aplica exatamente como se o cliente tivesse respondido o número da opção; **2** (ou "não") mostra as opções de novo; qualquer outra resposta descarta a sugestão e a conversa segue normalmente.
+- Frases com negação, condição, dúvida, valor ou mistura de sentidos ("não, já paguei", "sim, mas só amanhã", "acho que sim", "paguei metade") **não viram sugestão**: o assistente mostra as opções de novo.
+- Em **áudio**, o assistente mostra o que ouviu ("🎧 Ouvi: …") na sugestão e no "não entendi", para o cliente conferir a transcrição. Em texto digitado essa linha nunca aparece.
+- Por segurança de custo, a interpretação por inteligência artificial é limitada a 3 tentativas por cliente a cada 10 minutos; acima disso só vale a regra simples.
+- A transcrição só é guardada no registro de atividade (limitada a 200 caracteres) quando a mensagem não foi entendida ou foi interpretada.
 
 ---
 

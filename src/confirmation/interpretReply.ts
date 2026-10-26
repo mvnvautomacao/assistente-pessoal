@@ -148,7 +148,7 @@ export async function interpretReplyWithAi(from: string, text: string, question:
     if (result.confidence !== "alta" || result.option === null) return null;
     return question.options.find((o) => o.number === result.option) ?? null;
   } catch (err) {
-    console.error("Erro ao interpretar a resposta com a IA:", err);
+    console.error("Erro ao interpretar a resposta com a IA:", err instanceof Error ? err.message : err);
     return null;
   }
 }
