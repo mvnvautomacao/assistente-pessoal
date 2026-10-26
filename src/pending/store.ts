@@ -36,7 +36,9 @@ export type PendingKind =
   | "remove_recurring"
   | "remove_bill_alert"
   | "merge_categories"
-  | "bulk_recategorize";
+  | "bulk_recategorize"
+  // sugestao "Entendi que foi *N*. Confirma?" de uma resposta livre ou falada (Card 24)
+  | "reply_confirm";
 
 // quanto tempo depois do vencimento a linha ainda existe so pro aviso de expiracao
 export const EXPIRED_NOTICE_WINDOW_MS = 60 * 60 * 1000;

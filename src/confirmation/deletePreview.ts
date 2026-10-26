@@ -18,7 +18,7 @@ export type DeleteFlow =
   | "merge"
   | "bulk";
 
-interface FlowText {
+export interface FlowText {
   confirm: string; // opcao 1
   cancel: string; // opcao 3
   verb: string; // "Responde *1* pra <verbo> ..."
@@ -36,6 +36,11 @@ const FLOWS: Record<DeleteFlow, FlowText> = {
   merge: { confirm: "🔀 Juntar", cancel: "❌ Cancelar", verb: "juntar" },
   bulk: { confirm: "✅ Mudar", cancel: "❌ Cancelar", verb: "mudar" },
 };
+
+// rotulos de um fluxo (opcao 1, opcao 3 e o verbo), usados tambem pela interpretacao de resposta livre (Card 24)
+export function deleteFlowLabels(flow: DeleteFlow): FlowText {
+  return FLOWS[flow];
+}
 
 export interface DeleteSpec {
   flow: DeleteFlow;

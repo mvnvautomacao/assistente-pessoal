@@ -334,6 +334,16 @@ import {
   reminderChangedSince,
   reminderCurrentValue,
 } from "./confirmation/changedSince";
+import { interpretOpenReply } from "./confirmation/interpretReply";
+import {
+  buildReplyConfirmMessage,
+  clearPendingReplyConfirm,
+  getPendingReplyConfirm,
+  readReplyConfirmation,
+  REPLY_QUESTION_GONE_TEXT,
+  setPendingReplyConfirm,
+} from "./confirmation/replyConfirm";
+import { billReplyQuestion, deleteReplyQuestion, previewReplyQuestion, recurrenceReplyQuestion, type ReplyQuestion } from "./confirmation/replyOptions";
 import { recordMessage } from "./activity/messageCounts";
 import { isRateLimited, recordMessageAndCheckLimit } from "./access/rateLimit";
 import { shouldAlertOwner } from "./access/ownerAlert";
@@ -798,249 +808,7 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // tratamento proprio (categorizacao, forma de pagamento, comprovante)
     // nunca chega a lancar ate aqui.
     try {
-    // checado ANTES da fila de categorizacao: e a pergunta mais recente feita
-    // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
-    // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
-    // resposta dele deve resolver essa, nao uma categoria mais antiga na fila.
-    // com confirmacao de edicao ativa, "cancelar"/"cancela" fica com o resolver
-    // dela (responde "Beleza, nao mexi em nada." / cancela a correcao) em vez do
-    // cancelamento geral; as outras saidas de emergencia (esquece, chega...) seguem iguais.
-    const activeEdit = describeActiveEditConfirmation(from);
-    const deferCancelToEdit = (activeEdit !== null || getPendingTargetChoice(from) !== null) && CANCEL_ONLY_REPLY.test(text);
-    if (CANCEL_COMMAND.test(text) && !deferCancelToEdit) {
-      const cancelled = cancelAllPendings(from);
-      if (cancelled > 0) {
-        logActivity(from, "cancel", `${cancelled} pendencia(s) cancelada(s) pelo usuario`);
-        await sendText(from, "Beleza, cancelei o que estava pendente — nada disso foi registrado. Pode mandar uma nova mensagem. 🙂");
-        return;
-      }
-      // nada pendente: em vez de cair no "nao entendi se e gasto, evento ou lembrete"
-      logActivity(from, "cancel", "nada pendente pra cancelar");
-      await sendText(
-        from,
-        'Não tem nada pendente pra cancelar agora. 🙂 Se você quer desfazer a última coisa que eu fiz, diga "desfaz isso".'
-      );
-      return;
-    }
-
-    // Card 17: frase solta de funcionalidade ("trocar categoria", "apagar gasto", "mudar data", "categoria")
-    if (await handleLooseCommand(from, text, activeEdit?.awaitingCorrection === true)) return;
-
-    // so a palavra "editar"/"alterar"/"ajustar"/"trocar"... sem dizer o que:
-    // pergunta o que editar (em vez de cair no "nao entendi" generico).
-    if (BARE_EDIT_COMMAND.test(text)) {
-      cancelAllPendings(from);
-      setPendingEditTarget(from);
-      logActivity(from, "help", "palavra solta de edicao -- perguntou o que editar");
-      await sendText(from, EDIT_TARGET_MENU);
-      return;
-    }
-
-    // comando explicito diferente do que estava pendente: descarta a
-    // pendencia (sem avisar "cancelei", ja que o usuario nem sabia que algo
-    // tava pendente) e deixa cair na classificacao normal mais abaixo, como
-    // se fosse uma mensagem nova -- nao retorna aqui de proposito.
-    // Em "aguardando correcao" a mensagem e o novo valor, entao nunca e pedido novo.
-    // Com previa de edicao ativa, a frase primeiro e testada como correcao (valor ou
-    // data/hora); so se nao der e que a edicao e descartada -- e avisa numa linha.
-    if (looksLikeExplicitDifferentRequest(text) && !activeEdit?.awaitingCorrection) {
-      const asCorrection =
-        activeEdit !== null && acceptsFreeText(activeEdit.kind) ? await interpretCorrection(activeEdit.kind, text) : null;
-      if (!asCorrection || "error" in asCorrection) {
-        const hadTargetChoice = getPendingTargetChoice(from) !== null;
-        const cancelled = cancelAllPendings(from);
-        if (cancelled > 0) {
-          logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
-          if (activeEdit) await sendText(from, `Cancelei a alteração de "${activeEdit.label}" e entendi seu novo pedido.`);
-          else if (hadTargetChoice) await sendText(from, "Cancelei a escolha anterior e entendi seu novo pedido.");
-        }
-      }
-    }
-
-    const pendingLooseSuggest = getPendingLooseSuggest(from);
-    if (pendingLooseSuggest && (await resolveLooseSuggestReply(from, pendingLooseSuggest.options, text))) return;
-
-    if (getPendingEditTarget(from)) {
-      await resolveEditTargetChoice(from, text);
-      return;
-    }
-
-    // escolha de item (lista numerada de candidatos): checada ANTES da IA e das
-    // outras pendencias, pra "2" ser a escolha e nao outra coisa (RN10)
-    const pendingTargetChoice = getPendingTargetChoice(from);
-    if (pendingTargetChoice) {
-      await resolveTargetChoiceReply(from, pendingTargetChoice, text);
-      return;
-    }
-
-    // menu guiado de campos (Card 4): item ja escolhido, falta dizer o que mudar
-    const pendingFieldMenu = getPendingFieldMenu(from);
-    if (pendingFieldMenu) {
-      await resolveFieldMenuReply(from, pendingFieldMenu, text);
-      return;
-    }
-
-    // cadastro de gasto fixo / alerta de conta em andamento (Card 13)
-    const pendingCreateRecurrence = getPendingCreateRecurrence(from);
-    if (pendingCreateRecurrence) {
-      await resolveCreateRecurrence(from, pendingCreateRecurrence, text);
-      return;
-    }
-
-    let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
-    while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
-      await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
-      pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
-    }
-    if (pendingPaymentMethod) {
-      await resolvePendingExpensePaymentMethod(from, pendingPaymentMethod, text);
-      return;
-    }
-
-    let pending = getNextPendingCategorization(from);
-    while (pending && isPendingCategorizationExpired(pending)) {
-      await finalizePendingCategorizationByTimeout(from, pending);
-      pending = getNextPendingCategorization(from);
-    }
-    if (pending) {
-      await resolvePendingCategorization(from, pending, text);
-      return;
-    }
-
-    const pendingCompletion = getNextPendingCompletion(from);
-    if (pendingCompletion) {
-      await resolvePendingCompletion(from, pendingCompletion, text);
-      return;
-    }
-
-    const pendingChoice = getPendingListChoice(from);
-    if (pendingChoice) {
-      await resolveListChoice(from, pendingChoice.days, text);
-      return;
-    }
-
-    const pendingDeletion = getPendingEventDeletion(from);
-    if (pendingDeletion) {
-      await resolveEventDeletionConfirmation(from, pendingDeletion, text);
-      return;
-    }
-
-    const pendingBulkRecat = getPendingBulkRecategorize(from);
-    if (pendingBulkRecat) {
-      await resolveBulkRecategorizeConfirmation(from, pendingBulkRecat, text);
-      return;
-    }
-
-    const pendingMerge = getPendingMergeCategories(from);
-    if (pendingMerge) {
-      await resolveMergeCategoriesConfirmation(from, pendingMerge, text);
-      return;
-    }
-
-    const pendingDeleteExpense = getPendingDeleteExpense(from);
-    if (pendingDeleteExpense) {
-      await resolveDeleteExpenseConfirmation(from, pendingDeleteExpense, text);
-      return;
-    }
-
-    const pendingDeleteCategory = getPendingDeleteCategory(from);
-    if (pendingDeleteCategory) {
-      await resolveDeleteCategoryConfirmation(from, pendingDeleteCategory, text);
-      return;
-    }
-
-    const pendingEditExpense = getPendingEditExpense(from);
-    if (pendingEditExpense) {
-      await resolveEditExpenseConfirmation(from, pendingEditExpense, text);
-      return;
-    }
-
-    const pendingEditIncome = getPendingEditIncome(from);
-    if (pendingEditIncome) {
-      await resolveEditIncomeConfirmation(from, pendingEditIncome, text);
-      return;
-    }
-
-    const pendingDeleteIncome = getPendingDeleteIncome(from);
-    if (pendingDeleteIncome) {
-      await resolveDeleteIncomeConfirmation(from, pendingDeleteIncome, text);
-      return;
-    }
-
-    const pendingEditEvent = getPendingEditEvent(from);
-    if (pendingEditEvent) {
-      await resolveEditEventConfirmation(from, pendingEditEvent, text);
-      return;
-    }
-
-    const pendingEditReminder = getPendingEditReminder(from);
-    if (pendingEditReminder) {
-      await resolveEditReminderConfirmation(from, pendingEditReminder, text);
-      return;
-    }
-
-    const pendingReminderDeletion = getPendingReminderDeletion(from);
-    if (pendingReminderDeletion) {
-      await resolveReminderDeletionConfirmation(from, pendingReminderDeletion, text);
-      return;
-    }
-
-    const pendingReminderAdvanceChoice = getPendingReminderAdvanceChoice(from);
-    if (pendingReminderAdvanceChoice) {
-      await resolveReminderAdvanceChoice(from, pendingReminderAdvanceChoice, text);
-      return;
-    }
-
-    const pendingRemoveBudget = getPendingRemoveBudget(from);
-    if (pendingRemoveBudget) {
-      await resolveRemoveBudgetConfirmation(from, pendingRemoveBudget, text);
-      return;
-    }
-
-    const pendingRemoveRecurring = getPendingRemoveRecurring(from);
-    if (pendingRemoveRecurring) {
-      await resolveRemoveRecurringConfirmation(from, pendingRemoveRecurring, text);
-      return;
-    }
-
-    const pendingEditRecurring = getPendingEditRecurring(from);
-    if (pendingEditRecurring) {
-      await resolveEditRecurringConfirmation(from, pendingEditRecurring, text);
-      return;
-    }
-
-    const pendingEditBill = getPendingEditBillAlert(from);
-    if (pendingEditBill) {
-      await resolveEditBillConfirmation(from, pendingEditBill, text);
-      return;
-    }
-
-    const pendingRemoveBillAlert = getPendingRemoveBillAlert(from);
-    if (pendingRemoveBillAlert) {
-      await resolveRemoveBillAlertConfirmation(from, pendingRemoveBillAlert, text);
-      return;
-    }
-
-    const pendingBillCheckin = getPendingBillCheckin(from);
-    if (pendingBillCheckin) {
-      // devolve false quando a mensagem nao e pra ele (ex: "desfaz isso"): segue o fluxo normal
-      if (await resolveBillCheckinAnswer(from, pendingBillCheckin, text)) return;
-    }
-
-    const pendingReceipt = getPendingReceiptConfirmation(from);
-    if (pendingReceipt) {
-      await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
-      return;
-    }
-
-    // nenhuma pendencia ativa respondeu: se a mensagem e so uma resposta de pendencia ("1",
-    // "sim", "desfaz"...) e existe uma que VENCEU ha pouco, explica em vez de mandar pra IA
-    const expiredNotice = consumeExpiredNotice(from, text);
-    if (expiredNotice) {
-      logActivity(from, "pending_expired", "resposta depois do prazo -- avisou que expirou");
-      await sendText(from, expiredNotice);
-      return;
-    }
+      if (await resolveOpenPendings(from, text)) return;
     } catch (err) {
       console.error("Erro ao resolver pendencia:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
@@ -1141,6 +909,40 @@ async function dispatchAllInterpretations(from: string, interpretations: Interpr
   await processInterpretations(from, interpretations);
 }
 
+// Card 24: identifica a(s) pergunta(s) aberta(s) agora (qual pendencia e quando foi criada); se mudou entre a sugestao e o "1", ela nao esta mais aberta
+function openPendingSignature(from: string): string {
+  const parts: string[] = [];
+  simplePendings(from).forEach(([state], index) => {
+    if (state) parts.push(`${index}:${(state as { createdAt?: number }).createdAt ?? ""}`);
+  });
+  const bill = getPendingBillCheckin(from);
+  if (bill) parts.push(`bill:${bill.billAlertId}:${bill.step}:${bill.createdAt}`);
+  return parts.join("|");
+}
+
+// Card 24 (RN01): a resposta nao bateu com as frases exatas da pergunta aberta. Antes de tratar como pedido novo, tenta entende-la DENTRO das opcoes
+// da pergunta e propoe "Entendi que foi *N*. Confirma?"; nada e aplicado ate o cliente confirmar (RN05).
+async function tryInterpretReply(from: string, text: string, repeatText: string, context: NotUnderstoodContext): Promise<boolean> {
+  const question = context.reply!;
+  const interpreted = await interpretOpenReply(from, text, question);
+  if (!interpreted) return false;
+  const { option, level } = interpreted;
+  setPendingReplyConfirm(from, {
+    optionNumber: option.number,
+    optionLabel: option.label,
+    intent: option.intent,
+    originalText: text,
+    source: "text",
+    repeatText,
+    signature: openPendingSignature(from),
+    subject: question.subject ?? null,
+    level,
+  });
+  logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como opcao ${option.number} (${option.intent}, nivel ${level === "rules" ? "A" : "B"}); aguardando confirmacao`);
+  await sendText(from, buildReplyConfirmMessage({ optionNumber: option.number, optionLabel: option.label, subject: question.subject }));
+  return true;
+}
+
 // quantas segundas chances (chamadas da IA) cada numero ja usou na janela -- ver takeSecondChance
 const secondChanceCalls = new Map<string, number[]>();
 
@@ -1154,6 +956,8 @@ interface NotUnderstoodContext {
   keepPending?: boolean;
   // minimo de palavras pra ir pra IA (padrao 2; o aviso de conta aceita 1, ex: "ajuda")
   minWords?: number;
+  // Card 24: as opcoes da pergunta aberta; com elas, uma resposta livre e entendida DENTRO das opcoes antes de virar pedido novo
+  reply?: ReplyQuestion;
 }
 
 // Card 12 (D-07): o resolvedor de uma confirmacao aberta NAO entendeu a mensagem. Antes de so repetir
@@ -1171,6 +975,8 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
     await sendText(from, undoWithPendingText(label, kind));
     return;
   }
+
+  if (context.reply && (await tryInterpretReply(from, text, notUnderstoodText, context))) return;
 
   let interpretations: Interpretation[] | null = null;
   let logged = false;
@@ -1204,6 +1010,279 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
   // a unica linha de log da resposta nao entendida (os resolvedores nao registram a sua)
   if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida`);
   await sendText(from, notUnderstoodText);
+}
+
+// Card 24: as pendencias abertas, na ordem em que leem a mensagem de texto. Devolve true quando alguma respondeu (ou tratou) a mensagem; false deixa
+// a mensagem seguir pro fluxo normal. Extraida do handleIncomingMessage pra a confirmacao "Entendi que foi *N*" poder responder o numero da opcao
+// por aqui, como se o cliente tivesse digitado.
+async function resolveOpenPendings(from: string, text: string): Promise<boolean> {
+    // checado ANTES da fila de categorizacao: e a pergunta mais recente feita
+    // ao usuario (so existe depois que uma categoria ja foi resolvida, ver
+    // createExpenseAndNotify/resolvePendingCategorization), entao a proxima
+    // resposta dele deve resolver essa, nao uma categoria mais antiga na fila.
+    // com confirmacao de edicao ativa, "cancelar"/"cancela" fica com o resolver
+    // dela (responde "Beleza, nao mexi em nada." / cancela a correcao) em vez do
+    // cancelamento geral; as outras saidas de emergencia (esquece, chega...) seguem iguais.
+    const activeEdit = describeActiveEditConfirmation(from);
+    const deferCancelToEdit = (activeEdit !== null || getPendingTargetChoice(from) !== null) && CANCEL_ONLY_REPLY.test(text);
+    if (CANCEL_COMMAND.test(text) && !deferCancelToEdit) {
+      const cancelled = cancelAllPendings(from);
+      if (cancelled > 0) {
+        logActivity(from, "cancel", `${cancelled} pendencia(s) cancelada(s) pelo usuario`);
+        await sendText(from, "Beleza, cancelei o que estava pendente — nada disso foi registrado. Pode mandar uma nova mensagem. 🙂");
+        return true;
+      }
+      // nada pendente: em vez de cair no "nao entendi se e gasto, evento ou lembrete"
+      logActivity(from, "cancel", "nada pendente pra cancelar");
+      await sendText(
+        from,
+        'Não tem nada pendente pra cancelar agora. 🙂 Se você quer desfazer a última coisa que eu fiz, diga "desfaz isso".'
+      );
+      return true;
+    }
+
+    // Card 24: resposta a "Entendi que foi *N*. Confirma?" -- 1/sim aplica (chamando o resolvedor ORIGINAL com o numero da opcao), 2/nao mostra as
+    // opcoes de novo e qualquer outra coisa descarta a sugestao e segue o fluxo normal da pergunta original (inclusive "3" e "cancelar")
+    const replyConfirm = getPendingReplyConfirm(from);
+    if (replyConfirm) {
+      clearPendingReplyConfirm(from);
+      const answer = readReplyConfirmation(text);
+      if (answer === "yes") {
+        if (openPendingSignature(from) !== replyConfirm.signature) {
+          logActivity(from, "reply_interpreted", "sugestao confirmada, mas a pergunta original ja nao estava aberta");
+          await sendText(from, REPLY_QUESTION_GONE_TEXT);
+          return true;
+        }
+        logActivity(from, "reply_interpreted", `opcao ${replyConfirm.optionNumber} (${replyConfirm.intent}) confirmada pelo cliente`);
+        return resolveOpenPendings(from, String(replyConfirm.optionNumber));
+      }
+      if (answer === "no") {
+        logActivity(from, "reply_interpreted", `opcao ${replyConfirm.optionNumber} (${replyConfirm.intent}) recusada: mostrou as opcoes de novo`);
+        await sendText(from, replyConfirm.repeatText);
+        return true;
+      }
+      // "other": a sugestao some em silencio e a mensagem segue pelo fluxo normal
+    }
+
+    // Card 17: frase solta de funcionalidade ("trocar categoria", "apagar gasto", "mudar data", "categoria")
+    if (await handleLooseCommand(from, text, activeEdit?.awaitingCorrection === true)) return true;
+
+    // so a palavra "editar"/"alterar"/"ajustar"/"trocar"... sem dizer o que:
+    // pergunta o que editar (em vez de cair no "nao entendi" generico).
+    if (BARE_EDIT_COMMAND.test(text)) {
+      cancelAllPendings(from);
+      setPendingEditTarget(from);
+      logActivity(from, "help", "palavra solta de edicao -- perguntou o que editar");
+      await sendText(from, EDIT_TARGET_MENU);
+      return true;
+    }
+
+    // comando explicito diferente do que estava pendente: descarta a
+    // pendencia (sem avisar "cancelei", ja que o usuario nem sabia que algo
+    // tava pendente) e deixa cair na classificacao normal mais abaixo, como
+    // se fosse uma mensagem nova -- nao retorna aqui de proposito.
+    // Em "aguardando correcao" a mensagem e o novo valor, entao nunca e pedido novo.
+    // Com previa de edicao ativa, a frase primeiro e testada como correcao (valor ou
+    // data/hora); so se nao der e que a edicao e descartada -- e avisa numa linha.
+    if (looksLikeExplicitDifferentRequest(text) && !activeEdit?.awaitingCorrection) {
+      const asCorrection =
+        activeEdit !== null && acceptsFreeText(activeEdit.kind) ? await interpretCorrection(activeEdit.kind, text) : null;
+      if (!asCorrection || "error" in asCorrection) {
+        const hadTargetChoice = getPendingTargetChoice(from) !== null;
+        const cancelled = cancelAllPendings(from);
+        if (cancelled > 0) {
+          logActivity(from, "cancel", `${cancelled} pendencia(s) substituida(s) por um pedido explicito diferente: "${text}"`);
+          if (activeEdit) await sendText(from, `Cancelei a alteração de "${activeEdit.label}" e entendi seu novo pedido.`);
+          else if (hadTargetChoice) await sendText(from, "Cancelei a escolha anterior e entendi seu novo pedido.");
+        }
+      }
+    }
+
+    const pendingLooseSuggest = getPendingLooseSuggest(from);
+    if (pendingLooseSuggest && (await resolveLooseSuggestReply(from, pendingLooseSuggest.options, text))) return true;
+
+    if (getPendingEditTarget(from)) {
+      await resolveEditTargetChoice(from, text);
+      return true;
+    }
+
+    // escolha de item (lista numerada de candidatos): checada ANTES da IA e das
+    // outras pendencias, pra "2" ser a escolha e nao outra coisa (RN10)
+    const pendingTargetChoice = getPendingTargetChoice(from);
+    if (pendingTargetChoice) {
+      await resolveTargetChoiceReply(from, pendingTargetChoice, text);
+      return true;
+    }
+
+    // menu guiado de campos (Card 4): item ja escolhido, falta dizer o que mudar
+    const pendingFieldMenu = getPendingFieldMenu(from);
+    if (pendingFieldMenu) {
+      await resolveFieldMenuReply(from, pendingFieldMenu, text);
+      return true;
+    }
+
+    // cadastro de gasto fixo / alerta de conta em andamento (Card 13)
+    const pendingCreateRecurrence = getPendingCreateRecurrence(from);
+    if (pendingCreateRecurrence) {
+      await resolveCreateRecurrence(from, pendingCreateRecurrence, text);
+      return true;
+    }
+
+    let pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
+    while (pendingPaymentMethod && isPendingExpensePaymentMethodExpired(pendingPaymentMethod)) {
+      await finalizePendingExpensePaymentMethodByTimeout(from, pendingPaymentMethod);
+      pendingPaymentMethod = getNextPendingExpensePaymentMethod(from);
+    }
+    if (pendingPaymentMethod) {
+      await resolvePendingExpensePaymentMethod(from, pendingPaymentMethod, text);
+      return true;
+    }
+
+    let pending = getNextPendingCategorization(from);
+    while (pending && isPendingCategorizationExpired(pending)) {
+      await finalizePendingCategorizationByTimeout(from, pending);
+      pending = getNextPendingCategorization(from);
+    }
+    if (pending) {
+      await resolvePendingCategorization(from, pending, text);
+      return true;
+    }
+
+    const pendingCompletion = getNextPendingCompletion(from);
+    if (pendingCompletion) {
+      await resolvePendingCompletion(from, pendingCompletion, text);
+      return true;
+    }
+
+    const pendingChoice = getPendingListChoice(from);
+    if (pendingChoice) {
+      await resolveListChoice(from, pendingChoice.days, text);
+      return true;
+    }
+
+    const pendingDeletion = getPendingEventDeletion(from);
+    if (pendingDeletion) {
+      await resolveEventDeletionConfirmation(from, pendingDeletion, text);
+      return true;
+    }
+
+    const pendingBulkRecat = getPendingBulkRecategorize(from);
+    if (pendingBulkRecat) {
+      await resolveBulkRecategorizeConfirmation(from, pendingBulkRecat, text);
+      return true;
+    }
+
+    const pendingMerge = getPendingMergeCategories(from);
+    if (pendingMerge) {
+      await resolveMergeCategoriesConfirmation(from, pendingMerge, text);
+      return true;
+    }
+
+    const pendingDeleteExpense = getPendingDeleteExpense(from);
+    if (pendingDeleteExpense) {
+      await resolveDeleteExpenseConfirmation(from, pendingDeleteExpense, text);
+      return true;
+    }
+
+    const pendingDeleteCategory = getPendingDeleteCategory(from);
+    if (pendingDeleteCategory) {
+      await resolveDeleteCategoryConfirmation(from, pendingDeleteCategory, text);
+      return true;
+    }
+
+    const pendingEditExpense = getPendingEditExpense(from);
+    if (pendingEditExpense) {
+      await resolveEditExpenseConfirmation(from, pendingEditExpense, text);
+      return true;
+    }
+
+    const pendingEditIncome = getPendingEditIncome(from);
+    if (pendingEditIncome) {
+      await resolveEditIncomeConfirmation(from, pendingEditIncome, text);
+      return true;
+    }
+
+    const pendingDeleteIncome = getPendingDeleteIncome(from);
+    if (pendingDeleteIncome) {
+      await resolveDeleteIncomeConfirmation(from, pendingDeleteIncome, text);
+      return true;
+    }
+
+    const pendingEditEvent = getPendingEditEvent(from);
+    if (pendingEditEvent) {
+      await resolveEditEventConfirmation(from, pendingEditEvent, text);
+      return true;
+    }
+
+    const pendingEditReminder = getPendingEditReminder(from);
+    if (pendingEditReminder) {
+      await resolveEditReminderConfirmation(from, pendingEditReminder, text);
+      return true;
+    }
+
+    const pendingReminderDeletion = getPendingReminderDeletion(from);
+    if (pendingReminderDeletion) {
+      await resolveReminderDeletionConfirmation(from, pendingReminderDeletion, text);
+      return true;
+    }
+
+    const pendingReminderAdvanceChoice = getPendingReminderAdvanceChoice(from);
+    if (pendingReminderAdvanceChoice) {
+      await resolveReminderAdvanceChoice(from, pendingReminderAdvanceChoice, text);
+      return true;
+    }
+
+    const pendingRemoveBudget = getPendingRemoveBudget(from);
+    if (pendingRemoveBudget) {
+      await resolveRemoveBudgetConfirmation(from, pendingRemoveBudget, text);
+      return true;
+    }
+
+    const pendingRemoveRecurring = getPendingRemoveRecurring(from);
+    if (pendingRemoveRecurring) {
+      await resolveRemoveRecurringConfirmation(from, pendingRemoveRecurring, text);
+      return true;
+    }
+
+    const pendingEditRecurring = getPendingEditRecurring(from);
+    if (pendingEditRecurring) {
+      await resolveEditRecurringConfirmation(from, pendingEditRecurring, text);
+      return true;
+    }
+
+    const pendingEditBill = getPendingEditBillAlert(from);
+    if (pendingEditBill) {
+      await resolveEditBillConfirmation(from, pendingEditBill, text);
+      return true;
+    }
+
+    const pendingRemoveBillAlert = getPendingRemoveBillAlert(from);
+    if (pendingRemoveBillAlert) {
+      await resolveRemoveBillAlertConfirmation(from, pendingRemoveBillAlert, text);
+      return true;
+    }
+
+    const pendingBillCheckin = getPendingBillCheckin(from);
+    if (pendingBillCheckin) {
+      // devolve false quando a mensagem nao e pra ele (ex: "desfaz isso"): segue o fluxo normal
+      if (await resolveBillCheckinAnswer(from, pendingBillCheckin, text)) return true;
+    }
+
+    const pendingReceipt = getPendingReceiptConfirmation(from);
+    if (pendingReceipt) {
+      await resolvePendingReceiptConfirmation(from, pendingReceipt, text);
+      return true;
+    }
+
+    // nenhuma pendencia ativa respondeu: se a mensagem e so uma resposta de pendencia ("1",
+    // "sim", "desfaz"...) e existe uma que VENCEU ha pouco, explica em vez de mandar pra IA
+    const expiredNotice = consumeExpiredNotice(from, text);
+    if (expiredNotice) {
+      logActivity(from, "pending_expired", "resposta depois do prazo -- avisou que expirou");
+      await sendText(from, expiredNotice);
+      return true;
+    }
+  return false;
 }
 
 // ---- cadastro de gasto fixo e alerta de conta (Card 13) ------------------------------------------------
@@ -1503,7 +1582,7 @@ async function resolveCreateRecurrence(from: string, pending: PendingCreateRecur
         await advanceRecurrence(from, { ...state, mode });
         return;
       }
-      await handleNotUnderstood(from, answerText, CHOOSE_TYPE_NOT_UNDERSTOOD, context);
+      await handleNotUnderstood(from, answerText, CHOOSE_TYPE_NOT_UNDERSTOOD, { ...context, reply: recurrenceReplyQuestion("choose_type") });
       return;
     }
     case "duplicate": {
@@ -1518,7 +1597,7 @@ async function resolveCreateRecurrence(from: string, pending: PendingCreateRecur
         await updateExistingFromDraft(from, pending);
         return;
       }
-      await handleNotUnderstood(from, answerText, DUPLICATE_NOT_UNDERSTOOD, context);
+      await handleNotUnderstood(from, answerText, DUPLICATE_NOT_UNDERSTOOD, { ...context, reply: recurrenceReplyQuestion("duplicate") });
       return;
     }
     case "confirm": {
@@ -1530,7 +1609,7 @@ async function resolveCreateRecurrence(from: string, pending: PendingCreateRecur
         return;
       }
       if (reply !== "confirm") {
-        await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, context);
+        await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { ...context, reply: previewReplyQuestion(label) });
         return;
       }
       if (pending.mode === "bill_alert") {
@@ -1560,7 +1639,7 @@ async function resolveCreateRecurrence(from: string, pending: PendingCreateRecur
         await finishRecurringCreation(from, pending.draft, reply === "confirm" ? "launch" : "skip");
         return;
       }
-      await handleNotUnderstood(from, answerText, THIS_MONTH_NOT_UNDERSTOOD, context);
+      await handleNotUnderstood(from, answerText, THIS_MONTH_NOT_UNDERSTOOD, { ...context, reply: recurrenceReplyQuestion("this_month") });
       return;
     }
   }
@@ -1974,6 +2053,7 @@ function simplePendings(from: string): Array<[unknown, () => void]> {
     [getPendingRemoveBillAlert(from), () => clearPendingRemoveBillAlert(from)],
     [getPendingReceiptConfirmation(from), () => clearPendingReceiptConfirmation(from)],
     [getPendingLooseSuggest(from), () => clearPendingLooseSuggest(from)],
+    [getPendingReplyConfirm(from), () => clearPendingReplyConfirm(from)],
   ];
 }
 
@@ -3050,7 +3130,7 @@ async function handleDeleteReply(
 ) {
   const reply = interpretDeleteReply(answerText, Boolean(spec.offerOther));
   if (reply === "not_understood") {
-    await handleNotUnderstood(from, answerText, deleteNotUnderstood(spec), { activity, kind: "question" });
+    await handleNotUnderstood(from, answerText, deleteNotUnderstood(spec), { activity, kind: "question", reply: deleteReplyQuestion(spec) });
     return;
   }
   if (reply === "confirm") return handlers.confirm();
@@ -4194,7 +4274,7 @@ async function resolveEditIncomeConfirmation(from: string, pending: PendingEditI
       return;
     }
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_income", label: pending.description });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_income", label: pending.description, reply: previewReplyQuestion(pending.description) });
 }
 
 // exclusao: "1 apagar / 3 cancelar"; qualquer outra coisa (inclusive "2") pergunta de novo
@@ -4208,7 +4288,12 @@ async function resolveDeleteIncomeConfirmation(from: string, pending: PendingDel
     return;
   }
   if (reply !== "confirm") {
-    await handleNotUnderstood(from, answerText, INCOME_DELETE_NOT_UNDERSTOOD, { activity: "delete_income", label: description, kind: "question" });
+    await handleNotUnderstood(from, answerText, INCOME_DELETE_NOT_UNDERSTOOD, {
+      activity: "delete_income",
+      label: description,
+      kind: "question",
+      reply: deleteReplyQuestion({ flow: "expense" }),
+    });
     return;
   }
   clearPendingDeleteIncome(from);
@@ -4582,7 +4667,7 @@ async function resolveEditExpenseConfirmation(from: string, pending: PendingEdit
       return;
     }
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_expense", label });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_expense", label, reply: previewReplyQuestion(label) });
 }
 
 // ---- evento ----------------------------------------------------------------
@@ -4765,7 +4850,7 @@ async function resolveEditEventConfirmation(from: string, pending: PendingEditEv
       return;
     }
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_event", label: pending.title });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_event", label: pending.title, reply: previewReplyQuestion(pending.title) });
 }
 
 // ---- lembrete --------------------------------------------------------------
@@ -4903,7 +4988,7 @@ async function resolveEditReminderConfirmation(from: string, pending: PendingEdi
       return;
     }
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_reminder", label: pending.message });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_reminder", label: pending.message, reply: previewReplyQuestion(pending.message) });
 }
 
 // resposta a "confirma que quer remover o orcamento de X?" -- so remove de
@@ -5122,7 +5207,7 @@ async function resolveEditRecurringConfirmation(from: string, pending: PendingEd
       return;
     }
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_recurring_expense", label: pending.previous.description });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_recurring_expense", label: pending.previous.description, reply: previewReplyQuestion(pending.previous.description) });
 }
 
 // ---- edicao guiada de conta fixa / alerta de conta (Card 15) ------------------------------------------------
@@ -5301,7 +5386,7 @@ async function resolveEditBillConfirmation(from: string, pending: PendingEditBil
     await replyWithUndo(from, `✏️ Alerta atualizado: "${updated.name}" — ${recurrenceText(billParamsOfRow(updated))}.`);
     return;
   }
-  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_bill_alert", label });
+  await handleNotUnderstood(from, answerText, NOT_UNDERSTOOD_TEXT, { activity: "edit_bill_alert", label, reply: previewReplyQuestion(label) });
 }
 
 // ---------------------------------------------------------------------------
@@ -5507,7 +5592,10 @@ async function resolveBillCheckinAnswer(from: string, pending: PendingBillChecki
 
   const reply = classifyBillCheckinReply(answerText);
   if (reply === "unclear") {
-    await handleNotUnderstood(from, answerText, billCheckinRepeat(pending, { mentionName: pending.queued.length > 0 }), passthrough);
+    await handleNotUnderstood(from, answerText, billCheckinRepeat(pending, { mentionName: pending.queued.length > 0 }), {
+      ...passthrough,
+      reply: billReplyQuestion(pending.name, pending.recurrenceType, pending.queued.length > 0),
+    });
     return true;
   }
 
