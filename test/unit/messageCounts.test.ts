@@ -12,6 +12,7 @@ import {
   monthsSpan,
   recordMessage,
   renderMessageAverageCell,
+  resetMessageCountsCacheForTests,
   sinceNotice,
 } from "../../src/activity/messageCounts";
 import { sendText } from "../../src/whatsapp/client";
@@ -94,6 +95,7 @@ test("celula de contagem recente (RN12): menos de 30 dias mostra '42 em 5 dias' 
 test("inicio da contagem (RN10): gravado uma vez na primeira mensagem; dados antigos sem data viram o dia 1 do menor mes (aproximado)", () => {
   db.prepare(`DELETE FROM app_meta WHERE key = ?`).run(MESSAGE_COUNTS_SINCE_KEY);
   db.prepare(`DELETE FROM message_counts`).run();
+  resetMessageCountsCacheForTests();
   assert.equal(getMessageCountsSince(), null, "sem dados e sem data: a contagem ainda nao comecou");
   assert.match(sinceNotice(null), /começa na próxima mensagem/);
 
@@ -102,13 +104,17 @@ test("inicio da contagem (RN10): gravado uma vez na primeira mensagem; dados ant
   assert.deepEqual(getMessageCountsSince(), { date: "2026-10-20", approximate: false }, "a data da primeira mensagem nao muda");
   assert.equal(sinceNotice(getMessageCountsSince()), "Contagem de mensagens iniciada em 20/10/2026 (não há histórico anterior).");
 
-  // dados de antes deste card: ha contagens mas nao ha a data
+  // dados de antes deste card: ha contagens mas nao ha a data. A LEITURA (tela do admin) nao escreve nada
   db.prepare(`DELETE FROM app_meta WHERE key = ?`).run(MESSAGE_COUNTS_SINCE_KEY);
+  resetMessageCountsCacheForTests();
   assert.deepEqual(getMessageCountsSince(), { date: "2026-10-01", approximate: true });
+  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM app_meta WHERE key = ?`).get(MESSAGE_COUNTS_SINCE_KEY) as { n: number }).n, 0, "ler nao grava");
   assert.equal(formatSince(getMessageCountsSince()!), "~01/10/2026");
   assert.match(sinceNotice(getMessageCountsSince()), /por volta de ~01\/10\/2026 \(data aproximada/);
-  // uma vez gravada, a data aproximada tambem nao muda
+  // quem grava e a primeira mensagem nova; depois de gravada, a data aproximada tambem nao muda
   recordMessage("551100090011", "outbound", new Date("2026-12-05T12:00:00-03:00"));
+  assert.equal((db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(MESSAGE_COUNTS_SINCE_KEY) as { value: string }).value, "~2026-10-01");
+  recordMessage("551100090011", "outbound", new Date("2027-01-05T12:00:00-03:00"));
   assert.deepEqual(getMessageCountsSince(), { date: "2026-10-01", approximate: true });
   assert.equal(formatAverage(1), "1");
 });

@@ -539,7 +539,8 @@ Acesso exclusivo do dono, com **usuário e senha** próprios e as mesmas proteç
 
 ### 18.1 Avisos de saúde (topo)
 
-- **Faixa vermelha** se o banco de dados **não está em volume persistente** (os dados se perderiam a cada nova versão do sistema): mostra o caminho do banco e o passo de correção no servidor.
+- **Faixa vermelha** se o banco de dados **não está em volume persistente** (os dados se perderiam a cada nova versão do sistema): mostra o caminho do banco e o passo de correção no servidor. Um volume montado em outro caminho só gera uma linha informativa, sem alarme.
+- **Aviso de banco novo:** se o banco foi criado vazio na última subida (primeira instalação ou caminho trocado), o painel e o dono (WhatsApp) são avisados para conferir se os dados esperados não ficaram no caminho antigo.
 - Linha discreta "Banco: … volume persistente verificado" quando está tudo certo.
 
 ### 18.2 Clientes e cobrança
@@ -557,7 +558,7 @@ Lista de quem tem acesso ao site (número, criada em, última senha enviada), co
 
 ### 18.4 Números autorizados
 
-Lista de quem pode usar o assistente, com **nota**, **data de autorização**, **Remover**, e a coluna **Média de mensagens/mês** (cliente + assistente). Para não enganar, a tela informa **desde quando a contagem existe** ("Contagem de mensagens iniciada em 20/10/2026; não há histórico anterior"): número sem mensagens mostra **0**; com menos de 30 dias de contagem mostra **total e período** ("42 em 5 dias", com "cliente X · bot Y"); a partir de 30 dias mostra a **média por mês**.
+Lista de quem pode usar o assistente, com **nota**, **data de autorização**, **Remover**, e a coluna **Média de mensagens/mês** (cliente + assistente). Para não enganar, a tela informa **desde quando a contagem existe** ("Contagem de mensagens iniciada em 20/10/2026; não há histórico anterior"): número sem mensagens mostra **0**; com menos de 30 dias de contagem mostra **total e período** ("42 em 5 dias", com "cliente X · bot Y"); a partir de 30 dias mostra a **média por mês**. Quando a data de início é aproximada (marcada com `~`), a média mensal só aparece depois de 30 dias garantidos; antes disso a célula mostra "N em até X dias".
 
 ### 18.5 Tentativas bloqueadas
 

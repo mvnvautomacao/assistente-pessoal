@@ -1,9 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "./config";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
+// o arquivo do banco nao existia antes desta subida: banco novo e vazio (primeira instalacao, ou DB_PATH/volume trocado -- Card 22)
+export const databaseCreatedAtStartup = config.dbPath !== ":memory:" && !existsSync(config.dbPath);
 export const db = new DatabaseSync(config.dbPath);
 // migracoes de schema recriam tabelas (categories/payment_methods) que outras
 // tabelas referenciam; a integridade referencial e garantida pelo codigo, nao pelo SQLite.
@@ -380,6 +382,9 @@ if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "n
 }
 if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_last_alert_at")) {
   db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_last_alert_at TEXT`);
+}
+if (userSettingsColumns.length && !userSettingsColumns.some((c) => c.name === "no_expense_pause_logged")) {
+  db.exec(`ALTER TABLE user_settings ADD COLUMN no_expense_pause_logged INTEGER NOT NULL DEFAULT 0`);
 }
 
 // bill_alerts existia antes da recorrencia por intervalo (so tinha dia fixo do

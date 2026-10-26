@@ -12,6 +12,11 @@ export function shouldAlertOwner(key: string): boolean {
   return true;
 }
 
+// o envio do alerta falhou: libera a chave pra a proxima tentativa nao esperar a hora de cooldown
+export function releaseOwnerAlert(key: string) {
+  lastAlertedAt.delete(key);
+}
+
 // so pra testes: mesmo motivo do resetRateLimitForTests em rateLimit.ts.
 export function resetOwnerAlertForTests() {
   lastAlertedAt.clear();

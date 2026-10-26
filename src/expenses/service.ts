@@ -280,12 +280,14 @@ export function setNoExpenseReminderEnabled(fromNumber: string, enabled: boolean
   if (enabled) resetNoExpenseReminder(fromNumber);
 }
 
+// so zera a pausa quando o horario MUDOU de verdade: salvar o painel sem mexer em nada nao religa o aviso
 export function setNoExpenseReminderTime(fromNumber: string, time: string) {
+  const changed = getNoExpenseReminderSettings(fromNumber).time !== time;
   db.prepare(
     `INSERT INTO user_settings (from_number, no_expense_reminder_time) VALUES (?, ?)
      ON CONFLICT(from_number) DO UPDATE SET no_expense_reminder_time = excluded.no_expense_reminder_time`
   ).run(fromNumber, time);
-  resetNoExpenseReminder(fromNumber);
+  if (changed) resetNoExpenseReminder(fromNumber);
 }
 
 // ---- pausa por inatividade (Card 23) ----
@@ -293,15 +295,16 @@ export function setNoExpenseReminderTime(fromNumber: string, time: string) {
 export const NO_EXPENSE_MAX_UNANSWERED = 2;
 
 export interface NoExpenseReminderState {
-  unanswered: number; // avisos enviados seguidos sem registro (MAX + 1 = pausa ja registrada no log)
+  unanswered: number; // avisos enviados seguidos sem registro
   lastAlertAt: string | null; // ISO do ultimo aviso enviado
+  pauseLogged: boolean; // a pausa por inatividade ja foi escrita no log (uma vez por pausa)
 }
 
 export function getNoExpenseReminderState(fromNumber: string): NoExpenseReminderState {
-  const row = db.prepare(`SELECT no_expense_unanswered, no_expense_last_alert_at FROM user_settings WHERE from_number = ?`).get(fromNumber) as
-    | { no_expense_unanswered: number; no_expense_last_alert_at: string | null }
+  const row = db.prepare(`SELECT no_expense_unanswered, no_expense_last_alert_at, no_expense_pause_logged FROM user_settings WHERE from_number = ?`).get(fromNumber) as
+    | { no_expense_unanswered: number; no_expense_last_alert_at: string | null; no_expense_pause_logged: number }
     | undefined;
-  return { unanswered: row?.no_expense_unanswered ?? 0, lastAlertAt: row?.no_expense_last_alert_at ?? null };
+  return { unanswered: row?.no_expense_unanswered ?? 0, lastAlertAt: row?.no_expense_last_alert_at ?? null, pauseLogged: row?.no_expense_pause_logged === 1 };
 }
 
 // so depois do envio aceito (RN08)
@@ -310,16 +313,12 @@ export function recordNoExpenseReminderSent(fromNumber: string, nowIso: string) 
 }
 
 export function resetNoExpenseReminder(fromNumber: string) {
-  db.prepare(`UPDATE user_settings SET no_expense_unanswered = 0, no_expense_last_alert_at = NULL WHERE from_number = ?`).run(fromNumber);
+  db.prepare(`UPDATE user_settings SET no_expense_unanswered = 0, no_expense_last_alert_at = NULL, no_expense_pause_logged = 0 WHERE from_number = ?`).run(fromNumber);
 }
 
-// a pausa ja foi escrita no log: o contador passa de MAX pra MAX + 1, e nao se escreve de novo nas checagens seguintes
+// a pausa ja foi escrita no log: nao se escreve de novo nas checagens seguintes (o reset limpa a marca)
 export function markNoExpensePauseLogged(fromNumber: string) {
-  db.prepare(`UPDATE user_settings SET no_expense_unanswered = ? WHERE from_number = ? AND no_expense_unanswered = ?`).run(
-    NO_EXPENSE_MAX_UNANSWERED + 1,
-    fromNumber,
-    NO_EXPENSE_MAX_UNANSWERED
-  );
+  db.prepare(`UPDATE user_settings SET no_expense_pause_logged = 1 WHERE from_number = ?`).run(fromNumber);
 }
 
 // O cliente fez algo depois de `sinceIso`? (RN02) Gasto ou entrada criados por ele; o gasto lancado sozinho pelo gasto fixo nao conta.

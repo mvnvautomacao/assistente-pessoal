@@ -94,12 +94,15 @@ function recurringItems(fromNumber: string, startDate: string, endDate: string, 
 function billItems(bills: BillAlert[], fromNumber: string, startDate: string, endDate: string, today: string): FinanceItem[] {
   const items: FinanceItem[] = [];
   for (const bill of bills) {
-    const lastAmount = getLastBillAlertAmount(fromNumber, bill.id);
-    const base = { kind: "bill" as const, name: bill.name, amount: lastAmount, amountIsLast: lastAmount !== null };
+    // o ultimo valor so e consultado quando o alerta realmente entra no recorte
+    const base = () => {
+      const lastAmount = getLastBillAlertAmount(fromNumber, bill.id);
+      return { kind: "bill" as const, name: bill.name, amount: lastAmount, amountIsLast: lastAmount !== null };
+    };
     if (bill.recurrence_type === "interval") {
       // so a proxima data: depois da confirmacao a contagem reinicia, entao as seguintes nao se projetam (RN04)
       if (bill.next_due_date && bill.next_due_date >= startDate && bill.next_due_date < endDate && bill.next_due_date >= today) {
-        items.push({ ...base, date: bill.next_due_date, recurrence: `a cada ${bill.interval_days} dias` });
+        items.push({ ...base(), date: bill.next_due_date, recurrence: `a cada ${bill.interval_days} dias` });
       }
       continue;
     }
@@ -107,7 +110,7 @@ function billItems(bills: BillAlert[], fromNumber: string, startDate: string, en
       const date = dueDateInMonth(bill.day_of_month, month);
       if (date < startDate || date >= endDate) continue;
       if (bill.confirmed_month === month) continue; // o ciclo deste mes ja foi resolvido
-      items.push({ ...base, date });
+      items.push({ ...base(), date });
     }
   }
   return items;
@@ -141,8 +144,8 @@ function openItemsFor(bills: BillAlert[], fromNumber: string, today: string): Op
     if (sqliteUtcToSpDate(bill.created_at) > cycle.dueDate) continue; // o alerta nem existia no vencimento
     open.push({ kind: "bill", name: bill.name, dueDate: cycle.dueDate, amount: null, asks: unansweredAsksInCycle(bill, today), maxAsks: BILL_MAX_UNANSWERED_ASKS });
   }
-  for (const missed of getMissedRecurringExpenses(today)) {
-    if (missed.recurring.from_number !== fromNumber || missed.dueDate >= today) continue;
+  for (const missed of getMissedRecurringExpenses(today, undefined, fromNumber)) {
+    if (missed.dueDate >= today) continue;
     open.push({ kind: "recurring", name: missed.recurring.description, dueDate: missed.dueDate, amount: missed.recurring.amount, asks: 0, maxAsks: BILL_MAX_UNANSWERED_ASKS });
   }
   return open.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.name.localeCompare(b.name, "pt-BR"));

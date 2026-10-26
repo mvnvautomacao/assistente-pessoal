@@ -17,6 +17,7 @@ import {
   setReportDayOfWeek,
 } from "../../src/expenses/service";
 import { runNoExpenseReminderRound } from "../../src/expenses/noExpenseReminderScheduler";
+import { onlyFor } from "../helpers/noExpenseIsolation";
 
 const at = (iso: string) => new Date(iso).getTime();
 const NOW = at("2026-10-23T10:00:00-03:00"); // sexta
@@ -34,9 +35,7 @@ async function pause(n: string) {
   setNoExpenseReminderDays([1, 3, 5]);
   const sent: string[] = [];
   const send = async (to: string, text: string) => void (to === n && sent.push(text));
-  await runNoExpenseReminderRound(new Date("2026-10-05T18:30:00-03:00"), send, [n]);
-  await runNoExpenseReminderRound(new Date("2026-10-07T18:30:00-03:00"), send, [n]);
-  await runNoExpenseReminderRound(new Date("2026-10-09T18:30:00-03:00"), send, [n]);
+  for (const day of ["2026-10-05", "2026-10-07", "2026-10-09"]) await onlyFor([n], () => runNoExpenseReminderRound(new Date(`${day}T18:30:00-03:00`), send));
   assert.equal(sent.length, 2);
   assert.ok(getNoExpenseReminderState(n).unanswered >= 2);
 }
@@ -56,12 +55,12 @@ test("'ativa o aviso de gasto pendente de novo' e 'muda o horario' religam um cl
   await pause(b);
   const reply = await ask(app, a, "ativa o aviso de gasto pendente de novo", { type: "set_no_expense_reminder", enabled: true });
   assert.match(reply, /Combinado! Se você não registrar nenhum gasto até 18:30, eu te aviso\./);
-  assert.deepEqual(getNoExpenseReminderState(a), { unanswered: 0, lastAlertAt: null });
+  assert.deepEqual(getNoExpenseReminderState(a), { unanswered: 0, lastAlertAt: null, pauseLogged: false });
   await ask(app, b, "muda o horário do aviso de gasto pra 20h", { type: "set_no_expense_reminder", time: "20:00" });
-  assert.deepEqual(getNoExpenseReminderState(b), { unanswered: 0, lastAlertAt: null });
+  assert.deepEqual(getNoExpenseReminderState(b), { unanswered: 0, lastAlertAt: null, pauseLogged: false });
   // e o aviso volta: no proximo dia de aviso depois das 18:30 o cliente recebe de novo
   const sent: string[] = [];
-  await runNoExpenseReminderRound(new Date("2026-10-12T18:30:00-03:00"), async (to, text) => void (to === a && sent.push(text)), [a]);
+  await onlyFor([a], () => runNoExpenseReminderRound(new Date("2026-10-12T18:30:00-03:00"), async (to, text) => void (to === a && sent.push(text))));
   assert.equal(sent.length, 1);
 });
 
@@ -107,7 +106,7 @@ test("/admin: a coluna do aviso mostra ativo, N de 2 avisos sem registro, pausad
   const desligado = user();
   setNoExpenseReminderDays([1, 3, 5]);
   const noop = async () => undefined;
-  await runNoExpenseReminderRound(new Date("2026-10-05T18:30:00-03:00"), noop, [ativo, um, pausado, desligado]); // todos recebem o 1o
+  await onlyFor([ativo, um, pausado, desligado], () => runNoExpenseReminderRound(new Date("2026-10-05T18:30:00-03:00"), noop)); // todos recebem o 1o
   db.prepare(`UPDATE user_settings SET no_expense_unanswered = 0, no_expense_last_alert_at = NULL WHERE from_number = ?`).run(ativo);
   db.prepare(`UPDATE user_settings SET no_expense_unanswered = 2 WHERE from_number = ?`).run(pausado);
   setNoExpenseReminderEnabled(desligado, false);

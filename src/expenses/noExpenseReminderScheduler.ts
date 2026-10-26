@@ -29,8 +29,7 @@ export function buildReminderMessage(time: string, isLastAlert = false): string 
 // Uma rodada do aviso (o cron chama a cada minuto): extraida para poder ser testada com o relogio simulado.
 export async function runNoExpenseReminderRound(
   now: Date = new Date(Date.now()),
-  send: (to: string, text: string) => Promise<unknown> = (to, text) => sendText(to, text),
-  onlyNumbers?: string[] // so esses numeros (testes e reprocessamento pontual); sem isso, todos os assinantes
+  send: (to: string, text: string) => Promise<unknown> = (to, text) => sendText(to, text)
 ): Promise<{ sent: number; paused: number }> {
   // dias da semana em que o aviso roda e configuracao GLOBAL (definida
   // pelo admin no /admin, nao pelo usuario final) -- fora desses dias,
@@ -39,7 +38,7 @@ export async function runNoExpenseReminderRound(
 
   const today = spDateString(now);
   const time = spTimeString(now);
-  const subscribers = getNoExpenseReminderSubscribers().filter((s) => s.sent_date !== today && time >= s.time && (!onlyNumbers || onlyNumbers.includes(s.from_number)));
+  const subscribers = getNoExpenseReminderSubscribers().filter((s) => s.sent_date !== today && time >= s.time);
 
   let sent = 0;
   let paused = 0;
@@ -49,13 +48,13 @@ export async function runNoExpenseReminderRound(
       // o cliente registrou algo depois do ultimo aviso: o contador recomeca (RN02)
       if (state.unanswered > 0 && state.lastAlertAt && hasUserActivitySince(s.from_number, state.lastAlertAt)) {
         resetNoExpenseReminder(s.from_number);
-        state = { unanswered: 0, lastAlertAt: null };
+        state = { unanswered: 0, lastAlertAt: null, pauseLogged: false };
       }
 
       // 2 avisos sem nenhum registro: cliente inativo, o aviso para ate ele voltar (RN01, RN07)
       if (state.unanswered >= NO_EXPENSE_MAX_UNANSWERED) {
         markNoExpenseReminderSent(s.from_number, today);
-        if (state.unanswered === NO_EXPENSE_MAX_UNANSWERED) {
+        if (!state.pauseLogged) {
           markNoExpensePauseLogged(s.from_number);
           logActivity(s.from_number, "no_expense_reminder", `cliente pausado por inatividade (${NO_EXPENSE_MAX_UNANSWERED} avisos sem registro)`);
         }

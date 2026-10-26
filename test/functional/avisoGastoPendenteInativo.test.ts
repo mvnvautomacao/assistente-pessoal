@@ -14,6 +14,7 @@ import {
   setNoExpenseReminderTime,
 } from "../../src/expenses/service";
 import { buildReminderMessage, NO_EXPENSE_MAX_UNANSWERED, runNoExpenseReminderRound } from "../../src/expenses/noExpenseReminderScheduler";
+import { onlyFor } from "../helpers/noExpenseIsolation";
 
 const at = (iso: string) => new Date(iso);
 
@@ -33,13 +34,12 @@ interface Sent {
 // uma rodada as 18:30 de um dia; devolve o que foi enviado a este numero
 async function round(n: string, day: string, hhmm = "18:30", options: { fail?: boolean } = {}): Promise<string[]> {
   const sent: Sent[] = [];
-  await runNoExpenseReminderRound(
-    at(`${day}T${hhmm}:00-03:00`),
-    async (to, text) => {
+  // so este cliente: os outros testes deixam assinantes no mesmo banco
+  await onlyFor([n], () =>
+    runNoExpenseReminderRound(at(`${day}T${hhmm}:00-03:00`), async (to, text) => {
       if (options.fail) throw new Error("Evolution fora do ar");
       sent.push({ to, text });
-    },
-    [n] // so este cliente: os outros testes deixam assinantes no mesmo banco
+    })
   );
   return sent.filter((s) => s.to === n).map((s) => s.text);
 }
@@ -58,10 +58,13 @@ function addIncome(n: string, createdAt: string) {
 }
 
 const state = (n: string) =>
-  db.prepare(`SELECT no_expense_unanswered AS unanswered, no_expense_last_alert_at AS last, no_expense_reminder_sent_date AS sentDate FROM user_settings WHERE from_number = ?`).get(n) as {
+  db.prepare(
+    `SELECT no_expense_unanswered AS unanswered, no_expense_last_alert_at AS last, no_expense_reminder_sent_date AS sentDate, no_expense_pause_logged AS pauseLogged FROM user_settings WHERE from_number = ?`
+  ).get(n) as {
     unanswered: number;
     last: string | null;
     sentDate: string | null;
+    pauseLogged: number;
   };
 
 // segunda, quarta e sexta (padrao do aviso) de tres semanas seguidas de outubro/2026

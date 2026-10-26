@@ -1,6 +1,6 @@
 import { listRecentJobRuns, JobRun } from "./scheduler/jobRuns";
 import { retentionLabel } from "./activity/retention";
-import { getVolumeStatus, needsVolumeAlert, volumeInfoText, volumeWarningText, type VolumeCheck } from "./storage/volumeCheck";
+import { freshDatabaseText, getVolumeStatus, needsVolumeAlert, volumeInfoText, volumeWarningText, type VolumeCheck } from "./storage/volumeCheck";
 import { getMessageCountsSince, getMessageStats, renderMessageAverageCell, sinceNotice } from "./activity/messageCounts";
 import { listRecentDowntimes } from "./scheduler/heartbeat";
 import { Router, Request, Response, NextFunction } from "express";
@@ -139,11 +139,16 @@ function formatDateOnly(value: string): string {
 // Card 22 (RN16): aviso vermelho fixo no topo quando o banco nao esta em volume persistente; linha discreta quando esta tudo certo
 export function renderVolumeBanner(check: VolumeCheck | null): string {
   if (!check) return "";
+  const parts: string[] = [];
   if (needsVolumeAlert(check)) {
-    return `<p class="warn" style="background:#fdecea;border-color:#e57373;color:#b71c1c"><strong>${escapeHtml(volumeWarningText(check))}</strong><br><span style="font-size:0.85em">${escapeHtml(check.detail)}</span></p>`;
+    parts.push(`<p class="warn" style="background:#fdecea;border-color:#e57373;color:#b71c1c"><strong>${escapeHtml(volumeWarningText(check))}</strong><br><span style="font-size:0.85em">${escapeHtml(check.detail)}</span></p>`);
+  } else {
+    const info = volumeInfoText(check);
+    if (info) parts.push(`<p style="color:var(--muted);font-size:0.8rem;margin:0.25rem 0">${escapeHtml(info)}</p>`);
   }
-  const info = volumeInfoText(check);
-  return info ? `<p style="color:var(--muted);font-size:0.8rem;margin:0.25rem 0">${escapeHtml(info)}</p>` : "";
+  const fresh = freshDatabaseText(check);
+  if (fresh) parts.push(`<p class="warn">${escapeHtml(fresh)}</p>`);
+  return parts.join("");
 }
 
 // Card 19: rotinas agendadas -- nome legivel, status e tabela das ultimas execucoes + periodos fora do ar

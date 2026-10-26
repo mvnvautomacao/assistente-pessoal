@@ -1,7 +1,7 @@
 // Contagem de mensagens por numero e por mes (SP): o que o cliente mandou (inbound) e o que o bot enviou (outbound).
 // Alimenta a coluna "Média de mensagens/mês" dos numeros autorizados no /admin. Contar nunca pode derrubar o atendimento: erros sao engolidos.
 import { db } from "../db";
-import { spDateString } from "../timeSP";
+import { daysInMonth, spDateString } from "../timeSP";
 
 export type MessageDirection = "inbound" | "outbound";
 
@@ -23,24 +23,35 @@ function parseSince(value: string): CountSince {
   return value.startsWith("~") ? { date: value.slice(1), approximate: true } : { date: value, approximate: false };
 }
 
-// le o inicio; se ainda nao foi gravado mas ja existem contagens (dados de antes deste card), grava o dia 1 do menor mes (aproximado)
+// Le o inicio SEM escrever (a tela do admin e uma leitura). Sem a data gravada mas com contagens de antes deste card, devolve o dia 1 do menor
+// mes (aproximado); quem grava e o recordMessage, na primeira mensagem.
 export function getMessageCountsSince(): CountSince | null {
   const stored = db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(MESSAGE_COUNTS_SINCE_KEY) as { value: string } | undefined;
   if (stored) return parseSince(stored.value);
   const first = db.prepare(`SELECT MIN(month) AS month FROM message_counts`).get() as { month: string | null };
-  if (!first.month) return null;
-  const value = `~${first.month}-01`;
+  return first.month ? { date: `${first.month}-01`, approximate: true } : null;
+}
+
+// depois de gravado, nao precisa reler a cada mensagem
+let sinceEnsured = false;
+
+export function resetMessageCountsCacheForTests() {
+  sinceEnsured = false;
+}
+
+// antes da primeira contagem nova: fixa o inicio (aproximado se ja havia dados; senao, hoje)
+function ensureSince(now: Date) {
+  if (sinceEnsured) return;
+  const existing = getMessageCountsSince();
+  const value = existing ? `${existing.approximate ? "~" : ""}${existing.date}` : spDateString(now);
   db.prepare(`INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)`).run(MESSAGE_COUNTS_SINCE_KEY, value);
-  return parseSince(value);
+  sinceEnsured = true;
 }
 
 export function recordMessage(fromNumber: string, direction: MessageDirection, now: Date = new Date(Date.now())) {
   const column = direction === "inbound" ? "inbound" : "outbound";
   try {
-    // antes da primeira contagem nova: fixa o inicio (aproximado se ja havia dados; senao, hoje)
-    if (!getMessageCountsSince()) {
-      db.prepare(`INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)`).run(MESSAGE_COUNTS_SINCE_KEY, spDateString(now));
-    }
+    ensureSince(now);
     db.prepare(
       `INSERT INTO message_counts (from_number, month, ${column}) VALUES (?, ?, 1)
        ON CONFLICT(from_number, month) DO UPDATE SET ${column} = ${column} + 1`
@@ -100,6 +111,12 @@ export function formatSince(since: CountSince): string {
   return `${since.approximate ? "~" : ""}${day}/${month}/${year}`;
 }
 
+// quantos dias tem o mes de uma data YYYY-MM-DD
+function monthLength(date: string): number {
+  const [year, month] = date.split("-").map(Number);
+  return daysInMonth(year, month);
+}
+
 // dias de calendario entre duas datas YYYY-MM-DD
 function daysBetween(from: string, to: string): number {
   const [fy, fm, fd] = from.split("-").map(Number);
@@ -123,11 +140,14 @@ export function renderMessageAverageCell(stats: MessageStats | undefined, since:
     return `<span style="color:var(--muted)" title="${tip}">0</span>`;
   }
   const muted = (text: string) => `<br><span style="color:var(--muted);font-size:0.8em">${text}</span>`;
-  const elapsedDays = since ? daysBetween(since.date, today) : null;
-  if (since && elapsedDays !== null && elapsedDays < RECENT_COUNT_DAYS) {
-    const days = Math.max(1, elapsedDays);
+  // Data aproximada (dia 1 do menor mes): a contagem comecou em algum dia daquele mes, entao so ha garantia de periodo a partir do FIM dele.
+  // A media mensal so entra quando essa garantia chega a 30 dias; ate la, o periodo e mostrado como "ate N dias".
+  const upperDays = since ? daysBetween(since.date, today) : null;
+  const guaranteedDays = since ? (since.approximate ? daysBetween(`${since.date.slice(0, 7)}-${String(monthLength(since.date)).padStart(2, "0")}`, today) : upperDays) : null;
+  if (since && upperDays !== null && guaranteedDays !== null && guaranteedDays < RECENT_COUNT_DAYS) {
+    const days = Math.max(1, upperDays);
     const tip = `Total: ${stats.inbound} do cliente + ${stats.outbound} do bot desde ${formatSince(since)}. Com menos de ${RECENT_COUNT_DAYS} dias de contagem não mostro média mensal.`;
-    return `<span title="${tip}">${stats.inbound + stats.outbound} em ${days} ${days === 1 ? "dia" : "dias"}</span>${muted(`cliente ${stats.inbound} · bot ${stats.outbound}`)}`;
+    return `<span title="${tip}">${stats.inbound + stats.outbound} em ${since.approximate ? "até " : ""}${days} ${days === 1 ? "dia" : "dias"}</span>${muted(`cliente ${stats.inbound} · bot ${stats.outbound}`)}`;
   }
   const tip = `Total: ${stats.inbound} do cliente + ${stats.outbound} do bot em ${stats.months} mês(es) (desde o primeiro registro; o mês em andamento conta inteiro)`;
   return `<span title="${tip}">${formatAverage(stats.avgTotal)}/mês</span>${muted(`cliente ${formatAverage(stats.avgInbound)} · bot ${formatAverage(stats.avgOutbound)}`)}`;

@@ -53,9 +53,12 @@ expensesRouter.post("/dashboard/report-day", (req, res) => {
 
 expensesRouter.post("/dashboard/no-expense-reminder", (req, res) => {
   const phone = getPhone(req);
-  setNoExpenseReminderEnabled(phone, req.body.enabled === "1");
+  // salvar sem mudar nada nao mexe em nada (religar o aviso zera a pausa por inatividade, Card 23)
+  const before = getNoExpenseReminderSettings(phone);
+  const wantEnabled = req.body.enabled === "1";
+  if (wantEnabled !== before.enabled) setNoExpenseReminderEnabled(phone, wantEnabled);
   const time = parseReminderTime(String(req.body.time ?? ""));
-  if (time) setNoExpenseReminderTime(phone, time);
+  if (time && time !== before.time) setNoExpenseReminderTime(phone, time);
   res.redirect(`/dashboard?phone=${encodeURIComponent(phone)}`);
 });
 

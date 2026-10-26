@@ -99,13 +99,18 @@ export function markRecurringExpenseRunForMonth(fromNumber: string, id: number, 
 // gastos fixos ativos cujo dia bate com "hoje" (SP) e que ainda nao foram lancados
 // nesse mes. day_of_month maior que a quantidade de dias do mes atual (ex: 31 num
 // mes de 30 dias) cai automaticamente no ultimo dia do mes, pra nao pular o lancamento.
-export function getDueRecurringExpenses(todayDate: string): RecurringExpense[] {
+// fromNumber (opcional): so os desse numero (a consulta de um cliente nao precisa varrer o de todos); sem ele, todos, como no cron
+export function getDueRecurringExpenses(todayDate: string, fromNumber?: string): RecurringExpense[] {
   const day = Number(todayDate.slice(8, 10));
   const yearMonth = todayDate.slice(0, 7);
 
-  const candidates = db
-    .prepare(`SELECT * FROM recurring_expenses WHERE active = 1 AND (last_run_month IS NULL OR last_run_month != ?)`)
-    .all(yearMonth) as unknown as RecurringExpense[];
+  const candidates = (
+    fromNumber === undefined
+      ? db.prepare(`SELECT * FROM recurring_expenses WHERE active = 1 AND (last_run_month IS NULL OR last_run_month != ?)`).all(yearMonth)
+      : db
+          .prepare(`SELECT * FROM recurring_expenses WHERE active = 1 AND from_number = ? AND (last_run_month IS NULL OR last_run_month != ?)`)
+          .all(fromNumber, yearMonth)
+  ) as unknown as RecurringExpense[];
 
   return candidates.filter((r) => effectiveDayOfMonth(r.day_of_month, yearMonth) === day);
 }
@@ -121,12 +126,12 @@ export interface MissedRecurringExpense {
 // Gastos fixos que deveriam ter sido lancados em [hoje - lookback, hoje] e ainda nao foram, do mais antigo pro mais novo.
 // A trava contra repeticao continua sendo last_run_month (getDueRecurringExpenses). Um gasto fixo cadastrado DEPOIS do vencimento
 // nao e lancado retroativamente (RN05); o do proprio dia nao precisa dessa checagem.
-export function getMissedRecurringExpenses(todayDate: string, lookbackDays: number = RECURRING_LOOKBACK_DAYS): MissedRecurringExpense[] {
+export function getMissedRecurringExpenses(todayDate: string, lookbackDays: number = RECURRING_LOOKBACK_DAYS, fromNumber?: string): MissedRecurringExpense[] {
   const missed: MissedRecurringExpense[] = [];
   for (let back = lookbackDays; back >= 0; back--) {
     const dueDate = addDaysToDateString(todayDate, -back);
     const yearMonth = dueDate.slice(0, 7);
-    for (const recurring of getDueRecurringExpenses(dueDate)) {
+    for (const recurring of getDueRecurringExpenses(dueDate, fromNumber)) {
       if (recurring.last_run_month && recurring.last_run_month > yearMonth) continue; // ja lancado um mes mais novo (ex: na mao)
       if (dueDate < todayDate && sqliteUtcToSpDate(recurring.created_at) > dueDate) continue;
       missed.push({ recurring, dueDate });
