@@ -1047,3 +1047,56 @@ export async function extractInstallmentInfoFromAnswer(
   if (installments === undefined && amount === undefined && description === undefined) return null;
   return { installments, amount, description };
 }
+
+// ---- Card 24: resposta livre ou falada a uma pergunta aberta com opcoes (1/2/3) ----
+const CLASSIFY_REPLY_TOOL: Anthropic.Tool = {
+  name: "classify_reply",
+  description: "Diz qual das opcoes numeradas de uma pergunta aberta o cliente quis responder, ou 'nenhuma'.",
+  input_schema: {
+    type: "object",
+    properties: {
+      option: { type: "string", enum: ["1", "2", "3", "nenhuma"], description: "O numero da opcao escolhida, ou 'nenhuma' se a resposta nao escolhe com clareza uma das opcoes." },
+      confidence: { type: "string", enum: ["alta", "baixa"], description: "'alta' so quando a resposta diz claramente aquela opcao; na duvida, 'baixa'." },
+    },
+    required: ["option", "confidence"],
+  },
+};
+
+const CLASSIFY_REPLY_SYSTEM =
+  "Voce le a resposta de um cliente (as vezes transcrita de audio, com erros) a uma pergunta que o assistente acabou de fazer, com opcoes numeradas. " +
+  "Escolha a opcao que a resposta diz CLARAMENTE, ou 'nenhuma'. Regras: " +
+  "(1) nunca escolha uma opcao marcada como destrutiva (apagar, cancelar evento, pular) sem pedido explicito do cliente; " +
+  "(2) se a resposta traz um valor, uma data, um horario ou uma correcao embutida (ex: 'pode ser as 16h', 'paguei 50'), responda 'nenhuma'; " +
+  "(3) negacao, condicao, duvida ou mistura de sentidos ('nao, ja paguei', 'sim mas so amanha', 'acho que sim') -> 'nenhuma' ou confianca 'baixa'; " +
+  "(4) ruido, silencio, texto sem relacao com a pergunta ou legendas fantasmas de audio (ex: 'Legendas pela comunidade Amara.org') -> 'nenhuma'; " +
+  "(5) na duvida, confianca 'baixa'. Responda so pela ferramenta.";
+
+export interface ReplyClassification {
+  option: 1 | 2 | 3 | null;
+  confidence: "alta" | "baixa";
+}
+
+export interface ClassifyReplyInput {
+  questionText: string;
+  options: { number: number; label: string; destructive?: boolean }[];
+  text: string;
+  fromAudio: boolean;
+}
+
+export async function classifyReply(input: ClassifyReplyInput): Promise<ReplyClassification> {
+  const options = input.options.map((o) => `${o.number}) ${o.label}${o.destructive ? " [destrutiva]" : ""}`).join("\n");
+  const origin = input.fromAudio ? "veio de AUDIO (pode haver erro de transcricao)" : "foi DIGITADA";
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 60,
+    system: CLASSIFY_REPLY_SYSTEM,
+    tools: [CLASSIFY_REPLY_TOOL],
+    tool_choice: { type: "tool", name: "classify_reply" },
+    messages: [{ role: "user", content: `Pergunta aberta: ${input.questionText}\nOpcoes:\n${options}\n\nResposta do cliente (${origin}): "${input.text}"` }],
+  });
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse || toolUse.type !== "tool_use") return { option: null, confidence: "baixa" };
+  const raw = toolUse.input as { option?: string; confidence?: string };
+  const option = raw.option === "1" ? 1 : raw.option === "2" ? 2 : raw.option === "3" ? 3 : null;
+  return { option, confidence: raw.confidence === "alta" ? "alta" : "baixa" };
+}

@@ -19,6 +19,9 @@ export const config = {
   // dias de retencao do activity_log (Card 21): 90 por padrao; 0 desliga a limpeza; valor invalido volta pra 90
   activityLogRetentionDays: parseRetentionDays(process.env.ACTIVITY_LOG_RETENTION_DAYS),
 
+  // Card 24: com "true", uma resposta "ja paguei" interpretada (nao exata) do aviso de conta fixa segue direto pra pergunta do valor, repetindo o que entendeu
+  autoApplyInterpretedPaid: process.env.AUTO_APPLY_INTERPRETED_PAID === "true",
+
   evolution: {
     apiUrl: required("EVOLUTION_API_URL"),
     apiKey: required("EVOLUTION_API_KEY"),

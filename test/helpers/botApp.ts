@@ -3,7 +3,7 @@
 // e tem um relogio por teste (Date.now) que pode ser fixado e avancado.
 import type { TestContext } from "node:test";
 import path from "node:path";
-import type { Interpretation } from "../../src/ai/interpret";
+import type { ClassifyReplyInput, Interpretation, ReplyClassification } from "../../src/ai/interpret";
 
 export type Sent = { to: string; text: string };
 
@@ -17,6 +17,9 @@ export interface BotApp {
   last: () => string;
   setNow: (ms: number | null) => void; // fixa o relogio (null = relogio real)
   advance: (ms: number) => void;
+  // Card 24: a IA que escolhe a opcao de uma resposta livre (classifyReply). Sem nada na fila devolve 'nenhuma' (baixa); um Error simula a IA fora do ar.
+  queueClassification: (result: ReplyClassification | Error) => void;
+  classifyCalls: ClassifyReplyInput[];
 }
 
 interface Clock {
@@ -61,6 +64,8 @@ export function bootApp(t: TestContext, now?: number): BotApp {
   const calls: string[] = [];
   const queue: Interpretation[][] = [];
   let failing = false;
+  const classifyQueue: (ReplyClassification | Error)[] = [];
+  const classifyCalls: ClassifyReplyInput[] = [];
   t.mock.method(client, "sendText", async (to: string, text: string) => {
     sent.push({ to, text });
   });
@@ -72,11 +77,19 @@ export function bootApp(t: TestContext, now?: number): BotApp {
     }
     return queue.shift() ?? [];
   });
+  t.mock.method(ai, "classifyReply", async (input: ClassifyReplyInput) => {
+    classifyCalls.push(input);
+    const next = classifyQueue.shift();
+    if (next instanceof Error) throw next;
+    return next ?? { option: null, confidence: "baixa" };
+  });
   return {
     handle: router.handleIncomingMessage,
     sent,
     calls,
     queueReply: (a) => queue.push(a),
+    queueClassification: (result) => void classifyQueue.push(result),
+    classifyCalls,
     failNext: () => {
       failing = true;
     },

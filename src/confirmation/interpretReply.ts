@@ -1,6 +1,7 @@
 // Card 24: entender uma resposta livre ou falada dentro das opcoes de uma pergunta aberta. Nivel A (este arquivo, puro, sem IA): regra tolerante com
 // vocabulario por intencao e lista de conflitos. Nivel B (IA restrita): ver interpretOpenReply. A leitura EXATA ("1", "sim", "ja paguei") continua
 // sendo dos resolvedores originais; isto so roda depois que eles desistiram. Nada interpretado e aplicado sozinho (RN05): quem chama pede confirmacao.
+import { classifyReply, type ClassifyReplyInput, type ReplyClassification } from "../ai/interpret";
 import { normalizeReply } from "./normalize";
 import type { ReplyIntent, ReplyOption, ReplyQuestion } from "./replyOptions";
 
@@ -101,9 +102,67 @@ export interface InterpretedReply {
   level: "rules" | "ai";
 }
 
+// ---- Nivel B: IA restrita as opcoes (RN04, RN10) ----
+// no maximo 3 chamadas por numero a cada 10 minutos (molde do takeSecondChance); passou disso, so o Nivel A
+export const REPLY_AI_MAX_CALLS = 3;
+export const REPLY_AI_WINDOW_MS = 10 * 60 * 1000;
+// mensagem longa nao vai a IA (e quase sempre pedido novo, nao resposta)
+export const REPLY_AI_MAX_CHARS = 200;
+
+const aiCalls = new Map<string, number[]>();
+
+// registra a chamada se ainda ha cota na janela; false = sem cota
+export function takeReplyAiCall(from: string, now: number): boolean {
+  const recent = (aiCalls.get(from) ?? []).filter((t) => now - t < REPLY_AI_WINDOW_MS);
+  if (recent.length >= REPLY_AI_MAX_CALLS) {
+    aiCalls.set(from, recent);
+    return false;
+  }
+  recent.push(now);
+  aiCalls.set(from, recent);
+  return true;
+}
+
+export function resetReplyAiLimitForTests() {
+  aiCalls.clear();
+}
+
+export interface ReplyAiDeps {
+  classify?: (input: ClassifyReplyInput) => Promise<ReplyClassification>;
+  now?: () => number;
+}
+
+// Pergunta a IA qual das opcoes a resposta diz. So conta como sugestao com confianca "alta" e uma opcao que EXISTE na pergunta; qualquer erro da IA
+// vira "nao entendi" (null), nunca erro pro cliente.
+export async function interpretReplyWithAi(from: string, text: string, question: ReplyQuestion, source: "audio" | "text", deps: ReplyAiDeps = {}): Promise<ReplyOption | null> {
+  const clean = text.trim();
+  if (!clean || clean.length > REPLY_AI_MAX_CHARS) return null;
+  if (!takeReplyAiCall(from, (deps.now ?? Date.now)())) return null;
+  try {
+    const result = await (deps.classify ?? classifyReply)({
+      questionText: question.text,
+      options: question.options.map((o) => ({ number: o.number, label: o.label, destructive: o.destructive })),
+      text: clean,
+      fromAudio: source === "audio",
+    });
+    if (result.confidence !== "alta" || result.option === null) return null;
+    return question.options.find((o) => o.number === result.option) ?? null;
+  } catch (err) {
+    console.error("Erro ao interpretar a resposta com a IA:", err);
+    return null;
+  }
+}
+
 // Ponto unico: Nivel A (regra tolerante, sem custo) e, se ele nao resolver, o Nivel B (IA restrita as opcoes). Devolve null quando nada foi entendido.
-export async function interpretOpenReply(_from: string, text: string, question: ReplyQuestion): Promise<InterpretedReply | null> {
+export async function interpretOpenReply(
+  from: string,
+  text: string,
+  question: ReplyQuestion,
+  source: "audio" | "text" = "text",
+  deps: ReplyAiDeps = {}
+): Promise<InterpretedReply | null> {
   const byRules = interpretReplyRules(text, question);
   if (byRules) return { option: byRules, level: "rules" };
-  return null;
+  const byAi = await interpretReplyWithAi(from, text, question, source, deps);
+  return byAi ? { option: byAi, level: "ai" } : null;
 }

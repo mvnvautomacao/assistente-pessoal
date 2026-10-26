@@ -342,6 +342,7 @@ import {
   readReplyConfirmation,
   REPLY_QUESTION_GONE_TEXT,
   setPendingReplyConfirm,
+  truncateText,
 } from "./confirmation/replyConfirm";
 import { billReplyQuestion, deleteReplyQuestion, previewReplyQuestion, recurrenceReplyQuestion, type ReplyQuestion } from "./confirmation/replyOptions";
 import { recordMessage } from "./activity/messageCounts";
@@ -927,6 +928,13 @@ async function tryInterpretReply(from: string, text: string, repeatText: string,
   const interpreted = await interpretOpenReply(from, text, question);
   if (!interpreted) return false;
   const { option, level } = interpreted;
+  // chave opcional (padrao desligada, RN05): "pago" interpretado do aviso de conta vai direto pra pergunta do valor, repetindo o que foi entendido
+  if (config.autoApplyInterpretedPaid && question.kind === "bill" && option.intent === "paid") {
+    logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como "pago" (nivel ${level === "rules" ? "A" : "B"}) e aplicada sem confirmar (AUTO_APPLY_INTERPRETED_PAID)`);
+    await sendText(from, `Entendi "${truncateText(text, 120)}" como já paguei.`);
+    await resolveOpenPendings(from, String(option.number));
+    return true;
+  }
   setPendingReplyConfirm(from, {
     optionNumber: option.number,
     optionLabel: option.label,
