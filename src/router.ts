@@ -334,7 +334,9 @@ import {
   reminderChangedSince,
   reminderCurrentValue,
 } from "./confirmation/changedSince";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { interpretOpenReply } from "./confirmation/interpretReply";
+import { listOpenPendingKinds } from "./pending/store";
 import {
   buildReplyConfirmMessage,
   clearPendingReplyConfirm,
@@ -824,17 +826,16 @@ export async function handleIncomingMessage(data: EvolutionMessage) {
     // cliente. Essa rede de seguranca cobre todos de uma vez; quem ja tem
     // tratamento proprio (categorizacao, forma de pagamento, comprovante)
     // nunca chega a lancar ate aqui.
-    // de onde veio a mensagem (audio ou texto): o "nao entendi" e a sugestao mostram "Ouvi" so em audio (Card 24, RN08)
-    messageSources.set(from, data.messageType === "audioMessage" ? "audio" : "text");
     try {
-      if (await resolveOpenPendings(from, text)) return;
+      // de onde veio a mensagem (audio ou texto) acompanha o processamento (AsyncLocalStorage: mensagens simultaneas nao se misturam): o "nao entendi"
+      // e a sugestao mostram "Ouvi" so em audio (Card 24, RN08)
+      const source: ReplySource = data.messageType === "audioMessage" ? "audio" : "text";
+      if (await replySourceStore.run(source, () => resolveOpenPendings(from, text))) return;
     } catch (err) {
       console.error("Erro ao resolver pendencia:", err);
       logActivity(from, "error", err instanceof Error ? err.message : String(err));
       await sendText(from, userFacingErrorText(err));
       return;
-    } finally {
-      messageSources.delete(from);
     }
   }
 
@@ -931,50 +932,66 @@ async function dispatchAllInterpretations(from: string, interpretations: Interpr
 }
 
 // Card 24: de onde veio a mensagem que esta sendo processada (por numero; so vale durante o processamento das pendencias)
-const messageSources = new Map<string, ReplySource>();
+const replySourceStore = new AsyncLocalStorage<ReplySource>();
+
+function currentSource(): ReplySource {
+  return replySourceStore.getStore() ?? "text";
+}
 
 const HEARD_LOG_CHARS = 200;
 
 // o texto que o bot ouviu, pro log: so em audio (digitado nao e transcricao), truncado em 200 caracteres (RN11)
-function heardForLog(from: string, text: string): string {
-  return messageSources.get(from) === "audio" && text.trim() ? `; ouvi: "${truncateText(text, HEARD_LOG_CHARS)}"` : "";
+function heardForLog(text: string): string {
+  return currentSource() === "audio" && text.trim() ? `; ouvi: "${truncateText(text, HEARD_LOG_CHARS)}"` : "";
 }
 
-// ha uma pergunta com opcoes esperando resposta? (decide se o Whisper recebe a dica de vocabulario)
+// tipos de pendencia que sao uma pergunta de opcoes (1/2/3, 1/3): com um deles aberto o Whisper recebe a dica de vocabulario. UMA lista, lida do
+// banco numa unica consulta (listOpenPendingKinds); bill_checkin e create_recurrence so contam nas etapas de opcoes
+const OPTION_QUESTION_KINDS: ReadonlySet<string> = new Set([
+  "reply_confirm",
+  "delete_event",
+  "delete_reminder",
+  "delete_expense",
+  "delete_category",
+  "remove_budget",
+  "remove_recurring",
+  "remove_bill_alert",
+  "merge_categories",
+  "bulk_recategorize",
+  "edit_expense",
+  "edit_income",
+  "delete_income",
+  "edit_event",
+  "edit_reminder",
+  "edit_recurring",
+  "edit_bill_alert",
+]);
+
 function hasOpenReplyQuestion(from: string): boolean {
-  const bill = getPendingBillCheckin(from);
-  if (bill && bill.step === "ask_paid") return true;
-  const creation = getPendingCreateRecurrence(from);
-  if (creation && creation.step !== "fill") return true;
-  return [
-    getPendingReplyConfirm(from),
-    getPendingEventDeletion(from),
-    getPendingBulkRecategorize(from),
-    getPendingMergeCategories(from),
-    getPendingDeleteCategory(from),
-    getPendingDeleteExpense(from),
-    getPendingEditExpense(from),
-    getPendingEditIncome(from),
-    getPendingDeleteIncome(from),
-    getPendingEditEvent(from),
-    getPendingEditReminder(from),
-    getPendingReminderDeletion(from),
-    getPendingRemoveBudget(from),
-    getPendingRemoveRecurring(from),
-    getPendingEditRecurring(from),
-    getPendingEditBillAlert(from),
-    getPendingRemoveBillAlert(from),
-  ].some(Boolean);
+  const open = listOpenPendingKinds(from);
+  if (open.some((p) => OPTION_QUESTION_KINDS.has(p.kind))) return true;
+  if (open.some((p) => p.kind === "bill_checkin") && getPendingBillCheckin(from)?.step === "ask_paid") return true;
+  if (open.some((p) => p.kind === "create_recurrence")) {
+    const creation = getPendingCreateRecurrence(from);
+    if (creation && creation.step !== "fill") return true;
+  }
+  return false;
 }
 
-// Card 24: identifica a(s) pergunta(s) aberta(s) agora (qual pendencia e quando foi criada); se mudou entre a sugestao e o "1", ela nao esta mais aberta
+// Card 24: identifica a(s) pergunta(s) aberta(s) agora (que pendencia e quando foi criada); se mudou entre a sugestao e o "1", ela nao esta mais aberta.
+// Usa o NOME do tipo (nao a posicao numa lista) e inclui as pendencias que vivem so em memoria (categoria, forma de pagamento, completar gasto).
+const SIGNATURE_IGNORED_KINDS: ReadonlySet<string> = new Set(["undo", "reply_confirm", "loose_suggest"]);
+
 function openPendingSignature(from: string): string {
-  const parts: string[] = [];
-  simplePendings(from).forEach(([state], index) => {
-    if (state) parts.push(`${index}:${(state as { createdAt?: number }).createdAt ?? ""}`);
-  });
-  const bill = getPendingBillCheckin(from);
-  if (bill) parts.push(`bill:${bill.billAlertId}:${bill.step}:${bill.createdAt}`);
+  const parts = listOpenPendingKinds(from)
+    .filter((p) => !SIGNATURE_IGNORED_KINDS.has(p.kind))
+    .map((p) => `${p.kind}:${p.createdAt}`);
+  const queued: Array<[string, { id?: number; createdAt?: number } | null]> = [
+    ["payment_method", getNextPendingExpensePaymentMethod(from) as { id?: number; createdAt?: number } | null],
+    ["categorization", getNextPendingCategorization(from) as { id?: number; createdAt?: number } | null],
+    ["completion", getNextPendingCompletion(from) as { id?: number; createdAt?: number } | null],
+  ];
+  for (const [name, pending] of queued) if (pending) parts.push(`${name}:${pending.id ?? pending.createdAt ?? ""}`);
   return parts.join("|");
 }
 
@@ -982,7 +999,7 @@ function openPendingSignature(from: string): string {
 // da pergunta e propoe "Entendi que foi *N*. Confirma?"; nada e aplicado ate o cliente confirmar (RN05).
 async function tryInterpretReply(from: string, text: string, repeatText: string, context: NotUnderstoodContext): Promise<boolean> {
   const question = context.reply!;
-  const source = messageSources.get(from) ?? "text";
+  const source = currentSource();
   const interpreted = await interpretOpenReply(from, text, question, source);
   if (!interpreted) return false;
   const { option, level } = interpreted;
@@ -1004,7 +1021,7 @@ async function tryInterpretReply(from: string, text: string, repeatText: string,
     subject: question.subject ?? null,
     level,
   });
-  logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como opcao ${option.number} (${option.intent}, nivel ${level === "rules" ? "A" : "B"}); aguardando confirmacao${heardForLog(from, text)}`);
+  logActivity(from, "reply_interpreted", `${context.activity}: resposta livre lida como opcao ${option.number} (${option.intent}, nivel ${level === "rules" ? "A" : "B"}); aguardando confirmacao${heardForLog(text)}`);
   await sendText(from, buildReplyConfirmMessage({ optionNumber: option.number, optionLabel: option.label, subject: question.subject, heard: source === "audio" ? text : null }));
   return true;
 }
@@ -1054,7 +1071,7 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
         interpretations = await interpretText(from, text);
       } catch (err) {
         console.error("Erro ao interpretar mensagem nao entendida pela confirmacao:", err);
-        logActivity(from, "pending_not_understood", `${activity}: IA falhou ao interpretar -- manteve a confirmacao (${what})`);
+        logActivity(from, "pending_not_understood", `${activity}: IA falhou ao interpretar -- manteve a confirmacao (${what})${heardForLog(text)}`);
         logged = true;
       }
     }
@@ -1074,9 +1091,9 @@ async function handleNotUnderstood(from: string, text: string, notUnderstoodText
   }
 
   // a unica linha de log da resposta nao entendida (os resolvedores nao registram a sua)
-  if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida${heardForLog(from, text)}`);
+  if (!logged) logActivity(from, "pending_not_understood", `${activity}: resposta nao entendida (${what}); confirmacao mantida${heardForLog(text)}`);
   // em audio, mostra o que o bot ouviu (so quando houve texto) pra o cliente ver se a transcricao errou
-  const heardPrefix = messageSources.get(from) === "audio" && text.trim() ? `${heardLine(text)}\n` : "";
+  const heardPrefix = currentSource() === "audio" && text.trim() ? `${heardLine(text)}\n` : "";
   await sendText(from, `${heardPrefix}${notUnderstoodText}`);
 }
 
@@ -3875,6 +3892,8 @@ async function interpretCorrection(
   context: { startIso?: string } = {}
 ): Promise<{ value: CorrectionValue } | { error: string }> {
   const trimmed = text.trim();
+  // audio vazio ou eco da dica (Card 24): nada a interpretar -- nem chama a IA
+  if (!trimmed) return { error: "Não recebi nada." };
   if (kind === "endtime") {
     const resolved = context.startIso ? resolveEndSpec(trimmed, context.startIso) : ({ ok: false, error: END_NOT_UNDERSTOOD_TEXT } as const);
     return resolved.ok ? { value: { kind, spec: resolved.spec } } : { error: resolved.error };

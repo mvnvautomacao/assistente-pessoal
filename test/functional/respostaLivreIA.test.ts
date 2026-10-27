@@ -96,7 +96,7 @@ test("limites (RN10): no maximo 3 chamadas de IA por numero a cada 10 minutos; m
   const app = bootApp(t, NOW);
   const n = user();
   openCheckin(n);
-  for (let i = 0; i < REPLY_AI_MAX_CALLS; i++) await say(app, n, `não sei o que dizer ${i}`);
+  for (const phrase of ["não sei o que dizer", "hmm vou pensar um pouco", "deixa eu ver aqui"]) await say(app, n, phrase);
   assert.equal(app.classifyCalls.length, REPLY_AI_MAX_CALLS);
   assert.equal(await say(app, n, "agora sim deu tudo certo"), `Não entendi 🤔 Responde *1*, *2* ou *3*:\n${LIST_DAY}`, "4a mensagem: so o Nivel A");
   assert.equal(app.classifyCalls.length, REPLY_AI_MAX_CALLS, "a 4a nao chamou a IA");

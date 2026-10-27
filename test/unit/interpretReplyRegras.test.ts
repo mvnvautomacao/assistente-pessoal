@@ -122,3 +122,27 @@ test("leitura da resposta a sugestao: 1/sim aplicam, 2/nao mostram as opcoes, o 
   for (const no of ["2", "não", "Não.", "dois", "nao e isso", "ver as opções", "❌"]) assert.equal(readReplyConfirmation(no), "no", no);
   for (const other of ["3", "cancelar", "gastei 50 no mercado", "talvez", "", "1 e 2", "4"]) assert.equal(readReplyConfirmation(other), "other", other);
 });
+
+test("pedido novo de lembrete nao e resposta: 'me lembra de/que ...' e 'me lembra amanha de ...' viram null; 'me lembra amanha' e 'ainda nao deu pra pagar' continuam sendo adiar", () => {
+  for (const phrase of ["me lembra de ligar pro dentista amanhã", "me lembra que tenho que renovar", "me lembra amanhã de ligar", "me lembra amanhã do dentista"]) {
+    assert.equal(pick(phrase), null, phrase);
+  }
+  assert.equal(pick("me lembra amanhã por favor"), 2);
+  assert.equal(pick("ainda não deu pra pagar"), 2);
+});
+
+test("vocabulario unico: todo verbo de 'pago'/'pular'/palavra de 'adiar' da lista compartilhada vale como frase exata E como sugestao do Nivel A (sem divergencia)", async () => {
+  const { classifyBillCheckinReply, PAID_VERBS, SKIP_VERBS, SNOOZE_WORDS } = await import("../../src/bills/checkinReply");
+  for (const verb of PAID_VERBS) {
+    assert.equal(classifyBillCheckinReply(verb), "paid", verb);
+    assert.equal(pick(`${verb} a conta`), 1, verb);
+  }
+  for (const verb of SKIP_VERBS) {
+    assert.equal(classifyBillCheckinReply(verb), "skip", verb);
+    assert.equal(pick(`${verb} esse aviso`), 3, verb);
+  }
+  for (const word of SNOOZE_WORDS) {
+    assert.equal(classifyBillCheckinReply(word), "snooze", word);
+    assert.equal(pick(`${word} por favor`), 2, word);
+  }
+});

@@ -1,6 +1,7 @@
 // Card 24: entender uma resposta livre ou falada dentro das opcoes de uma pergunta aberta. Nivel A (este arquivo, puro, sem IA): regra tolerante com
 // vocabulario por intencao e lista de conflitos. Nivel B (IA restrita): ver interpretOpenReply. A leitura EXATA ("1", "sim", "ja paguei") continua
 // sendo dos resolvedores originais; isto so roda depois que eles desistiram. Nada interpretado e aplicado sozinho (RN05): quem chama pede confirmacao.
+import { PAID_VERBS, SKIP_VERBS, SNOOZE_WORDS } from "../bills/checkinReply";
 import { classifyReply, type ClassifyReplyInput, type ReplyClassification } from "../ai/interpret";
 import { normalizeReply } from "./normalize";
 import type { ReplyIntent, ReplyOption, ReplyQuestion } from "./replyOptions";
@@ -12,9 +13,16 @@ export const RULES_MAX_WORDS = 8;
 const CONFLICT_TOKENS = new Set(["nao", "nunca", "ainda", "depois", "amanha", "mas", "talvez", "vou", "quase", "so", "outro", "outra", "errado", "espera", "acho", "sera", "nem", "metade", "parte", "parcial", "parcialmente", "pouco", "meio", "falta", "faltou", "resto", "restante", "parcela"]);
 const CONFLICT_PHRASES = ["mais tarde"];
 
-const PAID: RegExp[] = [/\b(paguei|pago|quitei|quitado|resolvi|resolvido|fiz|feito|comprei)\b/, /\bja foi\b/];
-const SNOOZE: RegExp[] = [/\bainda nao\b/, /\bme lembr[ae]\b/, /\blembr[ae]\b/, /\bamanha\b/, /\bmais tarde\b/, /\bdepois\b/];
-const SKIP: RegExp[] = [/\bpular\b/, /\bpul[ae]\b/, /\bnao vou (pagar|fazer|comprar)\b/, /\b(esse|este) mes nao\b/];
+const wordsRegex = (words: string[]): RegExp => new RegExp(`\\b(${words.join("|")})\\b`);
+
+const PAID: RegExp[] = [wordsRegex(PAID_VERBS), /\bja foi\b/];
+const SNOOZE: RegExp[] = [/\bainda nao\b/, /\bme lembr[ae]\b/, /\blembr[ae]\b/, wordsRegex(SNOOZE_WORDS)];
+const SKIP: RegExp[] = [wordsRegex(SKIP_VERBS), /\bnao vou (pagar|fazer|comprar)\b/, /\b(esse|este) mes nao\b/];
+
+// "me lembra DE ligar pro dentista", "me lembra que...": e um lembrete novo, nunca a resposta "me lembra amanha" ao aviso
+const NEW_REMINDER_REQUEST = /\blembr[ae] (de|do|da|dos|das|que)\b/;
+// no adiar, sobrar "de ..." / "que ..." depois do vocabulario indica um objeto ("amanha de ligar pro dentista"): pedido novo, nao resposta
+const SNOOZE_OBJECT_CLAUSE = /\b(de|do|da|dos|das|que)\b/;
 
 const CONFIRM_PREVIEW: RegExp[] = [
   /\bpode (salvar|aplicar|confirmar|fazer|seguir|gravar|registrar|mandar)\b/,
@@ -85,13 +93,16 @@ export function interpretReplyRules(text: string, question: ReplyQuestion): Repl
   if (/\d/.test(text)) return null;
   const normalized = normalizeReply(text);
   if (!normalized || normalized.split(" ").length > RULES_MAX_WORDS) return null;
+  if (NEW_REMINDER_REQUEST.test(normalized)) return null;
   const candidates: ReplyOption[] = [];
   let matchedIntents = 0;
   for (const option of question.options) {
     const residual = residualAfterIntent(normalized, patternsFor(question, option.intent));
     if (residual === null) continue;
     matchedIntents++;
-    if (!hasConflict(residual)) candidates.push(option);
+    if (hasConflict(residual)) continue;
+    if (option.intent === "snooze" && SNOOZE_OBJECT_CLAUSE.test(residual)) continue;
+    candidates.push(option);
   }
   // frase com vocabulario de duas opcoes ("ja paguei, me lembra amanha") e ambigua: nao sugere nada
   return candidates.length === 1 && matchedIntents === 1 ? candidates[0] : null;
@@ -108,11 +119,26 @@ export const REPLY_AI_MAX_CALLS = 3;
 export const REPLY_AI_WINDOW_MS = 10 * 60 * 1000;
 // mensagem longa nao vai a IA (e quase sempre pedido novo, nao resposta)
 export const REPLY_AI_MAX_CHARS = 200;
+// ... e frase com mais de 12 palavras tambem nao vai (resposta a pergunta de opcoes e curta)
+export const REPLY_AI_MAX_WORDS = 12;
 
 const aiCalls = new Map<string, number[]>();
+// com muitos numeros no mapa, varre os que ja sairam da janela (o mapa nao cresce pra sempre)
+const AI_CALLS_PRUNE_AT = 500;
+
+function pruneReplyAiCalls(now: number) {
+  for (const [number, calls] of aiCalls) {
+    if (calls.every((t) => now - t >= REPLY_AI_WINDOW_MS)) aiCalls.delete(number);
+  }
+}
+
+export function replyAiTrackedNumbers(): number {
+  return aiCalls.size;
+}
 
 // registra a chamada se ainda ha cota na janela; false = sem cota
 export function takeReplyAiCall(from: string, now: number): boolean {
+  if (aiCalls.size > AI_CALLS_PRUNE_AT) pruneReplyAiCalls(now);
   const recent = (aiCalls.get(from) ?? []).filter((t) => now - t < REPLY_AI_WINDOW_MS);
   if (recent.length >= REPLY_AI_MAX_CALLS) {
     aiCalls.set(from, recent);
@@ -137,6 +163,8 @@ export interface ReplyAiDeps {
 export async function interpretReplyWithAi(from: string, text: string, question: ReplyQuestion, source: "audio" | "text", deps: ReplyAiDeps = {}): Promise<ReplyOption | null> {
   const clean = text.trim();
   if (!clean || clean.length > REPLY_AI_MAX_CHARS) return null;
+  // valor, data ou hora embutidos ("gastei 50 no mercado") sao pedido ou correcao, nunca resposta: nem gasta a chamada (a IA devolveria 'nenhuma', RN04)
+  if (/\d/.test(clean) || clean.split(/\s+/).length > REPLY_AI_MAX_WORDS) return null;
   if (!takeReplyAiCall(from, (deps.now ?? Date.now)())) return null;
   try {
     const result = await (deps.classify ?? classifyReply)({

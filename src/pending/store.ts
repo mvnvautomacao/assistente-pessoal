@@ -131,6 +131,21 @@ export function getPending<T>(fromNumber: string, kind: PendingKind, version: nu
   }
 }
 
+// Os tipos de pendencia ABERTOS (nao vencidos) de um numero, com o instante de criacao, numa unica leitura (Card 24: decide a dica do Whisper e
+// identifica a pergunta aberta sem consultar um getter por tipo).
+export function listOpenPendingKinds(fromNumber: string, now: number = Date.now()): { kind: PendingKind; createdAt: number }[] {
+  try {
+    const rows = db.prepare(`SELECT kind, created_at FROM pending_state WHERE from_number = ? AND expires_at >= ? ORDER BY kind`).all(fromNumber, now) as unknown as {
+      kind: PendingKind;
+      created_at: number;
+    }[];
+    return rows.map((r) => ({ kind: r.kind, createdAt: r.created_at }));
+  } catch (err) {
+    logStoreError("falha ao listar pendencias", "todas", err);
+    return [];
+  }
+}
+
 export function clearPending(fromNumber: string, kind: PendingKind): void {
   try {
     db.prepare(`DELETE FROM pending_state WHERE from_number = ? AND kind = ?`).run(fromNumber, kind);

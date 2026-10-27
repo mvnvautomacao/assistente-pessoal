@@ -21,23 +21,28 @@ export interface BillQuestionInfo {
   isLastAsk?: boolean;
 }
 
+// vocabulario de uma palavra, em UM lugar: as frases exatas abaixo e as regras tolerantes do Card 24 (confirmation/interpretReply.ts) partem dele
+export const PAID_VERBS = ["pago", "paguei", "quitado", "quitei", "resolvido", "resolvi", "feito", "fiz", "comprei"];
+export const SKIP_VERBS = ["pular", "pula", "pulei"];
+export const SNOOZE_WORDS = ["depois", "mais tarde", "amanha"];
+
 // frases CLARAS (ja normalizadas: sem acento, minusculas, sem pontuacao; "ta"/"esta" valem os dois)
 const PAID_PHRASES = new Set([
-  "sim", "s", "pago", "paguei", "ja paguei", "ta pago", "esta pago", "ja esta pago", "ja ta pago", "ja foi", "ja foi pago", "ja fiz", "fiz",
+  ...PAID_VERBS, "sim", "s", "ja paguei", "ta pago", "esta pago", "ja esta pago", "ja ta pago", "ja foi", "ja foi pago", "ja fiz", "fiz",
   "feito", "ja feito", "resolvido", "resolvi", "ja resolvi", "quitado", "quitei", "ja quitei", "comprei", "ja comprei", "ok pago", "ok paguei",
   "pago sim", "sim paguei", "sim ja paguei", "sim pago", "confirmo", "confirma", "tudo pago", "paguei sim",
 ]);
 
 const SNOOZE_PHRASES = new Set([
-  "nao", "n", "ainda nao", "ainda nao paguei", "nao paguei", "ainda nao fiz", "nao fiz", "nao comprei", "ainda nao comprei", "depois", "mais tarde",
-  "amanha", "me lembra amanha", "me lembra", "lembra", "lembra amanha", "manda amanha", "esqueci", "ainda nao resolvi", "nao resolvi",
+  ...SNOOZE_WORDS, "nao", "n", "ainda nao", "ainda nao paguei", "nao paguei", "ainda nao fiz", "nao fiz", "nao comprei", "ainda nao comprei",
+  "me lembra amanha", "me lembra", "lembra", "lembra amanha", "manda amanha", "esqueci", "ainda nao resolvi", "nao resolvi",
   "ainda nao lembra amanha", "ainda nao me lembra amanha", "ainda nao amanha", "nao lembra amanha", "nao me lembra amanha", "nao amanha",
   "ainda nao lembra depois", "ainda nao me lembra depois", "ainda nao paguei lembra amanha", "ainda nao paguei me lembra amanha", "nao paguei amanha",
   "ainda nao lembre amanha", "ainda nao me lembre amanha", "me lembre amanha", "lembre amanha", "lembre",
 ]);
 
 const SKIP_PHRASES = new Set([
-  "pular", "pula", "pulei", "nao vou pagar", "nao vou pagar esse mes", "esse mes nao", "este mes nao", "nao vou comprar", "nao vou fazer",
+  ...SKIP_VERBS, "nao vou pagar", "nao vou pagar esse mes", "esse mes nao", "este mes nao", "nao vou comprar", "nao vou fazer",
   "nao vou fazer agora", "pular esse mes", "pula esse mes", "pular este mes",
 ]);
 

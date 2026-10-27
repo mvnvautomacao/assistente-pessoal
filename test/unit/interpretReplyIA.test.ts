@@ -68,7 +68,7 @@ test("interpretReplyWithAi: vazio, mais de 200 caracteres e sem cota nao chamam 
   assert.ok(await interpretReplyWithAi("A", "  fechou ", bill, "audio", { classify }));
   assert.deepEqual(seen, [{ fromAudio: true, text: "fechou" }]);
   const t0 = 5_000_000;
-  for (let i = 0; i < REPLY_AI_MAX_CALLS - 1; i++) await interpretReplyWithAi("A", `a ${i}`, bill, "text", { classify, now: () => t0 });
+  for (let i = 0; i < REPLY_AI_MAX_CALLS - 1; i++) await interpretReplyWithAi("A", `frase ${"abc"[i]}`, bill, "text", { classify, now: () => t0 });
   assert.equal(await interpretReplyWithAi("A", "mais uma", bill, "text", { classify, now: () => t0 }), null, "sem cota");
   assert.equal(calls, REPLY_AI_MAX_CALLS);
 });
@@ -148,4 +148,14 @@ test("classifyReply: le a ferramenta (opcao 1/2/3 ou 'nenhuma', confianca) e cai
   assert.match(typed, /foi DIGITADA/);
     }
   );
+});
+
+test("cota de IA: o mapa e podado quando cresce (numeros que ja sairam da janela nao ficam para sempre)", async () => {
+  const { replyAiTrackedNumbers } = await import("../../src/confirmation/interpretReply");
+  resetReplyAiLimitForTests();
+  const t0 = 10_000_000;
+  for (let i = 0; i < 600; i++) takeReplyAiCall(`N${i}`, t0);
+  assert.equal(replyAiTrackedNumbers(), 600);
+  takeReplyAiCall("novo", t0 + REPLY_AI_WINDOW_MS + 1);
+  assert.equal(replyAiTrackedNumbers(), 1, "so o numero recente ficou");
 });
